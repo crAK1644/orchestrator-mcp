@@ -12,7 +12,7 @@ import json
 import pytest
 from litellm.types.utils import ModelResponse
 
-from orchestrator_mcp.contract import ErrorCode
+from orchestrator_mcp.contract import MAX_ERROR_CHARS, ErrorCode
 from orchestrator_mcp.server import (
     ConfigError,
     Orchestrator,
@@ -243,6 +243,87 @@ async def test_structured_mode_pins_temperature():
         capability="fast", prompt="q", response_schema=SCHEMA, temperature=0.9
     )
     assert request.temperature == 0.0
+
+
+# --- bounds -----------------------------------------------------------------
+
+
+async def test_rejected_output_stays_out_of_the_error_message():
+    """`error.message` is read and logged by the caller; the rejected value is not theirs."""
+    secret = "INTERNAL_SECRET_9f0c" + "x" * 4000
+    reply = json.dumps({"insufficient_context": False, "answer": {"city": secret, "pop": 1}})
+    schema = SCHEMA | {"properties": {**SCHEMA["properties"], "city": {"type": "string", "maxLength": 5}}}
+
+    response = await single(reply, repairs=0).ask(
+        capability="fast", prompt="q", response_schema=schema
+    )
+
+    assert response.error.code is ErrorCode.SCHEMA_VALIDATION_FAILED
+    assert "INTERNAL_SECRET" not in response.error.message
+    assert "answer/city" in response.error.message, "the caller still learns what failed and where"
+
+
+async def test_error_messages_are_bounded():
+    response = await single("hi").ask(capability="fast", prompt="x" * 500)
+    assert response.error.code is ErrorCode.INVALID_REQUEST
+    assert len(response.error.message) <= MAX_ERROR_CHARS
+
+
+async def test_the_repair_turn_still_gets_the_full_complaint():
+    """The model needs the rejected value to fix it -- that half is not truncated."""
+    orchestrator = single(json.dumps({"insufficient_context": False, "answer": {"city": 1, "pop": 2}}))
+    sent = []
+    original = orchestrator.router.acompletion
+
+    async def capture(**kwargs):
+        sent.append(kwargs["messages"])
+        return await original(**kwargs)
+
+    orchestrator.router.acompletion = capture
+    await orchestrator.ask(capability="fast", prompt="q", response_schema=SCHEMA)
+    assert "1 is not of type 'string'" in sent[-1][-1]["content"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"system": "x" * 20_000},
+        {"response_schema": {"type": "object", "properties": {"a": {"description": "d" * 30_000}}}},
+    ],
+    ids=["system", "schema"],
+)
+async def test_oversized_side_channels_are_rejected(kwargs):
+    """`system` and `response_schema` reach the prompt verbatim, so they are capped too."""
+    orchestrator = single("hi")
+
+    async def fail(**_):
+        raise AssertionError("provider was called for an oversized request")
+
+    orchestrator.router.acompletion = fail
+    response = await orchestrator.ask(capability="fast", prompt="q", **kwargs)
+    assert response.error.code is ErrorCode.INVALID_REQUEST
+
+
+async def test_unresolvable_ref_fails_as_a_rejected_reply():
+    """The validator raises from inside; that is a bad reply, not a crashed server."""
+    response = await single(VALID_ANSWER, repairs=0).ask(
+        capability="fast",
+        prompt="q",
+        response_schema={"type": "object", "properties": {"city": {"$ref": "http://example/x"}}},
+    )
+    assert response.error.code is ErrorCode.SCHEMA_VALIDATION_FAILED
+    assert response.data is None
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [{"schema_repair_attempts": -1}, {"request_timeout_s": 0}, {"max_prompt_chars": 0}],
+)
+def test_nonsense_limits_refuse_to_boot(limits):
+    broken = config(deployment("fast", "hi"))
+    broken["limits"] |= limits
+    with pytest.raises(ConfigError):
+        Orchestrator(broken)
 
 
 # --- abstention -------------------------------------------------------------

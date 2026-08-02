@@ -49,6 +49,8 @@ router_settings:
 limits:
   max_prompt_chars: 100000
   max_context_chars: 400000
+  max_system_chars: 10000     # caller instructions reach the prompt verbatim
+  max_schema_chars: 20000     # so does `response_schema`
   max_output_tokens: 4096
   request_timeout_s: 120
   schema_repair_attempts: 1
