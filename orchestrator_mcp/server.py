@@ -7,6 +7,7 @@ MCP surface, the config contract, and the response envelope.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import os
@@ -313,6 +314,27 @@ class Orchestrator:
                 return self._failed(request.capability, ErrorCode.INVALID_REQUEST, str(exc), started)
 
         messages = _build_messages(request.prompt, request.context, request.system, wrapper)
+
+        # One budget for the whole call, not one per leg: retries, cross-capability
+        # fallback and repair turns all live under it.
+        try:
+            async with asyncio.timeout(self.limits.request_timeout_s):
+                return await self._attempts(request, wrapper, messages, started)
+        except TimeoutError:
+            return self._failed(
+                request.capability,
+                ErrorCode.TIMEOUT,
+                f"call exceeded request_timeout_s ({self.limits.request_timeout_s}s)",
+                started,
+            )
+
+    async def _attempts(
+        self,
+        request: Any,
+        wrapper: dict[str, Any] | None,
+        messages: list[dict[str, str]],
+        started: float,
+    ) -> AskResponse:
         # One shot in prose mode; structured mode gets bounded repair attempts.
         attempts = 1 + (self.limits.schema_repair_attempts if wrapper else 0)
 
@@ -323,7 +345,10 @@ class Orchestrator:
                     messages=messages,
                     temperature=request.temperature,
                     max_tokens=request.max_output_tokens or self.limits.max_output_tokens,
-                    timeout=self.limits.request_timeout_s,
+                    # What is left of the budget, so a hung leg times out inside the
+                    # Router -- which cools the deployment down -- rather than being
+                    # cut from outside it.
+                    timeout=max(1, self.limits.request_timeout_s - int(time.perf_counter() - started)),
                     **self._structured_params(wrapper),
                 )
             except Exception as exc:

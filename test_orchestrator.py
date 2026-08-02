@@ -7,7 +7,9 @@ reach the caller as if a model had produced it.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 
 import pytest
 from litellm.types.utils import ModelResponse
@@ -245,6 +247,24 @@ async def test_structured_mode_pins_temperature():
     assert request.temperature == 0.0
 
 
+async def test_the_deadline_covers_the_whole_call_not_each_attempt():
+    """Two repair turns must not buy three times the configured timeout."""
+    orchestrator = single("unused", repairs=2)
+    orchestrator.limits.request_timeout_s = 1
+
+    async def slow(**_):
+        await asyncio.sleep(5)
+
+    orchestrator.router.acompletion = slow
+    started = time.perf_counter()
+    response = await orchestrator.ask(capability="fast", prompt="q", response_schema=SCHEMA)
+    elapsed = time.perf_counter() - started
+
+    assert response.error.code is ErrorCode.TIMEOUT
+    assert response.content is None
+    assert elapsed < 3, f"budget was 1s across all attempts, took {elapsed:.1f}s"
+
+
 # --- bounds -----------------------------------------------------------------
 
 
@@ -401,6 +421,9 @@ async def test_tool_schema_advertises_capabilities_and_caps():
     assert properties["capability"]["enum"] == ["coding", "research"]
     assert properties["prompt"]["maxLength"] == 200
     assert "response_schema" in properties
+    # nullable fields advertise their cap inside `anyOf`, and keep their description
+    assert properties["system"]["anyOf"][0]["maxLength"] == 10_000
+    assert properties["system"]["description"] and properties["context"]["description"]
     assert set(ask.output_schema["properties"]) >= {"ok", "content", "data", "error", "fallback_used"}
 
 
