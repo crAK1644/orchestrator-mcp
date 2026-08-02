@@ -20,6 +20,7 @@ import jsonschema
 import litellm
 import yaml
 from litellm import Router
+from litellm.types.router import RouterErrors
 from mcp.server import MCPServer
 from pydantic import ValidationError
 
@@ -55,6 +56,19 @@ SCHEMA_DIRECTIVE = (
 )
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
+# An exhausted alias group is signalled by message, not by type. Matching LiteLLM's
+# own constants means a reworded message follows the upgrade instead of quietly
+# downgrading to `upstream_error`.
+_NO_DEPLOYMENT_MARKERS = tuple(
+    marker.lower()
+    for marker in (
+        RouterErrors.no_deployments_available.value,
+        RouterErrors.no_deployments_with_tag_routing.value,
+        RouterErrors.no_deployments_with_provider_budget_routing.value,
+        "No healthy deployment available",
+    )
+)
 
 # Ordered most-specific first: several of these subclass BadRequestError/APIError.
 _ERROR_MAP: list[tuple[type[Exception], ErrorCode]] = [
@@ -129,7 +143,8 @@ def validate_config(config: dict[str, Any]) -> None:
 
 
 def _classify(exc: Exception) -> ErrorCode:
-    if "no deployments available" in str(exc).lower():
+    message = str(exc).lower()
+    if any(marker in message for marker in _NO_DEPLOYMENT_MARKERS):
         return ErrorCode.NO_DEPLOYMENT
     for exc_type, code in _ERROR_MAP:
         if isinstance(exc, exc_type):

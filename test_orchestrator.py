@@ -11,7 +11,9 @@ import asyncio
 import json
 import time
 
+import litellm
 import pytest
+from litellm.types.router import RouterErrors
 from litellm.types.utils import ModelResponse
 
 from orchestrator_mcp.contract import MAX_ERROR_CHARS, ErrorCode
@@ -19,6 +21,7 @@ from orchestrator_mcp.server import (
     ConfigError,
     Orchestrator,
     StructuredOutputError,
+    _classify,
     _parse_structured,
     _wrap_schema,
     build_server,
@@ -93,6 +96,48 @@ async def test_no_fallback_available_reports_the_upstream_error():
     response = await single("litellm.RateLimitError").ask(capability="fast", prompt="q")
     assert response.error.code is ErrorCode.RATE_LIMITED
     assert response.content is None
+
+
+@pytest.mark.parametrize(
+    "exc, expected",
+    [
+        # Ordering matters: the first three subclass BadRequestError or APIError, so
+        # a reordered _ERROR_MAP would silently collapse them into a coarser code.
+        (litellm.ContextWindowExceededError("too long", "gpt-4o", "openai"), ErrorCode.CONTEXT_EXCEEDED),
+        (litellm.ContentPolicyViolationError("blocked", "gpt-4o", "openai"), ErrorCode.CONTENT_FILTERED),
+        (litellm.AuthenticationError("bad key", "gpt-4o", "openai"), ErrorCode.AUTH_FAILED),
+        (litellm.RateLimitError("slow down", "gpt-4o", "openai"), ErrorCode.RATE_LIMITED),
+        (litellm.Timeout("too slow", "gpt-4o", "openai"), ErrorCode.TIMEOUT),
+        (litellm.BadRequestError("nope", "gpt-4o", "openai"), ErrorCode.INVALID_REQUEST),
+        (litellm.APIConnectionError("unreachable", "gpt-4o", "openai"), ErrorCode.UPSTREAM_ERROR),
+        (RuntimeError("something else entirely"), ErrorCode.UPSTREAM_ERROR),
+    ],
+    ids=lambda v: getattr(v, "value", type(v).__name__),
+)
+def test_upstream_failures_map_to_stable_codes(exc, expected):
+    assert _classify(exc) is expected
+
+
+@pytest.mark.parametrize("marker", [e.value for e in RouterErrors] + ["No healthy deployment available"])
+def test_every_exhausted_router_message_is_recognized(marker):
+    """These strings are LiteLLM's, imported rather than copied, so an upgrade that
+    rewords one follows along instead of downgrading it to a generic upstream error."""
+    if "ratelimit" in marker.lower():  # a real rate limit, not an empty alias group
+        pytest.skip("not an exhausted-group message")
+    assert _classify(litellm.RateLimitError(marker, "gpt-4o", "openai")) is ErrorCode.NO_DEPLOYMENT
+
+
+async def test_a_cooled_down_capability_reports_no_deployment():
+    """The end of the line: every deployment in the group is in cooldown."""
+    orchestrator = Orchestrator(
+        config(deployment("fast", "litellm.RateLimitError"))
+        | {"router_settings": {"num_retries": 0, "cooldown_time": 60, "allowed_fails": 0}}
+    )
+    first = await orchestrator.ask(capability="fast", prompt="q")
+    second = await orchestrator.ask(capability="fast", prompt="q")
+
+    assert first.error.code is ErrorCode.RATE_LIMITED
+    assert second.error.code is ErrorCode.NO_DEPLOYMENT, "an empty group is not an upstream error"
 
 
 async def test_usage_and_latency_are_reported():

@@ -157,9 +157,24 @@ size-capped but not analyzed, so treat schema authorship as a trusted operation.
 uv run pytest -q
 ```
 
-54 tests, no network — deployments are stubbed with LiteLLM's `mock_response`, and the
+67 tests, no network — deployments are stubbed with LiteLLM's `mock_response`, and the
 shapes it cannot express (no choices, null content, a truncated or filtered reply) are
-stubbed as raw `ModelResponse` objects. Includes the rate-limit-then-fallback path.
+stubbed as raw `ModelResponse` objects. Includes the rate-limit-then-fallback path and
+the cooled-down-group path.
+
+Because all of that is stubbed, it proves the orchestrator's logic and nothing about
+your providers. For that:
+
+```bash
+uv run python smoke_live.py
+```
+
+Real calls against your `config.yaml`, roughly four short ones per capability, so it
+costs a little money — run it deliberately, not in CI. It checks the things only a
+live endpoint can answer: whether `response_format` survives the round trip, whether
+the model honours the abstention path instead of inventing, and what the provider
+actually sends as `finish_reason` when it runs out of room. Name capabilities as
+arguments to check only some (`uv run python smoke_live.py fast`).
 
 ## Not included
 
