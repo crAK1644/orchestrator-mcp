@@ -71,10 +71,10 @@ claude mcp add orchestrator --env ORCHESTRATOR_CONFIG=$PWD/config.yaml -- orches
 ```
 
 > **Note**
-> Homebrew builds every Python dependency from source, including several Rust crates,
-> so the first install takes around fifteen minutes. `uvx orchestrator-mcp-server`
-> takes a prebuilt wheel and runs in about a second — prefer it unless you specifically
-> want the binary managed by brew.
+> Apple Silicon pours a prebuilt bottle. Everything else builds every Python
+> dependency from source, including several Rust crates, which takes around fifteen
+> minutes — `uvx orchestrator-mcp-server` is the same program from a prebuilt wheel in
+> about a second.
 
 ### From a checkout
 
