@@ -6,6 +6,9 @@ validated envelope.
 
 Pointing a capability at your own deployment is a YAML edit. There is no code to change.
 
+> Published to PyPI as **`orchestrator-mcp-server`** — the shorter name is an empty
+> registered project owned by someone else. The import package is `orchestrator_mcp`.
+
 ## How it works
 
 A **capability** is a LiteLLM `model_name` alias group. Several deployments can share
@@ -37,7 +40,7 @@ Write a `config.yaml` — start from [`config.example.yaml`](config.example.yaml
 check that it loads:
 
 ```bash
-ORCHESTRATOR_CONFIG=config.yaml uvx --from orchestrator-mcp python -c "from orchestrator_mcp.server import build_server; build_server(); print('config ok')"
+ORCHESTRATOR_CONFIG=config.yaml uvx --from orchestrator-mcp-server python -c "from orchestrator_mcp.server import build_server; build_server(); print('config ok')"
 ```
 
 A bad config fails here rather than at request time: every deployment must route to a
@@ -50,7 +53,7 @@ it unchanged. Keep it out of version control — it holds your endpoints.
 ### Claude Code
 
 ```bash
-claude mcp add orchestrator --env ORCHESTRATOR_CONFIG=$PWD/config.yaml -- uvx orchestrator-mcp
+claude mcp add orchestrator --env ORCHESTRATOR_CONFIG=$PWD/config.yaml -- uvx orchestrator-mcp-server
 ```
 
 ### Codex
@@ -60,7 +63,7 @@ In `~/.codex/config.toml`:
 ```toml
 [mcp_servers.orchestrator]
 command = "uvx"
-args = ["orchestrator-mcp"]
+args = ["orchestrator-mcp-server"]
 env = { ORCHESTRATOR_CONFIG = "/absolute/path/to/config.yaml" }
 ```
 
@@ -79,7 +82,7 @@ uv sync && uv run pytest -q
 ```
 
 ```bash
-claude mcp add orchestrator --env ORCHESTRATOR_CONFIG=$PWD/config.yaml -- uv run --directory $PWD orchestrator-mcp
+claude mcp add orchestrator --env ORCHESTRATOR_CONFIG=$PWD/config.yaml -- uv run --directory $PWD orchestrator-mcp-server
 ```
 
 ## Tools
