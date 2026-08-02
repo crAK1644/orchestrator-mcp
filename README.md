@@ -33,33 +33,54 @@ increase and a new failure mode.
 
 ## Quick start
 
-```bash
-uv sync
-```
+Write a `config.yaml` — start from [`config.example.yaml`](config.example.yaml) — and
+check that it loads:
 
 ```bash
-cp config.example.yaml config.yaml
-```
-
-Edit `config.yaml`, export the API keys it references, then check it loads:
-
-```bash
-ORCHESTRATOR_CONFIG=config.yaml uv run python -c "from orchestrator_mcp.server import build_server; build_server(); print('config ok')"
+ORCHESTRATOR_CONFIG=config.yaml uvx --from orchestrator-mcp python -c "from orchestrator_mcp.server import build_server; build_server(); print('config ok')"
 ```
 
 A bad config fails here rather than at request time: every deployment must route to a
 declared capability, every capability must have a deployment behind it, and every
 fallback must name a real capability.
 
-Register it with a client:
+Because the file is LiteLLM's own config schema, `litellm --config config.yaml` runs on
+it unchanged. Keep it out of version control — it holds your endpoints.
+
+### Claude Code
+
+```bash
+claude mcp add orchestrator --env ORCHESTRATOR_CONFIG=$PWD/config.yaml -- uvx orchestrator-mcp
+```
+
+### Codex
+
+In `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.orchestrator]
+command = "uvx"
+args = ["orchestrator-mcp"]
+env = { ORCHESTRATOR_CONFIG = "/absolute/path/to/config.yaml" }
+```
+
+Both speak stdio, and every tool result is returned as structured content *and* as
+JSON text, so a client that reads only one of the two still gets the whole envelope.
+
+**Provider keys.** `config.yaml` references them as `os.environ/NAME`, and they are
+read from the environment the *server* process gets — which is the client's
+environment, not your shell's. If a capability comes back `auth_failed` while the same
+config works from a terminal, add the key to the client's `env` block.
+
+### From a checkout
+
+```bash
+uv sync && uv run pytest -q
+```
 
 ```bash
 claude mcp add orchestrator --env ORCHESTRATOR_CONFIG=$PWD/config.yaml -- uv run --directory $PWD orchestrator-mcp
 ```
-
-`config.yaml` is gitignored — it holds your endpoints. Only the example is tracked.
-Because the file is LiteLLM's own config schema, `litellm --config config.yaml` runs
-on it unchanged.
 
 ## Tools
 
@@ -157,7 +178,7 @@ size-capped but not analyzed, so treat schema authorship as a trusted operation.
 uv run pytest -q
 ```
 
-67 tests, no network — deployments are stubbed with LiteLLM's `mock_response`, and the
+72 tests, no network — deployments are stubbed with LiteLLM's `mock_response`, and the
 shapes it cannot express (no choices, null content, a truncated or filtered reply) are
 stubbed as raw `ModelResponse` objects. Includes the rate-limit-then-fallback path and
 the cooled-down-group path.
@@ -175,6 +196,15 @@ live endpoint can answer: whether `response_format` survives the round trip, whe
 the model honours the abstention path instead of inventing, and what the provider
 actually sends as `finish_reason` when it runs out of room. Name capabilities as
 arguments to check only some (`uv run python smoke_live.py fast`).
+
+## Contributing
+
+Issues and pull requests are welcome. The bar for a change is a test that fails
+without it — the suite runs offline, so there is no key to obtain and no cost to pay.
+Keep `config.yaml` out of your commits.
+
+If you are adding a capability to your own setup, you do not need a pull request: it
+is a `model_list` entry.
 
 ## Not included
 

@@ -2,14 +2,31 @@
 name = "orchestrator-mcp"
 version = "0.1.0"
 description = "Capability-routed MCP server: route work to the LLM that is best at it."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ayberk Karataban" }]
+keywords = ["mcp", "llm", "router", "litellm", "orchestrator", "claude", "codex"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Libraries",
+]
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.2.0",
+    # 2.0 renamed the server API (`mcp.server.MCPServer`) and switched tool objects
+    # to snake_case; 1.x will not import.
+    "mcp>=2.0,<3",
     "litellm>=1.55.0",
     "pydantic>=2.9",
     "pyyaml>=6.0",
     "jsonschema>=4.23",
 ]
+
+[project.urls]
+Homepage = "https://github.com/crAK1644/orchestrator-mcp"
+Issues = "https://github.com/crAK1644/orchestrator-mcp/issues"
 
 [project.scripts]
 orchestrator-mcp = "orchestrator_mcp.server:main"

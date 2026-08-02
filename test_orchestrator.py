@@ -472,6 +472,37 @@ async def test_tool_schema_advertises_capabilities_and_caps():
     assert set(ask.output_schema["properties"]) >= {"ok", "content", "data", "error", "fallback_used"}
 
 
+async def test_a_single_capability_still_advertises_an_enum():
+    """Pydantic would emit `const` here, which fewer function-calling layers read."""
+    server = build_server(config(deployment("fast", "hi")))
+    ask = next(t for t in await server.list_tools() if t.name == "ask")
+    capability = ask.input_schema["properties"]["capability"]
+
+    assert capability["enum"] == ["fast"]
+    assert "const" not in capability
+    assert capability["type"] == "string"
+
+
+async def test_the_envelope_is_also_returned_as_text():
+    """A client that ignores structured output still gets the whole envelope."""
+    server = build_server(config(deployment("fast", "hello")))
+    result = await server.call_tool("ask", {"capability": "fast", "prompt": "q"})
+    assert json.loads(result.content[0].text)["content"] == "hello"
+
+
+@pytest.mark.parametrize("as_string", [True, False])
+async def test_response_schema_accepts_an_object_or_json_text(as_string):
+    """Strict function-calling layers will not carry a free-form object."""
+    schema = json.dumps(SCHEMA) if as_string else SCHEMA
+    response = await single(VALID_ANSWER).ask(capability="fast", prompt="q", response_schema=schema)
+    assert response.data == {"city": "Istanbul", "pop": 15_000_000}
+
+
+async def test_a_schema_string_that_is_not_json_is_rejected():
+    response = await single("hi").ask(capability="fast", prompt="q", response_schema="{not json")
+    assert response.error.code is ErrorCode.INVALID_REQUEST
+
+
 async def test_call_tool_returns_the_envelope():
     server = build_server(config(deployment("fast", "hello")))
     result = await server.call_tool("ask", {"capability": "fast", "prompt": "q"})
