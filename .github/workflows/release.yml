@@ -1,0 +1,39 @@
+name: release
+
+# Publishes to PyPI when a GitHub Release is published. Authentication is
+# Trusted Publishing: PyPI mints a short-lived token from this workflow's OIDC
+# identity, so there is no API token stored anywhere in the repo.
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # The OIDC token PyPI verifies. Without this the job cannot authenticate.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      # A release that fails its own tests should not reach PyPI, and a version
+      # is not withdrawable once uploaded.
+      - run: uv sync --all-extras --dev
+      - run: uv run pytest -q
+
+      # The tag must match the version in pyproject.toml, or the release notes
+      # point at something PyPI does not have.
+      - name: Check the tag matches the packaged version
+        run: |
+          packaged=$(uv version --short)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$packaged" != "$tag" ]; then
+            echo "tag $tag does not match pyproject version $packaged" >&2
+            exit 1
+          fi
+
+      - run: uv build
+      # `always` fails loudly if OIDC is unavailable, rather than falling back
+      # to prompting for a password in a non-interactive runner.
+      - run: uv publish --trusted-publishing always
