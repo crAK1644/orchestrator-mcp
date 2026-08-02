@@ -197,6 +197,43 @@ async def test_incomplete_provider_replies_are_failures(choices, expected):
     assert response.content is None and response.data is None
 
 
+@pytest.mark.parametrize(
+    "choices, expected_finish",
+    [
+        (choice("half an ans", "length"), "length"),
+        (choice("", "content_filter"), "content_filter"),
+        ([], None),  # nothing replied, so there is nothing to report
+    ],
+    ids=["length", "filtered", "no-choices"],
+)
+async def test_failures_report_the_provider_finish_reason(choices, expected_finish):
+    """`finish_reason` is diagnosis, not answer: it survives a rejected reply."""
+    orchestrator = single("unused")
+
+    async def reply(**_):
+        return ModelResponse(choices=choices)
+
+    orchestrator.router.acompletion = reply
+    response = await orchestrator.ask(capability="fast", prompt="q")
+
+    assert response.ok is False
+    assert response.finish_reason == expected_finish
+    assert response.content is None and response.data is None
+
+
+async def test_failures_without_a_reply_have_no_finish_reason():
+    """A timeout or a routing failure never saw a completion to describe."""
+    orchestrator = single("unused")
+
+    async def reply(**_):
+        raise RuntimeError("boom")
+
+    orchestrator.router.acompletion = reply
+    response = await orchestrator.ask(capability="fast", prompt="q")
+
+    assert response.ok is False and response.finish_reason is None
+
+
 async def test_truncation_is_caught_before_the_schema_parse():
     """Structured mode must report the truncation, not a downstream JSON complaint."""
     orchestrator = single("unused")

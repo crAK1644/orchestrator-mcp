@@ -127,6 +127,10 @@ Every call returns the same envelope:
 on a value instead of matching substrings. `error.message` is bounded at 500
 characters and never quotes the rejected output back at you.
 
+`finish_reason` rides along on failures too, when a provider replied at all — it is
+diagnosis rather than an answer, and `length` tells you to raise `max_output_tokens`
+instead of going looking for a bug. It is `null` when nothing was received.
+
 ### `list_capabilities`
 
 What each capability is for, the deployments behind it, and where it falls back.
@@ -181,7 +185,7 @@ size-capped but not analyzed, so treat schema authorship as a trusted operation.
 uv run pytest -q
 ```
 
-72 tests, no network — deployments are stubbed with LiteLLM's `mock_response`, and the
+76 tests, no network — deployments are stubbed with LiteLLM's `mock_response`, and the
 shapes it cannot express (no choices, null content, a truncated or filtered reply) are
 stubbed as raw `ModelResponse` objects. Includes the rate-limit-then-fallback path and
 the cooled-down-group path.
