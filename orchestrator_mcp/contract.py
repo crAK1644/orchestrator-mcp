@@ -28,9 +28,15 @@ class ErrorCode(str, Enum):
     OUTPUT_TRUNCATED = "output_truncated"  # the model ran out of room mid-answer
 
 
+MAX_ERROR_CHARS = 500
+
+
 class ErrorInfo(BaseModel):
     code: ErrorCode
-    message: str
+    # Bounded by contract, not by habit at one call site: the sources feeding this
+    # (provider exceptions, validator complaints, pydantic echoing the request) all
+    # quote their input back verbatim and none of them bound it.
+    message: str = Field(max_length=MAX_ERROR_CHARS)
 
 
 class Usage(BaseModel):
@@ -43,11 +49,13 @@ class Usage(BaseModel):
 class Limits(BaseModel):
     """Boundary caps, read from the `limits:` block of the config."""
 
-    max_prompt_chars: int = 100_000
-    max_context_chars: int = 400_000
-    max_output_tokens: int = 4096
-    request_timeout_s: int = 120
-    schema_repair_attempts: int = 1
+    max_prompt_chars: int = Field(default=100_000, ge=1)
+    max_context_chars: int = Field(default=400_000, ge=1)
+    max_system_chars: int = Field(default=10_000, ge=1)
+    max_schema_chars: int = Field(default=20_000, ge=1)
+    max_output_tokens: int = Field(default=4096, ge=1)
+    request_timeout_s: int = Field(default=120, ge=1)
+    schema_repair_attempts: int = Field(default=1, ge=0)
 
 
 class AskRequest(BaseModel):
@@ -148,9 +156,23 @@ def build_ask_request(capabilities: list[str], limits: Limits) -> type[AskReques
             str,
             Field(min_length=1, max_length=limits.max_prompt_chars, description="The task or question."),
         ),
+        # Redefining a field replaces it outright, so the descriptions are repeated
+        # here -- they are what the calling agent reads.
         context=(
             str | None,
-            Field(default=None, max_length=limits.max_context_chars),
+            Field(
+                default=None,
+                max_length=limits.max_context_chars,
+                description=AskRequest.model_fields["context"].description,
+            ),
+        ),
+        system=(
+            str | None,
+            Field(
+                default=None,
+                max_length=limits.max_system_chars,
+                description=AskRequest.model_fields["system"].description,
+            ),
         ),
         max_output_tokens=(
             int | None,

@@ -20,8 +20,10 @@ import litellm
 import yaml
 from litellm import Router
 from mcp.server import MCPServer
+from pydantic import ValidationError
 
 from .contract import (
+    MAX_ERROR_CHARS,
     AskResponse,
     CapabilitiesResponse,
     CapabilityInfo,
@@ -67,7 +69,16 @@ _ERROR_MAP: list[tuple[type[Exception], ErrorCode]] = [
 
 
 class StructuredOutputError(ValueError):
-    """The reply was not usable as structured data. Never surfaced as an answer."""
+    """The reply was not usable as structured data. Never surfaced as an answer.
+
+    Two forms on purpose. `str(exc)` is caller-safe: what failed and where, never the
+    rejected value. `detail` may quote the model's own output and goes only back to
+    that model in a repair turn.
+    """
+
+    def __init__(self, message: str, detail: str | None = None) -> None:
+        super().__init__(message)
+        self.detail = detail or message
 
 
 class ConfigError(ValueError):
@@ -183,8 +194,17 @@ def _parse_structured(
     try:
         jsonschema.validate(parsed, wrapper_schema)
     except jsonschema.ValidationError as exc:
+        # `exc.message` inlines the rejected value, unbounded. It is fine to hand back
+        # to the model that wrote it; it is not part of the caller's error envelope.
         path = "/".join(str(p) for p in exc.absolute_path) or "<root>"
-        raise StructuredOutputError(f"schema violation at {path}: {exc.message}") from exc
+        raise StructuredOutputError(
+            f"schema violation at {path}: failed the `{exc.validator}` constraint",
+            detail=f"schema violation at {path}: {exc.message}",
+        ) from exc
+    except Exception as exc:
+        # An unresolvable `$ref` and friends raise from inside the validator rather
+        # than as a ValidationError. Still a rejected reply, not a crash.
+        raise StructuredOutputError(f"schema could not be applied: {type(exc).__name__}") from exc
 
     abstained = bool(parsed.get("insufficient_context"))
     if not abstained and "answer" not in parsed:
@@ -236,7 +256,10 @@ class Orchestrator:
     def __init__(self, config: dict[str, Any]) -> None:
         validate_config(config)
         self.capabilities: dict[str, str] = config["capabilities"]
-        self.limits = Limits(**(config.get("limits") or {}))
+        try:
+            self.limits = Limits(**(config.get("limits") or {}))
+        except ValidationError as exc:
+            raise ConfigError(f"invalid `limits:` block: {exc}") from exc
         self.router = Router(model_list=config["model_list"], **(config.get("router_settings") or {}))
         self.request_model = build_ask_request(list(self.capabilities), self.limits)
 
@@ -323,7 +346,7 @@ class Orchestrator:
                         {
                             "role": "user",
                             "content": (
-                                f"That reply was rejected: {exc}. Reply again with a single "
+                                f"That reply was rejected: {exc.detail}. Reply again with a single "
                                 "JSON object that matches the schema, and nothing else."
                             ),
                         },
@@ -339,9 +362,15 @@ class Orchestrator:
 
         raise AssertionError("unreachable: loop returns on every path")
 
-    @staticmethod
-    def _checked_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    def _checked_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
         """Reject a malformed schema up front rather than as a confusing later failure."""
+        # The schema is inlined into the prompt verbatim, so its size is the caller's
+        # to spend but ours to bound.
+        if len(json.dumps(schema)) > self.limits.max_schema_chars:
+            raise ValueError(
+                f"`response_schema` is larger than max_schema_chars "
+                f"({self.limits.max_schema_chars})"
+            )
         jsonschema.Draft202012Validator.check_schema(schema)
         if schema.get("type") != "object":
             raise ValueError("`response_schema` must describe an object (\"type\": \"object\")")
@@ -403,7 +432,9 @@ class Orchestrator:
         return AskResponse(
             ok=False,
             capability_requested=capability,
-            error=ErrorInfo(code=code, message=message),
+            # One truncation for every source: provider exceptions embed the request
+            # body, pydantic echoes the caller's input, validators quote the reply.
+            error=ErrorInfo(code=code, message=message[:MAX_ERROR_CHARS]),
             latency_ms=int((time.perf_counter() - started) * 1000),
         ).check_invariants()
 
