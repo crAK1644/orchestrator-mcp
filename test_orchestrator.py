@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from litellm.types.utils import ModelResponse
 
 from orchestrator_mcp.contract import ErrorCode
 from orchestrator_mcp.server import (
@@ -50,6 +51,13 @@ def config(*deployments: dict, fallbacks: list | None = None, repairs: int = 1) 
 
 def single(mock: str, **kwargs) -> Orchestrator:
     return Orchestrator(config(deployment("fast", mock), **kwargs))
+
+
+def choice(content: str | None, finish_reason: str = "stop") -> list[dict]:
+    """A raw provider reply. `mock_response` cannot express these shapes."""
+    return [
+        {"index": 0, "finish_reason": finish_reason, "message": {"role": "assistant", "content": content}}
+    ]
 
 
 # --- routing and reliability ------------------------------------------------
@@ -114,6 +122,44 @@ async def test_failures_never_carry_an_answer(kwargs, mock):
     assert response.ok is False
     assert response.error is not None
     assert response.content is None and response.data is None
+
+
+@pytest.mark.parametrize(
+    "choices, expected",
+    [
+        ([], ErrorCode.UPSTREAM_ERROR),  # provider returned nothing at all
+        (choice(None), ErrorCode.UPSTREAM_ERROR),  # a choice with no content
+        (choice("   "), ErrorCode.UPSTREAM_ERROR),  # whitespace is not an answer
+        (choice("half an ans", "length"), ErrorCode.OUTPUT_TRUNCATED),
+        (choice("half an ans", "max_tokens"), ErrorCode.OUTPUT_TRUNCATED),
+        (choice("", "content_filter"), ErrorCode.CONTENT_FILTERED),
+    ],
+    ids=["no-choices", "null-content", "blank-content", "length", "max_tokens", "filtered"],
+)
+async def test_incomplete_provider_replies_are_failures(choices, expected):
+    """A half answer that reads as a whole one is the failure this server prevents."""
+    orchestrator = single("unused")
+
+    async def reply(**_):
+        return ModelResponse(choices=choices)
+
+    orchestrator.router.acompletion = reply
+    response = await orchestrator.ask(capability="fast", prompt="q")
+
+    assert response.error.code is expected
+    assert response.content is None and response.data is None
+
+
+async def test_truncation_is_caught_before_the_schema_parse():
+    """Structured mode must report the truncation, not a downstream JSON complaint."""
+    orchestrator = single("unused")
+
+    async def reply(**_):
+        return ModelResponse(choices=choice('{"insufficient_context": fal', "length"))
+
+    orchestrator.router.acompletion = reply
+    response = await orchestrator.ask(capability="fast", prompt="q", response_schema=SCHEMA)
+    assert response.error.code is ErrorCode.OUTPUT_TRUNCATED
 
 
 async def test_boundary_rejections_skip_the_provider(monkeypatch):

@@ -25,6 +25,7 @@ class ErrorCode(str, Enum):
     TIMEOUT = "timeout"
     CONTENT_FILTERED = "content_filtered"
     AUTH_FAILED = "auth_failed"
+    OUTPUT_TRUNCATED = "output_truncated"  # the model ran out of room mid-answer
 
 
 class ErrorInfo(BaseModel):
@@ -106,9 +107,12 @@ class AskResponse(BaseModel):
     error: ErrorInfo | None = None
 
     def check_invariants(self) -> AskResponse:
-        assert self.ok is (self.error is None), "ok must be False exactly when error is set"
-        if not self.ok:
-            assert self.content is None and self.data is None, "failed calls carry no answer"
+        # Explicit raises, not `assert`: `python -O` strips assertions, and the
+        # never-ghostwrite guard is exactly the thing that must not vanish there.
+        if self.ok is not (self.error is None):
+            raise AssertionError("ok must be False exactly when error is set")
+        if not self.ok and (self.content is not None or self.data is not None):
+            raise AssertionError("failed calls carry no answer")
         return self
 
 
