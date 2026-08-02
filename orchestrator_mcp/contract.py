@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 
 class ErrorCode(str, Enum):
@@ -75,6 +75,13 @@ class AskRequest(BaseModel):
     )
     temperature: float = Field(default=0.2, ge=0.0, le=1.0)
     max_output_tokens: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _pin_structured_temperature(self) -> AskRequest:
+        # Structured extraction has no business being creative.
+        if self.response_schema is not None:
+            self.temperature = 0.0
+        return self
 
 
 class AskResponse(BaseModel):

@@ -8,11 +8,14 @@ MCP surface, the config contract, and the response envelope.
 from __future__ import annotations
 
 import inspect
+import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Annotated, Any
 
+import jsonschema
 import litellm
 import yaml
 from litellm import Router
@@ -41,6 +44,15 @@ GROUNDING_DIRECTIVE = (
     "the first line, then briefly say what is missing. Do not guess."
 )
 
+SCHEMA_DIRECTIVE = (
+    "Reply with a single JSON object matching this schema and nothing else -- no "
+    "prose, no markdown fence:\n{schema}\n"
+    "Set `insufficient_context` to true and omit `answer` when the material given "
+    "does not support an answer. Never invent a value to satisfy the schema."
+)
+
+_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
 # Ordered most-specific first: several of these subclass BadRequestError/APIError.
 _ERROR_MAP: list[tuple[type[Exception], ErrorCode]] = [
     (litellm.ContextWindowExceededError, ErrorCode.CONTEXT_EXCEEDED),
@@ -53,8 +65,9 @@ _ERROR_MAP: list[tuple[type[Exception], ErrorCode]] = [
     (litellm.APIError, ErrorCode.UPSTREAM_ERROR),
 ]
 
-# Fields the tool exposes; `response_schema` arrives with structured mode in phase 3.
-_HIDDEN_FIELDS = {"response_schema"}
+
+class StructuredOutputError(ValueError):
+    """The reply was not usable as structured data. Never surfaced as an answer."""
 
 
 class ConfigError(ValueError):
@@ -112,15 +125,71 @@ def _classify(exc: Exception) -> ErrorCode:
     return ErrorCode.UPSTREAM_ERROR
 
 
-def _build_messages(prompt: str, context: str | None, system: str | None) -> list[dict[str, str]]:
-    """Fixed order, grounding directive last, so a caller's `system` cannot disable it."""
-    preamble = [p for p in (system.strip() if system else None, GROUNDING_DIRECTIVE if context else None) if p]
+def _build_messages(
+    prompt: str,
+    context: str | None,
+    system: str | None,
+    schema: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """Fixed order, our directives last, so a caller's `system` cannot disable them."""
+    preamble = [
+        p
+        for p in (
+            system.strip() if system else None,
+            GROUNDING_DIRECTIVE if context else None,
+            SCHEMA_DIRECTIVE.format(schema=json.dumps(schema)) if schema else None,
+        )
+        if p
+    ]
     messages: list[dict[str, str]] = []
     if preamble:
         messages.append({"role": "system", "content": "\n\n".join(preamble)})
     user = f"<context>\n{context}\n</context>\n\n{prompt}" if context else prompt
     messages.append({"role": "user", "content": user})
     return messages
+
+
+def _wrap_schema(user_schema: dict[str, Any]) -> dict[str, Any]:
+    """Wrap the caller's schema so abstention has somewhere to live.
+
+    `answer` stays optional: a model that cannot answer must not be forced to invent
+    a value that satisfies the schema.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "insufficient_context": {
+                "type": "boolean",
+                "description": "True when the provided material does not support an answer.",
+            },
+            "answer": user_schema,
+        },
+        "required": ["insufficient_context"],
+        "additionalProperties": False,
+    }
+
+
+def _parse_structured(
+    text: str | None, wrapper_schema: dict[str, Any]
+) -> tuple[dict[str, Any] | None, bool]:
+    """Parse and validate a structured reply. Raises rather than returning a guess."""
+    if not text or not text.strip():
+        raise StructuredOutputError("model returned an empty response")
+    try:
+        parsed = json.loads(_FENCE.sub("", text.strip()))
+    except json.JSONDecodeError as exc:
+        raise StructuredOutputError(f"response was not valid JSON: {exc}") from exc
+
+    try:
+        jsonschema.validate(parsed, wrapper_schema)
+    except jsonschema.ValidationError as exc:
+        path = "/".join(str(p) for p in exc.absolute_path) or "<root>"
+        raise StructuredOutputError(f"schema violation at {path}: {exc.message}") from exc
+
+    abstained = bool(parsed.get("insufficient_context"))
+    if not abstained and "answer" not in parsed:
+        raise StructuredOutputError("`answer` is required unless insufficient_context is true")
+    return (None if abstained else parsed["answer"]), abstained
 
 
 def _split_abstention(text: str | None) -> tuple[str | None, bool]:
@@ -182,29 +251,106 @@ class Orchestrator:
         except Exception as exc:
             return self._failed(capability, ErrorCode.INVALID_REQUEST, str(exc), started)
 
-        try:
-            response = await self.router.acompletion(
-                model=request.capability,
-                messages=_build_messages(request.prompt, request.context, request.system),
-                temperature=request.temperature,
-                max_tokens=request.max_output_tokens or self.limits.max_output_tokens,
-                timeout=self.limits.request_timeout_s,
+        wrapper: dict[str, Any] | None = None
+        if request.response_schema is not None:
+            try:
+                wrapper = _wrap_schema(self._checked_schema(request.response_schema))
+            except (jsonschema.SchemaError, ValueError) as exc:
+                return self._failed(request.capability, ErrorCode.INVALID_REQUEST, str(exc), started)
+
+        messages = _build_messages(request.prompt, request.context, request.system, wrapper)
+        # One shot in prose mode; structured mode gets bounded repair attempts.
+        attempts = 1 + (self.limits.schema_repair_attempts if wrapper else 0)
+
+        for attempt in range(attempts):
+            try:
+                response = await self.router.acompletion(
+                    model=request.capability,
+                    messages=messages,
+                    temperature=request.temperature,
+                    max_tokens=request.max_output_tokens or self.limits.max_output_tokens,
+                    timeout=self.limits.request_timeout_s,
+                    **self._structured_params(wrapper),
+                )
+            except Exception as exc:
+                return self._failed(request.capability, _classify(exc), str(exc), started)
+
+            if wrapper is None:
+                return self._succeeded(request.capability, response, started)
+
+            raw = response.choices[0].message.content
+            try:
+                data, abstained = _parse_structured(raw, wrapper)
+            except StructuredOutputError as exc:
+                if attempt + 1 < attempts:
+                    messages = [
+                        *messages,
+                        {"role": "assistant", "content": raw or ""},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"That reply was rejected: {exc}. Reply again with a single "
+                                "JSON object that matches the schema, and nothing else."
+                            ),
+                        },
+                    ]
+                    continue
+                return self._failed(
+                    request.capability, ErrorCode.SCHEMA_VALIDATION_FAILED, str(exc), started
+                )
+
+            return self._succeeded(
+                request.capability, response, started, data=data, abstained=abstained
             )
-        except Exception as exc:
-            return self._failed(request.capability, _classify(exc), str(exc), started)
 
-        return self._succeeded(request.capability, response, started)
+        raise AssertionError("unreachable: loop returns on every path")
 
-    def _succeeded(self, capability: str, response: Any, started: float) -> AskResponse:
+    @staticmethod
+    def _checked_schema(schema: dict[str, Any]) -> dict[str, Any]:
+        """Reject a malformed schema up front rather than as a confusing later failure."""
+        jsonschema.Draft202012Validator.check_schema(schema)
+        if schema.get("type") != "object":
+            raise ValueError("`response_schema` must describe an object (\"type\": \"object\")")
+        return schema
+
+    def _structured_params(self, wrapper: dict[str, Any] | None) -> dict[str, Any]:
+        """Ask the provider to enforce the schema where it can.
+
+        Provider-side enforcement is a convenience, not a guarantee -- the reply is
+        validated locally either way. `drop_params` keeps backends that do not
+        support `response_format` from failing the call outright.
+        """
+        if wrapper is None:
+            return {}
+        return {
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "orchestrator_answer", "schema": wrapper},
+            },
+            "drop_params": True,
+        }
+
+    def _succeeded(
+        self,
+        capability: str,
+        response: Any,
+        started: float,
+        data: dict[str, Any] | None = None,
+        abstained: bool | None = None,
+    ) -> AskResponse:
         choice = response.choices[0]
         hidden = getattr(response, "_hidden_params", {}) or {}
         served_by = self._capability_of.get(hidden.get("model_id"))
-        content, abstained = _split_abstention(choice.message.content)
         usage = getattr(response, "usage", None)
+        if abstained is None:  # prose mode
+            content, abstained = _split_abstention(choice.message.content)
+        else:  # structured mode: the answer lives in `data`, never in `content`
+            content = None
 
         return AskResponse(
             ok=True,
             content=content,
+            data=data,
             insufficient_context=abstained,
             capability_requested=capability,
             model_used=hidden.get("litellm_model_name") or response.model,
@@ -244,7 +390,6 @@ def _tool_signature(request_model: type) -> inspect.Signature:
             default=inspect.Parameter.empty if field.is_required() else field.default,
         )
         for name, field in request_model.model_fields.items()
-        if name not in _HIDDEN_FIELDS
     ]
     return inspect.Signature(parameters, return_annotation=AskResponse)
 
