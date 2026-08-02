@@ -192,6 +192,37 @@ def _parse_structured(
     return (None if abstained else parsed["answer"]), abstained
 
 
+# A deny-list, not an allow-list: LiteLLM normalizes `finish_reason` to the OpenAI
+# set, so this covers what it emits, and an unfamiliar reason from a custom provider
+# must not fail an otherwise complete answer.
+_REFUSED_FINISH: dict[str, tuple[ErrorCode, str]] = {
+    "length": (ErrorCode.OUTPUT_TRUNCATED, "the model hit the output limit mid-answer"),
+    "max_tokens": (ErrorCode.OUTPUT_TRUNCATED, "the model hit the output limit mid-answer"),
+    "content_filter": (ErrorCode.CONTENT_FILTERED, "the provider filtered this completion"),
+}
+
+
+def _completion_of(response: Any) -> tuple[str | None, tuple[ErrorCode, str] | None]:
+    """The one place a provider's reply shape is trusted. Returns (content, refusal).
+
+    Everything past this point may assume a complete, non-empty completion exists. A
+    truncated answer is dropped rather than returned: a half answer that reads as a
+    whole one is the failure this server exists to prevent.
+    """
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return None, (ErrorCode.UPSTREAM_ERROR, "provider returned no completion")
+
+    choice = choices[0]
+    if refusal := _REFUSED_FINISH.get(getattr(choice, "finish_reason", None) or ""):
+        return None, refusal
+
+    content = getattr(getattr(choice, "message", None), "content", None)
+    if content is None or not content.strip():
+        return None, (ErrorCode.UPSTREAM_ERROR, "provider returned an empty completion")
+    return content, None
+
+
 def _split_abstention(text: str | None) -> tuple[str | None, bool]:
     if text and text.lstrip().startswith(ABSTAIN_SENTINEL):
         remainder = text.lstrip()[len(ABSTAIN_SENTINEL) :].lstrip(" :\n")
@@ -275,17 +306,20 @@ class Orchestrator:
             except Exception as exc:
                 return self._failed(request.capability, _classify(exc), str(exc), started)
 
-            if wrapper is None:
-                return self._succeeded(request.capability, response, started)
+            raw, refusal = _completion_of(response)
+            if refusal is not None:
+                return self._failed(request.capability, *refusal, started)
 
-            raw = response.choices[0].message.content
+            if wrapper is None:
+                return self._succeeded(request.capability, response, started, content=raw)
+
             try:
                 data, abstained = _parse_structured(raw, wrapper)
             except StructuredOutputError as exc:
                 if attempt + 1 < attempts:
                     messages = [
                         *messages,
-                        {"role": "assistant", "content": raw or ""},
+                        {"role": "assistant", "content": raw},
                         {
                             "role": "user",
                             "content": (
@@ -300,7 +334,7 @@ class Orchestrator:
                 )
 
             return self._succeeded(
-                request.capability, response, started, data=data, abstained=abstained
+                request.capability, response, started, content=raw, data=data, abstained=abstained
             )
 
         raise AssertionError("unreachable: loop returns on every path")
@@ -335,15 +369,15 @@ class Orchestrator:
         capability: str,
         response: Any,
         started: float,
+        content: str | None,
         data: dict[str, Any] | None = None,
         abstained: bool | None = None,
     ) -> AskResponse:
-        choice = response.choices[0]
         hidden = getattr(response, "_hidden_params", {}) or {}
         served_by = self._capability_of.get(hidden.get("model_id"))
         usage = getattr(response, "usage", None)
         if abstained is None:  # prose mode
-            content, abstained = _split_abstention(choice.message.content)
+            content, abstained = _split_abstention(content)
         else:  # structured mode: the answer lives in `data`, never in `content`
             content = None
 
@@ -355,7 +389,7 @@ class Orchestrator:
             capability_requested=capability,
             model_used=hidden.get("litellm_model_name") or response.model,
             fallback_used=served_by is not None and served_by != capability,
-            finish_reason=choice.finish_reason,
+            finish_reason=getattr(response.choices[0], "finish_reason", None),
             usage=Usage(
                 prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
                 completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
