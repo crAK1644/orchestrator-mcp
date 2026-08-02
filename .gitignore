@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+
+# Real config carries endpoints and key references; only the example is tracked.
+config.yaml

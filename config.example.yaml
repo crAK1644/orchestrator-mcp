@@ -1,0 +1,54 @@
+# Orchestrator MCP config.
+#
+# A capability is just a LiteLLM `model_name` alias group. Several deployments can
+# share one name; the Router load-balances, retries, and cools down across them.
+# Pointing a capability at your own deployment is an entry in `model_list` -- there
+# is no code to change.
+#
+# This file is LiteLLM's own config schema, so `litellm --config config.yaml` also
+# runs on it unchanged.
+
+capabilities:
+  coding: "Writing, refactoring, reviewing, and debugging code."
+  research: "Open-ended research, synthesis, and long-context reading."
+  fast: "Cheap, low-latency answers. Classification, extraction, short replies."
+
+model_list:
+  # --- coding -------------------------------------------------------------
+  - model_name: coding
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Bring your own: same capability, your deployment. Delete or edit freely.
+  # - model_name: coding
+  #   litellm_params:
+  #     model: openai/qwen-coder
+  #     api_base: http://vllm.internal:8000/v1
+  #     api_key: os.environ/LOCAL_VLLM_KEY
+
+  # --- research -----------------------------------------------------------
+  - model_name: research
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  # --- fast ---------------------------------------------------------------
+  - model_name: fast
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+router_settings:
+  num_retries: 2
+  cooldown_time: 60
+  fallbacks:
+    - coding: [research]
+    - research: [coding]
+
+limits:
+  max_prompt_chars: 100000
+  max_context_chars: 400000
+  max_output_tokens: 4096
+  request_timeout_s: 120
+  schema_repair_attempts: 1
