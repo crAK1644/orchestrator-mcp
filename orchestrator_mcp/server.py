@@ -371,7 +371,7 @@ class Orchestrator:
 
             raw, refusal = _completion_of(response)
             if refusal is not None:
-                return self._failed(request.capability, *refusal, started)
+                return self._failed(request.capability, *refusal, started, response)
 
             if wrapper is None:
                 return self._succeeded(request.capability, response, started, content=raw)
@@ -393,7 +393,11 @@ class Orchestrator:
                     ]
                     continue
                 return self._failed(
-                    request.capability, ErrorCode.SCHEMA_VALIDATION_FAILED, str(exc), started
+                    request.capability,
+                    ErrorCode.SCHEMA_VALIDATION_FAILED,
+                    str(exc),
+                    started,
+                    response,
                 )
 
             return self._succeeded(
@@ -468,10 +472,23 @@ class Orchestrator:
             latency_ms=int((time.perf_counter() - started) * 1000),
         ).check_invariants()
 
-    def _failed(self, capability: str, code: ErrorCode, message: str, started: float) -> AskResponse:
+    def _failed(
+        self,
+        capability: str,
+        code: ErrorCode,
+        message: str,
+        started: float,
+        response: Any = None,
+    ) -> AskResponse:
+        # `response` is present only when a provider actually replied and the reply was
+        # rejected. Its `finish_reason` is diagnosis, not answer -- knowing the provider
+        # said "length" is the difference between raising `max_output_tokens` and
+        # hunting a bug -- so it rides along while `content` and `data` stay null.
+        choices = getattr(response, "choices", None) or []
         return AskResponse(
             ok=False,
             capability_requested=capability,
+            finish_reason=getattr(choices[0], "finish_reason", None) if choices else None,
             # One truncation for every source: provider exceptions embed the request
             # body, pydantic echoes the caller's input, validators quote the reply.
             error=ErrorInfo(code=code, message=message[:MAX_ERROR_CHARS]),
