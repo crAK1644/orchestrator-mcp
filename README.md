@@ -209,6 +209,16 @@ Keep `config.yaml` out of your commits.
 If you are adding a capability to your own setup, you do not need a pull request: it
 is a `model_list` entry.
 
+### Releasing
+
+Bump `version` in `pyproject.toml`, then publish a GitHub Release tagged `vX.Y.Z`.
+[`release.yml`](.github/workflows/release.yml) runs the suite, checks the tag against
+the packaged version, and uploads to PyPI.
+
+There is no API token in this repo. PyPI is configured as a Trusted Publisher for this
+workflow, so it mints a short-lived credential from the job's OIDC identity — nothing
+to store, nothing to rotate, nothing to leak.
+
 ## Not included
 
 Semantic/embedding routing and RouteLLM-style predictive routing (the caller states
