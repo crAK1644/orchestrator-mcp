@@ -70,8 +70,8 @@ on it unchanged.
 | `capability` | Enum, built from your config. Bad values are rejected by the protocol layer. |
 | `prompt` | Required. Capped by `limits.max_prompt_chars`. |
 | `context` | Source material. When set, the model is told to answer only from it and to abstain otherwise. |
-| `system` | Extra instructions. Applied *before* the server's own directives, so it cannot disable them. |
-| `response_schema` | JSON Schema (`"type": "object"`). Switches on structured mode. |
+| `system` | Extra instructions. Applied *before* the server's own directives, so it cannot disable them. Capped by `limits.max_system_chars`. |
+| `response_schema` | JSON Schema (`"type": "object"`). Switches on structured mode. Capped by `limits.max_schema_chars` — it is inlined into the prompt verbatim. |
 | `temperature` | Pinned to `0` whenever `response_schema` is set. |
 | `max_output_tokens` | Capped by `limits.max_output_tokens`. |
 
@@ -99,8 +99,9 @@ Every call returns the same envelope:
 
 `error.code` comes from a closed set — `invalid_request`, `no_deployment`,
 `upstream_error`, `rate_limited`, `context_exceeded`, `schema_validation_failed`,
-`timeout`, `content_filtered`, `auth_failed` — so callers branch on a value instead of
-matching substrings.
+`timeout`, `content_filtered`, `auth_failed`, `output_truncated` — so callers branch
+on a value instead of matching substrings. `error.message` is bounded at 500
+characters and never quotes the rejected output back at you.
 
 ### `list_capabilities`
 
@@ -118,6 +119,16 @@ What it does enforce:
 - **Bounded repair.** An invalid structured reply gets `limits.schema_repair_attempts`
   retries carrying the validator's complaint, then fails as
   `schema_validation_failed`. Never a best-effort half-parsed object.
+- **An unfinished answer is a failure, not a short answer.** A completion cut off by
+  the token limit comes back as `output_truncated` with `content: null`, and one the
+  provider filtered as `content_filtered`. Neither is returned as prose, because a
+  half answer reads exactly like a whole one.
+- **The error tells you what broke, not what the model wrote.** `error.message` gives
+  the failing path and constraint (`schema violation at answer/city: failed the
+  'maxLength' constraint`) and is capped at 500 characters. The rejected value itself
+  goes only back to the model that produced it, in the repair turn.
+- **`request_timeout_s` bounds the call.** Retries, cross-capability fallback, and
+  repair turns all spend from one budget, so `120` cannot become 360.
 - **Abstention is typed.** With `context` set, the model is given an explicit way to
   say the material does not support an answer; it arrives as `insufficient_context`,
   not as prose you have to pattern-match.
@@ -130,12 +141,15 @@ What it does enforce:
   one.
 - **The caller cannot smuggle a model.** There is no free-form model parameter, only
   the capability enum. Routing stays operator-controlled.
-- **Boundaries reject early.** Unknown capability, oversized prompt, empty prompt, and
-  malformed `response_schema` all fail before a provider is called.
+- **Boundaries reject early.** Unknown capability, oversized prompt or `system`, empty
+  prompt, and a malformed or oversized `response_schema` all fail before a provider is
+  called. A nonsensical `limits:` block fails at startup instead.
 
-One known gap: the MCP SDK drops unknown arguments before the handler sees them, so an
-unrecognized key is ignored at the protocol layer rather than rejected. Direct calls
-into `Orchestrator.ask` do reject it.
+Two known gaps. The MCP SDK drops unknown arguments before the handler sees them, so
+an unrecognized key is ignored at the protocol layer rather than rejected — direct
+calls into `Orchestrator.ask` do reject it. And a `response_schema` containing a
+pathological `pattern` can burn CPU on the event loop during validation: the schema is
+size-capped but not analyzed, so treat schema authorship as a trusted operation.
 
 ## Tests
 
@@ -143,8 +157,9 @@ into `Orchestrator.ask` do reject it.
 uv run pytest -q
 ```
 
-37 tests, no network — deployments are stubbed with LiteLLM's `mock_response`,
-including the rate-limit-then-fallback path.
+54 tests, no network — deployments are stubbed with LiteLLM's `mock_response`, and the
+shapes it cannot express (no choices, null content, a truncated or filtered reply) are
+stubbed as raw `ModelResponse` objects. Includes the rate-limit-then-fallback path.
 
 ## Not included
 
