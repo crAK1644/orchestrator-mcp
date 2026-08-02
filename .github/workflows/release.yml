@@ -11,6 +11,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
+      # Declaring this block replaces the defaults rather than extending them,
+      # so checkout needs `contents: read` spelled out or it 404s on its own repo.
+      contents: read
       # The OIDC token PyPI verifies. Without this the job cannot authenticate.
       id-token: write
     steps:
