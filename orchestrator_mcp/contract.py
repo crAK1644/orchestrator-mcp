@@ -7,10 +7,18 @@ contract a caller reads and the contract we validate against cannot drift apart.
 
 from __future__ import annotations
 
+import json
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    create_model,
+    field_validator,
+    model_validator,
+)
 
 
 class ErrorCode(str, Enum):
@@ -75,15 +83,32 @@ class AskRequest(BaseModel):
     system: str | None = Field(
         default=None, description="Extra instructions prepended to the conversation."
     )
-    response_schema: dict[str, Any] | None = Field(
+    # A string is accepted as well as an object: some clients build their tool
+    # definitions with a strict function-calling schema that will not carry a
+    # free-form object, and those callers can send the schema as JSON text.
+    response_schema: dict[str, Any] | str | None = Field(
         default=None,
         description=(
-            "JSON Schema for a structured answer. When set, the reply is validated "
-            "against it and returned in `data`; `content` stays null."
+            "JSON Schema for a structured answer, as an object or as a JSON string. "
+            "When set, the reply is validated against it and returned in `data`; "
+            "`content` stays null."
         ),
     )
     temperature: float = Field(default=0.2, ge=0.0, le=1.0)
     max_output_tokens: int | None = Field(default=None, ge=1)
+
+    @field_validator("response_schema", mode="before")
+    @classmethod
+    def _parse_schema_string(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"`response_schema` was a string but not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("`response_schema` must decode to an object")
+        return parsed
 
     @model_validator(mode="after")
     def _pin_structured_temperature(self) -> AskRequest:
@@ -135,6 +160,19 @@ class CapabilitiesResponse(BaseModel):
     capabilities: list[CapabilityInfo]
 
 
+def _always_an_enum(capabilities: list[str]):
+    """Pydantic emits `const` for a one-element Literal, and a single-capability
+    config is a perfectly normal config. Clients that translate an MCP schema into a
+    function-calling definition understand `enum` far more widely than `const`."""
+
+    def patch(schema: dict[str, Any]) -> None:
+        schema.pop("const", None)
+        schema["type"] = "string"
+        schema["enum"] = list(capabilities)
+
+    return patch
+
+
 def build_ask_request(capabilities: list[str], limits: Limits) -> type[AskRequest]:
     """Specialize `AskRequest` to the configured capabilities and limits.
 
@@ -150,7 +188,10 @@ def build_ask_request(capabilities: list[str], limits: Limits) -> type[AskReques
         __base__=AskRequest,
         capability=(
             Literal[tuple(capabilities)],  # type: ignore[valid-type]
-            Field(description="Which capability should handle this request."),
+            Field(
+                description="Which capability should handle this request.",
+                json_schema_extra=_always_an_enum(capabilities),
+            ),
         ),
         prompt=(
             str,
