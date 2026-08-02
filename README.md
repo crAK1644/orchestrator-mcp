@@ -56,6 +56,26 @@ JSON text, so a client that reads only one of the two still gets the whole envel
 > client's environment — not your shell's. If a capability returns `auth_failed` while
 > the same config works from a terminal, add the key to the client's `env` block.
 
+### Homebrew
+
+```bash
+brew tap crAK1644/tap
+brew install orchestrator-mcp-server
+```
+
+That puts `orchestrator-mcp-server` on your `PATH`, so a client can call it directly
+instead of going through `uvx`:
+
+```bash
+claude mcp add orchestrator --env ORCHESTRATOR_CONFIG=$PWD/config.yaml -- orchestrator-mcp-server
+```
+
+> **Note**
+> Homebrew builds every Python dependency from source, including several Rust crates,
+> so the first install takes around fifteen minutes. `uvx orchestrator-mcp-server`
+> takes a prebuilt wheel and runs in about a second — prefer it unless you specifically
+> want the binary managed by brew.
+
 ### From a checkout
 
 ```bash
@@ -73,6 +93,7 @@ fast path to a specific answer.
 
 **Getting started**
 - [Quick Start](#quick-start) — install into Claude Code or Codex
+- [Homebrew](#homebrew) — `brew tap crAK1644/tap`
 - [Configuration](#configuration) — capabilities, deployments, limits
 - [`config.example.yaml`](config.example.yaml) — a commented starting point
 - [System Requirements](#system-requirements)
