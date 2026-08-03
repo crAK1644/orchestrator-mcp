@@ -20,11 +20,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import shutil
 import signal
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
+
+from pydantic import ValidationError
 
 from ..config import AgentConfig
 from ..contract import ConsultationContent, RequiredAction, SourceMode
@@ -34,6 +38,10 @@ from ...contract import Usage
 
 # How long a child gets to exit on SIGTERM before the group is killed outright.
 GRACE_S = 2.0
+
+# One event line can carry a whole answer, and the default 64 KiB would raise
+# `LimitOverrunError` on it rather than returning a truncated line.
+STREAM_LINE_LIMIT = 16 * 1024 * 1024
 
 # Passed through to a consulted CLI. `HOME` because that is where its own saved
 # credentials live, the rest because a process without them misbehaves in ways
@@ -95,7 +103,11 @@ class ConsultAdapter(Protocol):
     async def preflight(self, agent: AgentConfig) -> AgentStatus: ...
 
     async def start(
-        self, agent: AgentConfig, prompt: CompiledPrompt, source_mode: SourceMode
+        self,
+        agent: AgentConfig,
+        prompt: CompiledPrompt,
+        source_mode: SourceMode,
+        session_id: str | None = None,
     ) -> AdapterResult: ...
 
     async def resume(
@@ -105,6 +117,58 @@ class ConsultAdapter(Protocol):
         prompt: CompiledPrompt,
         source_mode: SourceMode,
     ) -> AdapterResult: ...
+
+
+def parse_content(text: str) -> ConsultationContent:
+    """Validate a reply against the contract, or refuse it.
+
+    Fences are stripped first. Both CLIs are told to emit bare JSON through a schema
+    flag, but a model that wraps it in ```json anyway has answered correctly and
+    formatted badly, and failing that consultation would be pedantry.
+    """
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        body = stripped.split("\n", 1)[-1]
+        stripped = body.rsplit("```", 1)[0].strip() if "```" in body else body.strip()
+
+    try:
+        payload = json.loads(stripped)
+    except ValueError as exc:
+        raise AdapterError(
+            ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
+            f"the agent did not return JSON: {exc}",
+        ) from exc
+
+    try:
+        return ConsultationContent.model_validate(payload)
+    except ValidationError as exc:
+        raise AdapterError(
+            ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
+            f"the agent's reply does not match the consultation contract: {exc}",
+        ) from exc
+
+
+def check_model(agent: AgentConfig, reported: str | None) -> str:
+    """Reject a substituted model, but only when the runtime actually said which.
+
+    Containment, not equality, and in both directions: an operator configures `opus`
+    and the CLI reports `claude-opus-5`. What this is for is the runtime's own silent
+    fallback -- an answer from a model nobody chose, presented as the one they did.
+    """
+    if not reported:
+        # No metadata is not evidence of substitution. The spec asks for this check
+        # "when reliable model metadata is available", and inventing a failure from
+        # its absence would make every quiet release of either CLI an outage.
+        return agent.model
+
+    configured, actual = agent.model.strip().lower(), reported.strip().lower()
+    if configured not in actual and actual not in configured:
+        raise AdapterError(
+            ConsultErrorCode.CONFIGURED_MODEL_UNAVAILABLE,
+            f"agent `{agent.agent_id}` is configured for model `{agent.model}` but the "
+            f"answer came from `{reported}`",
+        )
+    return reported
 
 
 def resolve_command(agent: AgentConfig) -> str:
@@ -166,6 +230,84 @@ async def run_process(
     return ProcessResult(
         returncode=process.returncode or 0,
         stdout=stdout.decode(errors="replace"),
+        stderr=stderr.decode(errors="replace"),
+    )
+
+
+async def run_streaming(
+    argv: list[str],
+    stdin_text: str | None,
+    timeout_s: float,
+    on_line: Callable[[str], bool],
+    env: dict[str, str] | None = None,
+    cwd: str | os.PathLike[str] | None = None,
+) -> ProcessResult:
+    """Run a child, handing each stdout line to `on_line` as it arrives.
+
+    `on_line` returning False stops the run and kills the group. That is the only
+    way to bound a web-mode consultation from here: Claude Code 2.1.220 has no
+    `--max-turns`, so the turn budget is counted in the event stream and enforced
+    by ending the process, not by asking it to stop.
+    """
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env if env is not None else child_env(),
+            cwd=cwd,
+            start_new_session=True,
+            limit=STREAM_LINE_LIMIT,
+        )
+    except OSError as exc:
+        raise AdapterError(
+            ConsultErrorCode.TRANSPORT_ERROR, f"could not start `{argv[0]}`: {exc}"
+        ) from exc
+
+    assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+    # Drained in the background: a child that fills the stderr pipe while we are
+    # reading stdout would deadlock against a buffer nobody is emptying.
+    stderr_task = asyncio.create_task(process.stderr.read())
+    lines: list[str] = []
+
+    try:
+        async with asyncio.timeout(timeout_s):
+            if stdin_text is not None:
+                process.stdin.write(stdin_text.encode())
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    await process.stdin.drain()
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                process.stdin.close()
+
+            stopped = False
+            async for raw in process.stdout:
+                lines.append(raw.decode(errors="replace"))
+                if not on_line(lines[-1]):
+                    stopped = True
+                    break
+
+            if stopped:
+                await _terminate(process)
+            else:
+                await process.wait()
+    except BaseException as exc:
+        # Everything, not only the timeout: `on_line` rejecting an event is a normal
+        # outcome here, and a child left running after it would keep spending the
+        # user's account with nobody reading the answer.
+        await _terminate(process)
+        stderr_task.cancel()
+        if isinstance(exc, TimeoutError):
+            raise AdapterError(
+                ConsultErrorCode.TIMEOUT,
+                f"`{argv[0]}` did not answer within {timeout_s:g}s and was terminated",
+            ) from exc
+        raise
+
+    stderr = await stderr_task
+    return ProcessResult(
+        returncode=process.returncode or 0,
+        stdout="".join(lines),
         stderr=stderr.decode(errors="replace"),
     )
 
