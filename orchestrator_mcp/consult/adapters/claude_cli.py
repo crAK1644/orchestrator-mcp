@@ -156,6 +156,15 @@ class ClaudeCliAdapter:
             result, envelope = await self._run_web(argv, prompt)
         else:
             result = await run_process(argv, prompt.payload_json, self.timeout_s, env=child_env())
+            # Before the envelope is even parsed. A CLI that exited nonzero said the
+            # run failed, and a well-formed envelope on stdout does not overrule it --
+            # that answer was abandoned, not delivered. Web mode is exempt because we
+            # are the ones who kill it, and a killed child never exits zero.
+            if result.returncode != 0:
+                raise AdapterError(
+                    ConsultErrorCode.AGENT_UNAVAILABLE,
+                    f"the agent exited {result.returncode}: {result.stderr.strip()[:400]}",
+                )
             envelope = _envelope(result)
 
         return self._result(agent, envelope, result, session_id)
@@ -184,7 +193,11 @@ class ClaudeCliAdapter:
             _check_event(event)
             if event.get("type") == "assistant":
                 state["turns"] += 1
-                return state["turns"] < self.web_turn_limit
+                # `<=`, so the turn that spends the last of the budget is allowed to
+                # finish and emit its result event. Stopping *at* the limit would kill
+                # the child one event before the answer it had already produced, and
+                # make `web_turn_limit: 1` mean "no web consultation is possible".
+                return state["turns"] <= self.web_turn_limit
             return True
 
         result = await run_streaming(argv, prompt.payload_json, self.timeout_s, on_line, env=child_env())
@@ -196,7 +209,7 @@ class ClaudeCliAdapter:
         # Killed at the budget before it produced a result envelope: the consultation
         # has no answer, and inventing one from the partial turns is exactly the
         # ghostwriting the envelope invariants exist to prevent.
-        if state["turns"] >= self.web_turn_limit:
+        if state["turns"] > self.web_turn_limit:
             raise AdapterError(
                 ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
                 f"the agent used its {self.web_turn_limit}-turn web budget without "

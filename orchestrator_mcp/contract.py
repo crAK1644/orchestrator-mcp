@@ -8,6 +8,7 @@ contract a caller reads and the contract we validate against cannot drift apart.
 from __future__ import annotations
 
 import json
+import re
 from enum import Enum
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -46,6 +47,34 @@ class ErrorCode(str, Enum):
 
 
 MAX_ERROR_CHARS = 500
+
+# Credential shapes, scrubbed from every error message before it is returned. These
+# messages quote their source verbatim -- a provider exception, a CLI's stderr -- and
+# some providers echo the request they rejected, headers included. The environment
+# variable name reaching a caller is a documented cost of useful diagnostics; the
+# value it held is not.
+_SECRETS = re.compile(
+    r"""(?xi)
+    (?: sk-ant-|sk-|rk-|xai-|gsk_|ghp_|github_pat_|AIza|AKIA|ASIA|xox[abposr]-|
+        eyJ[A-Za-z0-9_-]{6,}\. )[A-Za-z0-9._\-]{8,}
+    | \b(?:bearer|basic)\s+[A-Za-z0-9._\-+/=]{12,}
+    | \b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret)
+      # The optional quote is what a JSON body looks like: `"api_key": "..."`.
+      \b["']?\s*[:=]\s*["']?[A-Za-z0-9._\-+/=]{8,}
+    | -{5}BEGIN[ A-Z]*PRIVATE KEY-{5}.*?-{5}END[ A-Z]*PRIVATE KEY-{5}
+    """,
+    re.DOTALL,
+)
+
+
+def redact(text: str) -> str:
+    """Replace anything credential-shaped with a marker.
+
+    Best effort by construction -- a secret with no recognizable shape survives it --
+    so it is a second line of defence behind "do not put credentials where an error
+    message can reach", never a licence to forward these messages anywhere.
+    """
+    return _SECRETS.sub("[redacted]", text)
 
 
 class ErrorInfo(BaseModel):

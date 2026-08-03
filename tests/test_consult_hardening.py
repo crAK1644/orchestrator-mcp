@@ -56,6 +56,11 @@ def claude_agent(**overrides) -> AgentConfig:
         ("gpt-5.6", "gpt-5.6-nano"),
         ("claude-opus-5", "claude-haiku-4-5"),
         ("opus", "sonnet"),
+        # A version number has no end a substring can see: `gpt-5.1` sits inside
+        # `gpt-5.10`, and `claude-sonnet-4` inside `claude-sonnet-4-5`.
+        ("gpt-5.1", "gpt-5.10"),
+        ("claude-sonnet-4", "claude-sonnet-4-5"),
+        ("claude-opus-4-1", "claude-opus-4"),
     ],
 )
 def test_a_smaller_sibling_is_not_the_configured_model(configured, reported):
@@ -71,6 +76,9 @@ def test_a_smaller_sibling_is_not_the_configured_model(configured, reported):
         ("claude-opus-5", "claude-opus-5"),
         ("gpt-5.6-sol", "gpt-5.6-sol"),
         ("gpt-5-mini", "gpt-5-mini"),
+        # A dated snapshot of the pinned model, which is the same model.
+        ("claude-sonnet-4-5", "claude-sonnet-4-5-20250929"),
+        ("opus", "claude-opus-4-1-20250805"),
     ],
 )
 def test_a_longer_spelling_of_the_same_model_is_still_that_model(configured, reported):
@@ -321,3 +329,98 @@ async def test_free_text_is_capped_before_it_is_copied_five_times(
     assert response.ok is False
     assert response.error.code is ConsultErrorCode.INVALID_REQUEST
     assert response.consultation_id is None
+
+
+# --- the web turn budget ----------------------------------------------------
+
+
+def web_stream(turns: int, *, result: bool = True) -> str:
+    events = [{"type": "system", "subtype": "init", "tools": ["WebSearch", "WebFetch"]}]
+    events += [{"type": "assistant", "message": {"content": []}} for _ in range(turns)]
+    if result:
+        events.append(json.loads(envelope()))
+    return "\n".join(json.dumps(event) for event in events) + "\n"
+
+
+@pytest.mark.parametrize("limit", [1, 3])
+async def test_the_turn_that_spends_the_last_of_the_budget_still_answers(
+    tmp_path, monkeypatch, limit
+):
+    """Stopping *at* the limit would kill the child one event before the answer it had
+    already produced, and make `web_turn_limit: 1` mean no web consultation at all."""
+    agent_stub.install("claude", tmp_path, monkeypatch, runs=[{"stdout": web_stream(limit)}])
+    adapter = ClaudeCliAdapter(timeout_s=30, web_turn_limit=limit)
+
+    result = await adapter.start(claude_agent(), compile_prompt(
+        capability="research", source_mode=SourceMode.WEB, task="q", context=None), SourceMode.WEB)
+    assert result.content.answer == CONTENT["answer"]
+
+
+async def test_a_turn_past_the_budget_is_stopped_without_an_answer(tmp_path, monkeypatch):
+    agent_stub.install(
+        "claude", tmp_path, monkeypatch, runs=[{"stdout": web_stream(4, result=False)}]
+    )
+    adapter = ClaudeCliAdapter(timeout_s=30, web_turn_limit=3)
+
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(claude_agent(), compile_prompt(
+            capability="research", source_mode=SourceMode.WEB, task="q", context=None), SourceMode.WEB)
+    assert exc.value.code is ConsultErrorCode.PROTOCOL_VALIDATION_FAILED
+    assert "3-turn web budget" in str(exc.value)
+
+
+# --- a child that floods the other pipe -------------------------------------
+
+
+async def test_a_streaming_child_cannot_spend_the_output_cap_twice(tmp_path, monkeypatch):
+    """stderr is drained in the background so it cannot deadlock stdout. Draining it
+    without a cap would let a child send the whole budget again down a stream nobody
+    is even parsing."""
+    monkeypatch.setattr(base, "MAX_OUTPUT_BYTES", 4096)
+    agent_stub.install(
+        "claude", tmp_path, monkeypatch,
+        runs=[{"stdout": "{}\n", "stderr": "x" * 200_000}],
+    )
+
+    with pytest.raises(AdapterError) as exc:
+        await run_streaming(
+            [str(tmp_path / "bin" / "claude")], None, timeout_s=30, on_line=lambda _: True
+        )
+    assert exc.value.code is ConsultErrorCode.PROTOCOL_VALIDATION_FAILED
+
+
+# --- nothing escapes as an exception ----------------------------------------
+
+
+async def test_an_unusable_database_path_is_an_envelope_not_a_traceback(tmp_path, host_claude):
+    """Opening the store happens inside the boundary: a `database_path` under a
+    regular file raises `FileExistsError`, which crossed the MCP boundary bare."""
+    (tmp_path / "afile").write_text("not a directory")
+    config = ConsultConfig(**consult_block(database_path=str(tmp_path / "afile" / "c.sqlite3")))
+    service = StubService(config, "claude", adapter=StubAdapter())
+
+    response = await service.consult(capability="coding", prompt="q")
+
+    assert response.ok is False
+    assert response.error.code is ConsultErrorCode.TRANSPORT_ERROR
+    assert response.content is None
+    # The type and nothing else: these messages are quoted back to a caller that may
+    # not be the operator, and an operational exception carries paths.
+    assert str(tmp_path) not in response.error.message
+
+
+async def test_a_credential_in_an_error_message_is_redacted(tmp_path, host_claude):
+    """Second line of defence. A CLI that echoes its own argv into stderr, or a
+    provider that quotes the request it rejected, puts a token where a caller reads."""
+    config = ConsultConfig(**consult_block(database_path=str(tmp_path / "c.sqlite3")))
+    adapter = StubAdapter(error=AdapterError(
+        ConsultErrorCode.AGENT_UNAVAILABLE,
+        "the agent exited 1: Authorization: Bearer sk-ant-api03-AAAABBBBCCCCDDDD rejected",
+    ))
+    service = await StubService(config, "claude", adapter=adapter).open()
+
+    response = await service.consult(capability="coding", prompt="q")
+
+    assert response.ok is False
+    assert "sk-ant-api03" not in response.error.message
+    assert "[redacted]" in response.error.message

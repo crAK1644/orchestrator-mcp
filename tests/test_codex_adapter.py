@@ -109,7 +109,10 @@ async def test_the_invocation_is_isolated(tmp_path, monkeypatch, adapter):
     for flag in ("--strict-config", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check"):
         assert flag in argv
     assert argv[argv.index("--sandbox") + 1] == "read-only"
-    assert argv[argv.index("--ask-for-approval") + 1] == "never"
+    # As a config key, not `--ask-for-approval`: a 0.146 build rejects that flag on
+    # `exec` outright, which would fail every consultation.
+    assert '--ask-for-approval' not in argv
+    assert 'approval_policy="never"' in argv
     assert "agents.enabled=false" in argv and "features.shell_tool=false" in argv
     assert "web_search=disabled" in argv
     assert argv[-1] == "-"

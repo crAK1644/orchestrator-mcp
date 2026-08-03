@@ -126,13 +126,16 @@ class CodexCliAdapter:
                 "--skip-git-repo-check",
                 "--sandbox",
                 "read-only",
-                "--ask-for-approval",
-                "never",
                 "--model",
                 agent.model,
                 "--json",
                 "--output-schema",
                 str(schema),
+                # As a config key and not `--ask-for-approval`, which a 0.146 build
+                # rejects as an unexpected argument on `exec`. Config keys outlive
+                # flags, and this one is what the flag set anyway.
+                "-c",
+                'approval_policy="never"',
                 "-c",
                 "agents.enabled=false",
                 "-c",

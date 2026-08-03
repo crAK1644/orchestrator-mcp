@@ -37,6 +37,7 @@ from .contract import (
     Limits,
     Usage,
     build_ask_request,
+    redact,
 )
 from .consult.config import host_runtime, load_consult_config
 from .consult.contract import ConsultAgentsResponse, ConsultationRecord, ConsultResponse
@@ -538,7 +539,7 @@ class Orchestrator:
             finish_reason=getattr(choices[0], "finish_reason", None) if choices else None,
             # One truncation for every source: provider exceptions embed the request
             # body, pydantic echoes the caller's input, validators quote the reply.
-            error=ErrorInfo(code=code, message=message[:MAX_ERROR_CHARS]),
+            error=ErrorInfo(code=code, message=redact(message)[:MAX_ERROR_CHARS]),
             latency_ms=int((time.perf_counter() - started) * 1000),
         ).check_invariants()
 
@@ -611,9 +612,9 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
 
 def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
     async def consult(**kwargs: Any) -> ConsultResponse:
-        # Opened on first use rather than at boot: a server whose consult path is
-        # configured but never called should not create a database for it.
-        await service.open()
+        # `service.consult` opens the store itself, on first use rather than at boot:
+        # a server whose consult path is configured but never called should not create
+        # a database for it, and an open that fails is an envelope like any other.
         return await service.consult(**kwargs)
 
     consult.__name__ = "consult"
