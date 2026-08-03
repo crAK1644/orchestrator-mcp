@@ -355,16 +355,25 @@ carries text that could read as an answer.
   resume, so a stored consultation cannot become a loop back into the caller.
 - **No silent substitution.** Not of the agent — there is no fallback candidate — and not
   of the model: both adapters check what the CLI reports it actually used against what
-  you configured, and disagreement is `configured_model_unavailable`.
+  you configured, and disagreement is `configured_model_unavailable`. Names are compared
+  as token runs, so `claude-sonnet-4` does not match `claude-sonnet-4-5` and `gpt-5.1`
+  does not match `gpt-5.10`; a dated snapshot of the version you pinned does match, and a
+  bare alias like `opus` has no version to disagree with.
 - **The consulted agent may not act.** Codex runs `--sandbox read-only
-  --ask-for-approval never --ignore-user-config --ignore-rules` with shell and subagents
-  off; Claude Code runs `--safe-mode --strict-mcp-config --tools ""`. Any action event in
+  --ignore-user-config --ignore-rules` with `approval_policy="never"`, shell, and
+  subagents off — as `-c` config keys, because a 0.146 build rejects
+  `--ask-for-approval` on `exec` outright; Claude Code runs `--safe-mode --strict-mcp-config --tools ""`. Any action event in
   the stream fails the turn closed rather than being ignored.
 - **No credentials, ever.** Preflight reads one bit: `codex login status`'s exit code, or
   the `loggedIn` boolean out of `claude auth status --json`. Codex's login output is not
   even captured, and no part of either payload has a column to be stored in.
   Authentication is something you do in your own terminal — the server only ever tells
   you which command to run.
+- **Web mode is bounded by turns, not just by time.** Claude Code has no `--max-turns`,
+  so the event stream is counted here and the child is killed past `web_turn_limit`. The
+  turn that spends the last of the budget is allowed to finish and answer; the one after
+  it is not, and a consultation stopped there returns an error rather than an answer
+  assembled from partial turns.
 - **No shell.** Every invocation is `create_subprocess_exec` with an argument list, and
   the prompt travels over stdin, so there is neither an injection surface nor an argv
   ceiling. Children get their own process group and a timeout kills the group.
@@ -527,7 +536,7 @@ forward somewhere your config is not.
 uv run pytest -q
 ```
 
-298 tests, no network and no CLI installed. Deployments are stubbed with LiteLLM's
+315 tests, no network and no CLI installed. Deployments are stubbed with LiteLLM's
 `mock_response`, and the shapes it cannot express (no choices, null content, a truncated
 or filtered reply) are stubbed as raw `ModelResponse` objects. Includes the
 rate-limit-then-fallback path and the cooled-down-group path.
@@ -535,7 +544,9 @@ rate-limit-then-fallback path and the cooled-down-group path.
 The consult path is stubbed the same way: `codex` and `claude` are replaced with small
 Python scripts on `PATH` that replay recorded event streams — success, resume, a
 substituted model, a tool-use event, a stream that never ends, one that ignores `SIGTERM`
-so the process-group kill has to be proven. Cross-process behaviour (leases, migrations)
+so the process-group kill has to be proven, and one that exits at once leaving a
+grandchild behind, because a reaped leader is exactly the case a kill routed by pid
+lookup misses. Cross-process behaviour (leases, migrations)
 is tested with real OS processes rather than tasks, because an in-process lock would pass
 either way.
 
