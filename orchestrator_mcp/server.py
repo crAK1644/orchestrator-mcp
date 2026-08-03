@@ -30,12 +30,15 @@ from .contract import (
     AskResponse,
     CapabilitiesResponse,
     CapabilityInfo,
+    ConfigError,
     ErrorCode,
     ErrorInfo,
     Limits,
     Usage,
     build_ask_request,
 )
+
+__all__ = ["ConfigError", "Orchestrator", "build_server", "load_config", "main", "validate_config"]
 
 CONFIG_ENV = "ORCHESTRATOR_CONFIG"
 DEFAULT_CONFIG = "config.yaml"
@@ -95,11 +98,6 @@ class StructuredOutputError(ValueError):
     def __init__(self, message: str, detail: str | None = None) -> None:
         super().__init__(message)
         self.detail = detail or message
-
-
-class ConfigError(ValueError):
-    """Raised at startup. A misconfigured server refuses to boot rather than
-    half-routing in production."""
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
