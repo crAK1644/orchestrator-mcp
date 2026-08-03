@@ -77,7 +77,8 @@ limits:
 #   database_path: ~/.orchestrator-mcp/consultations.sqlite3
 #   timeout_s: 180            # per consultation turn, subprocess included
 #   store_full_content: true  # false stores metadata and routing only
-#   web_turn_limit: 8         # web mode: assistant turns before the child is killed
+#   web_turn_limit: 8         # web mode: assistant turns allowed; the one that spends
+#                             # the last of them still answers, the next is killed
 #   protocol_version: consult-v1
 #
 #   agents:
