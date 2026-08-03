@@ -41,6 +41,10 @@ PREFLIGHT_TIMEOUT_S = 30.0
 # the event type so a renamed-but-recognisable event still fails closed.
 FORBIDDEN_EVENT_MARKERS = ("command", "exec_command", "patch", "file_change", "mcp", "subagent")
 
+# Substrings that mark the run as having failed. Matched the same tolerant way, so
+# `turn.failed`, `error`, and whatever the next release calls it all stop the turn.
+FAILURE_EVENT_MARKERS = ("failed", "failure", "error", "aborted", "cancelled", "canceled")
+
 
 class CodexCliAdapter:
     runtime = "codex"
@@ -58,9 +62,13 @@ class CodexCliAdapter:
             return AgentStatus(agent.agent_id, installed=False, authenticated=False,
                                detail=f"`{agent.command}` is not on PATH")
 
-        # The exit code is the whole answer, and it is the only thing read: the
-        # output of a login command is not ours to parse, return, or store.
-        result = await run_process([command, "login", "status"], None, timeout_s=PREFLIGHT_TIMEOUT_S)
+        # The exit code is the whole answer. `capture=False` sends both streams to
+        # /dev/null, so whatever an auth command prints about the account never
+        # reaches this process at all -- not to be parsed, and not to sit in memory
+        # waiting for a traceback to carry it somewhere.
+        result = await run_process(
+            [command, "login", "status"], None, timeout_s=PREFLIGHT_TIMEOUT_S, capture=False
+        )
         ok = result.returncode == 0
         return AgentStatus(
             agent.agent_id, installed=True, authenticated=ok, detail=None if ok else "not logged in"
@@ -145,6 +153,12 @@ class CodexCliAdapter:
         for event in events:
             _check_event(event)
 
+        # Checked before any message is extracted, and both together: a run that
+        # reported a failed turn or exited nonzero did not answer, however
+        # well-formed something earlier in the stream looks. Reading the message
+        # anyway would return a partial or abandoned answer as a successful one.
+        _check_outcome(events, result)
+
         thread_id = _thread_id(events) or resume
         if not thread_id:
             raise AdapterError(
@@ -206,6 +220,23 @@ def _check_event(event: dict) -> None:
         raise AdapterError(
             ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
             f"the agent tried to act rather than answer (event `{event.get('type')}`)",
+        )
+
+
+def _check_outcome(events: list[dict], result: ProcessResult) -> None:
+    """Refuse a run the CLI itself called failed."""
+    for event in events:
+        kind = _kind(event)
+        if any(marker in kind for marker in FAILURE_EVENT_MARKERS):
+            detail = str(event.get("error") or event.get("message") or event.get("type"))[:400]
+            raise AdapterError(
+                ConsultErrorCode.AGENT_UNAVAILABLE,
+                f"the agent reported a failed turn: {detail}",
+            )
+    if result.returncode != 0:
+        raise AdapterError(
+            ConsultErrorCode.AGENT_UNAVAILABLE,
+            f"the agent exited {result.returncode}: {result.stderr.strip()[:400]}",
         )
 
 
