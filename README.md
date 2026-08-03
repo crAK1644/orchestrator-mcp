@@ -395,6 +395,19 @@ There is no API token in this repo. PyPI is configured as a Trusted Publisher fo
 workflow, so it mints a short-lived credential from the job's OIDC identity — nothing
 to store, nothing to rotate, nothing to leak.
 
+Once the release is on PyPI, the [tap](https://github.com/crAK1644/homebrew-tap) needs
+the new version too. In a branch of that repo, point the formula's `url` and `sha256` at
+the new sdist and delete the `bottle do` block — its `root_url` names the previous
+version's release, so leaving it sends installs to a tarball that is not there. Open a
+pull request: `brew test-bot` builds the bottle and uploads it as an artifact. Then run
+the `brew pr-pull` workflow with that pull request's number, which writes the new
+`bottle do` block, attaches the bottle to a release named `orchestrator-mcp-server-X.Y.Z`,
+and pushes to the tap's `main`.
+
+Bottles are Apple Silicon only. x86 macOS reports "unbottled dependencies, so a bottle
+will not be built" — homebrew-core no longer bottles parts of this dependency tree for
+it — and both it and Linux build from source instead.
+
 ## Not included
 
 Semantic/embedding routing and RouteLLM-style predictive routing (the caller states
