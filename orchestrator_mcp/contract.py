@@ -21,6 +21,15 @@ from pydantic import (
 )
 
 
+class ConfigError(ValueError):
+    """Raised at startup. A misconfigured server refuses to boot rather than
+    half-routing in production.
+
+    Lives here rather than in `server`, which imports it, so that config models in
+    other packages can raise it without importing the module that composes them.
+    """
+
+
 class ErrorCode(str, Enum):
     """Closed set, so callers branch on a value instead of matching substrings."""
 

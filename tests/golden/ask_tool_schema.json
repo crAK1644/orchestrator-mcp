@@ -1,0 +1,332 @@
+{
+  "ask": {
+    "input_schema": {
+      "properties": {
+        "capability": {
+          "description": "Which capability should handle this request.",
+          "enum": [
+            "coding",
+            "research",
+            "fast"
+          ],
+          "title": "Capability",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "The task or question.",
+          "maxLength": 100000,
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "maxLength": 400000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source material to ground the answer in. When set, the model is instructed to answer only from it and to abstain otherwise.",
+          "title": "Context"
+        },
+        "system": {
+          "anyOf": [
+            {
+              "maxLength": 10000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Extra instructions prepended to the conversation.",
+          "title": "System"
+        },
+        "response_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "maxLength": 20000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "JSON Schema for a structured answer, as an object or as a JSON string. When set, the reply is validated against it and returned in `data`; `content` stays null.",
+          "title": "Response Schema"
+        },
+        "temperature": {
+          "default": 0.2,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "max_output_tokens": {
+          "anyOf": [
+            {
+              "maximum": 4096,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Output Tokens"
+        }
+      },
+      "required": [
+        "capability",
+        "prompt"
+      ],
+      "title": "askArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "ErrorCode": {
+          "description": "Closed set, so callers branch on a value instead of matching substrings.",
+          "enum": [
+            "invalid_request",
+            "no_deployment",
+            "upstream_error",
+            "rate_limited",
+            "context_exceeded",
+            "schema_validation_failed",
+            "timeout",
+            "content_filtered",
+            "auth_failed",
+            "output_truncated"
+          ],
+          "title": "ErrorCode",
+          "type": "string"
+        },
+        "ErrorInfo": {
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            "message": {
+              "maxLength": 500,
+              "title": "Message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ErrorInfo",
+          "type": "object"
+        },
+        "Usage": {
+          "properties": {
+            "prompt_tokens": {
+              "default": 0,
+              "title": "Prompt Tokens",
+              "type": "integer"
+            },
+            "completion_tokens": {
+              "default": 0,
+              "title": "Completion Tokens",
+              "type": "integer"
+            },
+            "total_tokens": {
+              "default": 0,
+              "title": "Total Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            }
+          },
+          "title": "Usage",
+          "type": "object"
+        }
+      },
+      "description": "One envelope for every outcome, success or failure.\n\nInvariants (asserted by `check_invariants`, covered by tests):\n  * `ok is False` iff `error is not None`\n  * when `ok is False`, both `content` and `data` are None -- the server never\n    writes prose of its own into a field callers read as a model's answer.",
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data"
+        },
+        "insufficient_context": {
+          "default": false,
+          "title": "Insufficient Context",
+          "type": "boolean"
+        },
+        "capability_requested": {
+          "title": "Capability Requested",
+          "type": "string"
+        },
+        "model_used": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Used"
+        },
+        "fallback_used": {
+          "default": false,
+          "title": "Fallback Used",
+          "type": "boolean"
+        },
+        "finish_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finish Reason"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "latency_ms": {
+          "default": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok",
+        "capability_requested"
+      ],
+      "title": "AskResponse",
+      "type": "object"
+    }
+  },
+  "list_capabilities": {
+    "input_schema": {
+      "properties": {},
+      "title": "list_capabilitiesArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "CapabilityInfo": {
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "description": {
+              "title": "Description",
+              "type": "string"
+            },
+            "deployments": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Deployments",
+              "type": "array"
+            },
+            "fallbacks": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Fallbacks",
+              "type": "array"
+            }
+          },
+          "required": [
+            "name",
+            "description",
+            "deployments"
+          ],
+          "title": "CapabilityInfo",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/CapabilityInfo"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        }
+      },
+      "required": [
+        "capabilities"
+      ],
+      "title": "CapabilitiesResponse",
+      "type": "object"
+    }
+  }
+}

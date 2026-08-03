@@ -1,0 +1,147 @@
+"""The `consult:` block of the config.
+
+Validated at boot for the same reason the `limits:` block is: a server that
+half-understands its routing table is worse than one that refuses to start.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Annotated, Any
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from ..contract import ConfigError
+from .contract import PROTOCOL_VERSION, Capability, Runtime
+
+HOST_RUNTIME_ENV = "ORCHESTRATOR_HOST_RUNTIME"
+
+Score = Annotated[int, Field(ge=0, le=100)]
+
+
+class AgentConfig(BaseModel):
+    """One consultable agent runtime. The id is the key it is filed under."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str = ""  # filled in from the mapping key by `ConsultConfig`
+    runtime: Runtime
+    command: str = Field(min_length=1, description="Executable name or path, resolved on PATH.")
+    model: str = Field(min_length=1)
+    # Ascending: a lower number wins a tie, which is how "priority 1" reads to
+    # everyone who has ever configured a resolver.
+    priority: int = Field(default=100, ge=0)
+    enabled: bool = True
+    # A capability missing from the map scores 0, which means ineligible -- the same
+    # as spelling out `0`. Omission is the common way to say "not this one".
+    scores: dict[Capability, Score] = Field(default_factory=dict)
+    web_search: bool = False
+
+    def score_for(self, capability: str) -> int:
+        return self.scores.get(capability, 0)  # type: ignore[arg-type]
+
+
+class DashboardConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    # Loopback only, and validated as such: a read-only page over stored prompts is
+    # still every prompt the user has ever sent.
+    host: str = "127.0.0.1"
+    port: int = Field(default=8765, ge=1, le=65535)
+
+    @field_validator("host")
+    @classmethod
+    def _loopback_only(cls, value: str) -> str:
+        if value not in ("127.0.0.1", "::1", "localhost"):
+            raise ValueError("dashboard.host must be a loopback address")
+        return value
+
+
+class ConsultConfig(BaseModel):
+    # `validate_default` so the default database path is expanded too: `~` reaching
+    # `sqlite3.connect` creates a directory literally named `~` next to wherever the
+    # host happened to launch the server.
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    database_path: Path = Path("~/.orchestrator-mcp/consultations.sqlite3")
+    timeout_s: int = Field(default=180, ge=1)
+    protocol_version: str = PROTOCOL_VERSION
+    store_full_content: bool = True
+    # Claude Code 2.1.220 has no `--max-turns`, so the bound on a web-mode
+    # consultation is ours to enforce: we count assistant turns in the event stream
+    # and kill the child when it passes this.
+    web_turn_limit: int = Field(default=8, ge=1)
+    agents: dict[str, AgentConfig] = Field(min_length=1)
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+
+    @field_validator("database_path")
+    @classmethod
+    def _expand(cls, value: Path) -> Path:
+        return Path(os.path.expandvars(str(value))).expanduser()
+
+    @field_validator("protocol_version")
+    @classmethod
+    def _pinned(cls, value: str) -> str:
+        if value != PROTOCOL_VERSION:
+            raise ValueError(f"protocol_version must be {PROTOCOL_VERSION!r}, not {value!r}")
+        return value
+
+    @field_validator("agents")
+    @classmethod
+    def _label_agents(cls, agents: dict[str, AgentConfig]) -> dict[str, AgentConfig]:
+        for agent_id, agent in agents.items():
+            if not agent_id.strip():
+                raise ValueError("agent ids must not be blank")
+            agent.agent_id = agent_id
+        return agents
+
+    def eligible(self, host_runtime: str) -> list[AgentConfig]:
+        """Configured agents that could answer at all: enabled, and not ourselves."""
+        return [a for a in self.agents.values() if a.enabled and a.runtime != host_runtime]
+
+    def config_hash(self) -> str:
+        """Recorded with each consultation, so a reply can be read against the
+        routing table that produced it rather than today's."""
+        payload = json.dumps(
+            {aid: a.model_dump(mode="json") for aid, a in sorted(self.agents.items())},
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def load_consult_config(config: dict[str, Any]) -> ConsultConfig | None:
+    """Parse the `consult:` block, or return None when there is none.
+
+    A config without the block is the 0.1.2 config, and must keep starting a server
+    that behaves exactly as it did.
+    """
+    block = config.get("consult")
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise ConfigError("`consult:` must be a mapping")
+    try:
+        return ConsultConfig(**block)
+    except ValidationError as exc:
+        raise ConfigError(f"invalid `consult:` block: {exc}") from exc
+
+
+def host_runtime() -> Runtime:
+    """Which runtime this installation *is*, so it can be excluded from routing.
+
+    Read from the environment and never from a tool argument: a model that could
+    name the host runtime could name someone else's, and delegate the work straight
+    back to itself.
+    """
+    value = (os.environ.get(HOST_RUNTIME_ENV) or "").strip().lower()
+    if value not in ("codex", "claude"):
+        raise ConfigError(
+            f"{HOST_RUNTIME_ENV} must be set to `codex` or `claude` when `consult:` is "
+            f"configured (got {value!r}); without it the server cannot exclude itself "
+            "from its own routing"
+        )
+    return value  # type: ignore[return-value]
