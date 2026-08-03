@@ -164,6 +164,25 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _set_wal(connection: sqlite3.Connection, deadline_s: float = 5.0) -> None:
+    """Switch to WAL, waiting out another process that is mid-switch.
+
+    Retried by hand rather than left to `busy_timeout`: converting the journal mode
+    needs a lock SQLite does not run the busy handler for, so two processes opening
+    one fresh database at the same moment leave the second with an immediate
+    "database is locked" and an exception out of `open()` instead of an envelope.
+    """
+    deadline = time.monotonic() + deadline_s
+    while True:
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
 class ConsultStore:
     """Every method is async and does its SQLite work in a worker thread."""
 
@@ -201,13 +220,12 @@ class ConsultStore:
         # looser permissions is exactly the one worth tightening.
         os.chmod(self.path, 0o600)
         connection.row_factory = sqlite3.Row
-        # First, so that every statement below -- including the journal-mode switch,
-        # which takes a lock of its own -- waits for another process instead of
+        # First, so that every statement below waits for another process instead of
         # failing on it. Long enough to outlast a short write, short enough that a
         # wedged one surfaces as an error rather than hanging the consultation.
         connection.execute("PRAGMA busy_timeout=5000")
         # WAL so a reader (the dashboard) never blocks the writer mid-consultation.
-        connection.execute("PRAGMA journal_mode=WAL")
+        _set_wal(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         self._connection = connection
         self._migrate()
@@ -221,6 +239,16 @@ class ConsultStore:
                 continue
             db.execute("BEGIN IMMEDIATE")
             try:
+                # Read again, now that the write lock is held. The check above ran
+                # before it, so two processes opening one database at the same
+                # moment both see an unapplied migration; the second one waits here,
+                # takes the lock after the first commits, and would otherwise run a
+                # CREATE TABLE against the schema the first just created.
+                if db.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = ?", (version,)
+                ).fetchone():
+                    db.execute("COMMIT")
+                    continue
                 # Not `executescript`, which commits any open transaction before it
                 # runs: the schema and the row saying it was applied have to land
                 # together, or a half-applied migration re-runs into a CREATE that

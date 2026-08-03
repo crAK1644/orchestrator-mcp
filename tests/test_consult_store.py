@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import time
 from uuid import uuid4
 
 import pytest
@@ -66,6 +67,46 @@ async def test_opening_twice_is_not_a_second_migration(tmp_path):
     profiles = second._db.execute("SELECT COUNT(*) FROM profiles").fetchone()[0]
     await second.close()
     assert (versions, profiles) == (1, 1)
+
+
+OPENER = """\
+import asyncio, sys, time
+from orchestrator_mcp.consult.store import ConsultStore
+
+async def main(path, start_at):
+    time.sleep(max(0.0, start_at - time.time()))  # all of us hit an empty file together
+    store = await ConsultStore(path).open()
+    print("opened")
+    await store.close()
+
+asyncio.run(main(sys.argv[1], float(sys.argv[2])))
+"""
+
+
+async def test_processes_opening_one_new_database_together_all_migrate_it(tmp_path):
+    """The version check before `BEGIN IMMEDIATE` is not the one that decides.
+
+    Every process reads an empty `schema_migrations`, then SQLite serializes them on
+    the write lock. Without the recheck inside the transaction, the losers run
+    `CREATE TABLE` against the schema the winner just committed and `open()` raises.
+    """
+    path = tmp_path / "raced.sqlite3"
+    start_at = time.time() + 1.0
+    args = [sys.executable, "-c", textwrap.dedent(OPENER), str(path), str(start_at)]
+    openers = [subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+               for _ in range(6)]
+
+    for opener in openers:
+        stdout, stderr = opener.communicate(timeout=60)
+        assert opener.returncode == 0, stderr
+        assert stdout.strip() == "opened"
+
+    store = await ConsultStore(path).open()
+    counts = tuple(store._db.execute(
+        "SELECT (SELECT COUNT(*) FROM schema_migrations), (SELECT COUNT(*) FROM profiles)"
+    ).fetchone())
+    await store.close()
+    assert counts == (1, 1)
 
 
 async def test_wal_is_on(store):
