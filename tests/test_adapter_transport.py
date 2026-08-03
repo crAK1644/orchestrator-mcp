@@ -144,6 +144,19 @@ async def test_a_timeout_kills_the_whole_process_group(tmp_path):
     assert not await alive(grandchild_pid), "the CLI's own child outlived the consultation"
 
 
+async def test_a_grandchild_outliving_a_reaped_leader_is_still_killed(tmp_path):
+    """The child exits immediately and its grandchild keeps the pipe open. The group
+    leader is reaped, so looking the group id up by pid finds nothing -- and that is
+    precisely the case worth signalling, because the CLI forked a worker and left."""
+    pidfile = tmp_path / "pids"
+    with pytest.raises(AdapterError) as exc:
+        await run_process(fake("orphan", str(pidfile)), None, timeout_s=1.0)
+    assert exc.value.code is ConsultErrorCode.TIMEOUT
+
+    _, grandchild_pid = (int(p) for p in pidfile.read_text().split())
+    assert not await alive(grandchild_pid), "the group was never signalled"
+
+
 async def test_cancellation_also_kills_the_child(tmp_path):
     """An outer deadline must not leave a CLI running against the user's account."""
     pidfile = tmp_path / "pids"

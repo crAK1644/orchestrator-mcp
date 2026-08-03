@@ -180,18 +180,53 @@ def _tokens(name: str) -> list[str]:
     return [part for part in re.split(r"[^a-z0-9]+", name.strip().lower()) if part]
 
 
+# A dated snapshot of the same model: `claude-sonnet-4-5-20250929`. Long enough that a
+# version number cannot be mistaken for one -- `4` and `5` are versions, `20250929` is
+# a date.
+_SNAPSHOT = re.compile(r"^\d{6,}$")
+
+
+def _same_model(configured: list[str], actual: list[str]) -> bool:
+    """Whether two model names, tokenized, name the same model.
+
+    Token runs rather than raw substrings, because a substring cannot see where a
+    number ends: `gpt-5.1` sits inside `gpt-5.10`, which is a different model.
+
+    What one name may add over the other depends on whether a version was configured.
+    An operator who wrote a bare alias -- `opus` -- gave no version to disagree with,
+    so anything around it is allowed. An operator who wrote `claude-sonnet-4-5` pinned
+    one, and the only thing the runtime may add on the end is a snapshot date;
+    `claude-sonnet-4` answering as `claude-sonnet-4-5` is a substitution.
+    """
+    if configured == actual:
+        return True
+    longer, shorter = (actual, configured) if len(actual) >= len(configured) else (configured, actual)
+    width = len(shorter)
+    for start in range(len(longer) - width + 1):
+        if longer[start : start + width] != shorter:
+            continue
+        before, after = longer[:start], longer[start + width :]
+        if any(part.isdigit() for part in before):
+            continue  # a number in front of the match is part of some other version
+        if not any(part.isdigit() for part in shorter):
+            return True  # unversioned alias
+        if all(_SNAPSHOT.match(part) for part in after):
+            return True
+    return False
+
+
 def check_model(agent: AgentConfig, reported: str | None) -> str:
     """Reject a substituted model, but only when the runtime actually said which.
 
-    Containment, not equality, and in both directions: an operator configures `opus`
-    and the CLI reports `claude-opus-5`. What this is for is the runtime's own silent
-    fallback -- an answer from a model nobody chose, presented as the one they did.
+    Not equality: an operator configures `opus` and the CLI reports `claude-opus-5`,
+    or pins `claude-sonnet-4-5` and the CLI reports today's snapshot of it. What this
+    is for is the runtime's own silent fallback -- an answer from a model nobody
+    chose, presented as the one they did.
 
-    Containment alone is not enough, because a fallback is usually a *smaller sibling*
-    and its name usually contains the bigger one's: `gpt-5` sits inside `gpt-5-mini`.
-    So the variant tokens have to agree exactly as well -- one name claiming `mini`
-    when the other does not is a different model, not a longer spelling of the same
-    one.
+    Two independent checks, because either alone lets a real fallback through. The
+    names have to name the same model under `_same_model`, *and* their variant tokens
+    have to agree exactly -- one name claiming `mini` when the other does not is a
+    different model, not a longer spelling of the same one.
     """
     if not reported:
         # No metadata is not evidence of substitution. The spec asks for this check
@@ -199,12 +234,9 @@ def check_model(agent: AgentConfig, reported: str | None) -> str:
         # its absence would make every quiet release of either CLI an outage.
         return agent.model
 
-    configured, actual = agent.model.strip().lower(), reported.strip().lower()
-    family_agrees = configured in actual or actual in configured
-    variants_agree = VARIANT_TOKENS.intersection(_tokens(configured)) == VARIANT_TOKENS.intersection(
-        _tokens(actual)
-    )
-    if not (family_agrees and variants_agree):
+    configured, actual = _tokens(agent.model), _tokens(reported)
+    variants_agree = VARIANT_TOKENS.intersection(configured) == VARIANT_TOKENS.intersection(actual)
+    if not (_same_model(configured, actual) and variants_agree):
         raise AdapterError(
             ConsultErrorCode.CONFIGURED_MODEL_UNAVAILABLE,
             f"agent `{agent.agent_id}` is configured for model `{agent.model}` but the "
@@ -233,13 +265,26 @@ class _OutputTooLarge(Exception):
     """A child wrote past `MAX_OUTPUT_BYTES`."""
 
 
-async def _read_capped(stream: asyncio.StreamReader, cap: int) -> bytes:
-    chunks: list[bytes] = []
-    total = 0
-    while chunk := await stream.read(_CHUNK):
-        total += len(chunk)
-        if total > cap:
+class _Budget:
+    """One byte allowance shared by every stream of a child.
+
+    Per-stream caps would let a child spend the limit twice, and the limit exists to
+    bound this process's memory, which does not care which pipe the bytes arrived on.
+    """
+
+    def __init__(self, cap: int) -> None:
+        self.left = cap
+
+    def spend(self, count: int) -> None:
+        self.left -= count
+        if self.left < 0:
             raise _OutputTooLarge
+
+
+async def _read_capped(stream: asyncio.StreamReader, budget: _Budget) -> bytes:
+    chunks: list[bytes] = []
+    while chunk := await stream.read(_CHUNK):
+        budget.spend(len(chunk))
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -279,8 +324,9 @@ async def run_process(
     # Read both streams under a cap rather than `communicate()`, which buffers
     # whatever a child chooses to send. Two tasks, because draining only one of a
     # pair of pipes deadlocks against the buffer nobody is emptying.
+    budget = _Budget(MAX_OUTPUT_BYTES)
     readers = [
-        asyncio.create_task(_read_capped(stream, MAX_OUTPUT_BYTES))
+        asyncio.create_task(_read_capped(stream, budget))
         for stream in (process.stdout, process.stderr)
         if stream is not None
     ]
@@ -356,8 +402,11 @@ async def run_streaming(
 
     assert process.stdin is not None and process.stdout is not None and process.stderr is not None
     # Drained in the background: a child that fills the stderr pipe while we are
-    # reading stdout would deadlock against a buffer nobody is emptying.
-    stderr_task = asyncio.create_task(process.stderr.read())
+    # reading stdout would deadlock against a buffer nobody is emptying. Against the
+    # same budget as stdout, because a plain `read()` here would let a child spend the
+    # output cap a second time on a stream nobody is even parsing.
+    budget = _Budget(MAX_OUTPUT_BYTES)
+    stderr_task = asyncio.create_task(_read_capped(process.stderr, budget))
     lines: list[str] = []
 
     try:
@@ -370,11 +419,10 @@ async def run_streaming(
                 process.stdin.close()
 
             stopped = False
-            total = 0
             async for raw in process.stdout:
-                total += len(raw)
-                if total > MAX_OUTPUT_BYTES:
-                    raise _OutputTooLarge
+                budget.spend(len(raw))
+                if stderr_task.done():
+                    await stderr_task  # re-raises an overflow on the other stream
                 lines.append(raw.decode(errors="replace"))
                 if not on_line(lines[-1]):
                     stopped = True
@@ -384,6 +432,10 @@ async def run_streaming(
                 await _terminate(process)
             else:
                 await process.wait()
+            # Inside the try, and inside the deadline: an overflow on stderr that the
+            # loop above never saw -- because stdout said nothing more -- is still an
+            # envelope, not an exception on the way out.
+            stderr = await stderr_task
     except BaseException as exc:
         # Everything, not only the timeout: `on_line` rejecting an event is a normal
         # outcome here, and a child left running after it would keep spending the
@@ -412,7 +464,6 @@ async def run_streaming(
             ) from exc
         raise
 
-    stderr = await stderr_task
     return ProcessResult(
         returncode=process.returncode or 0,
         stdout="".join(lines),
@@ -437,5 +488,10 @@ async def _terminate(process: asyncio.subprocess.Process) -> None:
 
 
 def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+    # `process.pid` *is* the group id: `start_new_session=True` makes the child the
+    # leader of a new group with that number. Asking `os.getpgid` for it instead would
+    # raise `ProcessLookupError` the moment the leader has exited -- which is exactly
+    # the case worth killing, because a CLI that forked a worker and returned leaves
+    # that worker holding the account with the group still alive.
     with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(os.getpgid(process.pid), sig)
+        os.killpg(process.pid, sig)

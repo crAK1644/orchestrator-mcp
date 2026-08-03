@@ -215,15 +215,27 @@ async def test_an_error_envelope_is_agent_unavailable(tmp_path, monkeypatch, ada
     assert exc.value.code is ConsultErrorCode.AGENT_UNAVAILABLE
 
 
+async def test_a_nonzero_exit_is_refused_before_the_envelope_is_read(tmp_path, monkeypatch, adapter):
+    """A CLI that exited nonzero said the run failed, and a well-formed envelope on
+    stdout does not overrule it -- that answer was abandoned, not delivered."""
+    agent_stub.install(
+        "claude", tmp_path, monkeypatch,
+        runs=[{"stdout": envelope(), "stderr": "rate limit", "returncode": 1}],
+    )
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), SourceMode.DOCUMENT)
+    assert exc.value.code is ConsultErrorCode.AGENT_UNAVAILABLE
+    assert "exited 1" in str(exc.value) and "rate limit" in str(exc.value)
+
+
 async def test_no_envelope_at_all_is_a_transport_error(tmp_path, monkeypatch, adapter):
     agent_stub.install(
         "claude", tmp_path, monkeypatch,
-        runs=[{"stdout": "", "stderr": "error: unknown option --nope", "returncode": 1}],
+        runs=[{"stdout": "not json", "stderr": "warming up"}],
     )
     with pytest.raises(AdapterError) as exc:
         await adapter.start(agent(), prompt(), SourceMode.DOCUMENT)
     assert exc.value.code is ConsultErrorCode.TRANSPORT_ERROR
-    assert "unknown option" in str(exc.value)
 
 
 async def test_web_mode_on_an_agent_without_web_search_is_refused(tmp_path, monkeypatch, adapter):

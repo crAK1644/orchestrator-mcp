@@ -259,7 +259,12 @@ else's and hand the work straight back to itself. Configure `consult:` without i
 server refuses to start.
 
 No `consult:` block, no change: the server advertises exactly `ask` and
-`list_capabilities`, byte for byte, which a snapshot test asserts.
+`list_capabilities`, and a snapshot test asserts that schema byte for byte so the
+second path cannot reshape the first one under it. The snapshot is a regression guard
+generated from the current code, not a copy of 0.1.2's — the `ask` schema did move
+once between them, deliberately: `response_schema`'s string arm now advertises
+`maxLength: max_schema_chars`, and that cap is enforced before the JSON is parsed
+rather than after. A 0.1.2 caller sending a schema inside the cap sees no difference.
 
 ### Tools
 
@@ -473,12 +478,21 @@ What it does enforce:
 - **The error tells you what broke, not what the model wrote.** `error.message` gives
   the failing path and constraint (`schema violation at answer/city: failed the
   'maxLength' constraint`) and is capped at 500 characters. The rejected value itself
-  goes only back to the model that produced it, in the repair turn.
+  goes only back to the model that produced it, in the repair turn. Anything
+  credential-shaped in that message — an API key, a `Bearer` header, a PEM block a
+  provider quoted back — is replaced with `[redacted]` on both paths before the
+  envelope leaves. It is a second line of defence and not a guarantee: a secret with
+  no recognizable shape survives it.
 - **`request_timeout_s` bounds the call.** Retries, cross-capability fallback, and
   repair turns all spend from one budget, so `120` cannot become 360. Each leg is
   given slightly less than what is left of that budget, so a hung deployment times out
   inside LiteLLM — which counts the failure and cools it down — instead of being
-  cancelled from outside, which would leave the next request to pick it again.
+  cancelled from outside, which would leave the next request to pick it again. What it
+  does not bound is CPU spent inside this process: validating a reply against a
+  caller-supplied `response_schema` runs `jsonschema`, and a pathological pattern in
+  that schema can backtrack for far longer than the deadline. `re` holds the GIL, so
+  no timeout and no thread rescues it. `max_schema_chars` limits the size of what a
+  caller can send, not what it can cost — treat `response_schema` as trusted input.
 - **Abstention is typed.** With `context` set, the model is given an explicit way to
   say the material does not support an answer; it arrives as `insufficient_context`,
   not as prose you have to pattern-match.

@@ -18,7 +18,7 @@ import pytest
 from litellm.types.router import RouterErrors
 from litellm.types.utils import ModelResponse
 
-from orchestrator_mcp.contract import MAX_ERROR_CHARS, ErrorCode
+from orchestrator_mcp.contract import MAX_ERROR_CHARS, ErrorCode, redact
 from orchestrator_mcp.server import (
     ConfigError,
     Orchestrator,
@@ -445,6 +445,42 @@ async def test_rejected_output_stays_out_of_the_error_message():
     assert response.error.code is ErrorCode.SCHEMA_VALIDATION_FAILED
     assert "INTERNAL_SECRET" not in response.error.message
     assert "answer/city" in response.error.message, "the caller still learns what failed and where"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "invalid x-api-key: sk-ant-api03-AAAABBBBCCCCDDDD",
+        "header Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payloadpayload",
+        "GET failed with key=AIzaSyAAAABBBBCCCCDDDDEEEEFFFF1111",
+        'request body: {"api_key": "hunter2hunter2"}',
+    ],
+)
+def test_a_credential_shaped_string_never_survives_an_error_message(text):
+    """Provider exceptions quote the request they rejected, headers included. Best
+    effort by construction -- a secret with no shape survives -- so it is a second
+    line of defence, never a licence to forward these messages anywhere."""
+    scrubbed = redact(text)
+    assert "[redacted]" in scrubbed
+    for token in ("sk-ant", "eyJhbGciOiJIUzI1NiJ9.p", "AIzaSy", "hunter2"):
+        assert token not in scrubbed
+
+
+async def test_a_provider_exception_reaches_the_caller_scrubbed():
+    orchestrator = single("hi")
+
+    async def boom(**kwargs):
+        raise litellm.AuthenticationError(
+            "rejected header Authorization: Bearer sk-ant-api03-AAAABBBBCCCCDDDD",
+            llm_provider="openai", model="gpt-4o",
+        )
+
+    orchestrator.router.acompletion = boom
+    response = await orchestrator.ask(capability="fast", prompt="q")
+
+    assert response.ok is False
+    assert "sk-ant-api03" not in response.error.message
+    assert "[redacted]" in response.error.message
 
 
 async def test_error_messages_are_bounded():

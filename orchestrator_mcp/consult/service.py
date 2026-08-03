@@ -17,7 +17,7 @@ import time
 from typing import Any
 from uuid import UUID, uuid4
 
-from ..contract import MAX_ERROR_CHARS, Usage
+from ..contract import MAX_ERROR_CHARS, Usage, redact
 from .adapters import AdapterError, adapter_for
 from .adapters.base import GRACE_S, AgentStatus, ConsultAdapter
 from .adapters.claude_cli import PREFLIGHT_TIMEOUT_S
@@ -69,10 +69,39 @@ class ConsultService:
     # --- consultation -------------------------------------------------------
 
     async def consult(self, **kwargs: Any) -> ConsultResponse:
+        """The boundary. Everything past here returns an envelope, including the
+        failures that are nobody's fault: an unwritable database directory, a disk
+        that filled mid-turn, a shape from an adapter that no branch expected.
+
+        Opening the store lives inside it for the same reason -- a `database_path`
+        under a regular file raises `FileExistsError`, which crossed the MCP boundary
+        as a bare exception before there was anything here to catch it.
+
+        `CancelledError` is not an `Exception` and is left alone: a cancelled call has
+        no caller left to hand an envelope to.
+        """
         started = time.perf_counter()
         requested = kwargs.get("capability")
         capability = requested if isinstance(requested, str) else "<invalid>"
+        try:
+            await self.open()
+            return await self._consult(started, capability, kwargs)
+        except Exception as exc:
+            # The type and nothing else. These messages are quoted back to a caller
+            # that may not be the operator, and an operational exception carries
+            # paths, connection strings, and occasionally a credential.
+            requested_id = kwargs.get("consultation_id")
+            return _failed(
+                requested_id if isinstance(requested_id, UUID) else None,
+                capability, SourceMode.AUTO,
+                ConsultErrorCode.TRANSPORT_ERROR,
+                f"the consultation failed inside the orchestrator ({type(exc).__name__})",
+                started,
+            )
 
+    async def _consult(
+        self, started: float, capability: str, kwargs: dict[str, Any]
+    ) -> ConsultResponse:
         # Second line of defence: the MCP layer validated against this same model,
         # but tests and direct callers arrive here too.
         try:
@@ -359,7 +388,7 @@ def _failed(
             code=code,
             # One truncation for every source: a CLI's stderr, a pydantic error
             # echoing the caller's input, a validator quoting the reply.
-            message=message[:MAX_ERROR_CHARS],
+            message=redact(message)[:MAX_ERROR_CHARS],
             agent_id=agent_id,
             required_action=required_action,
         ),

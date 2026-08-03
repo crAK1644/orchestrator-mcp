@@ -53,6 +53,15 @@ def main() -> int:
         time.sleep(300)
         return 0
 
+    if mode == "orphan":
+        # Exits at once, leaving a grandchild holding the stdout it inherited. The
+        # group leader is gone and reaped by the time anything tries to kill it, so a
+        # signal routed through `os.getpgid` finds nothing and the grandchild lives.
+        grandchild = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+        with open(sys.argv[2], "w") as handle:
+            handle.write(f"{os.getpid()} {grandchild.pid}")
+        return 0
+
     sys.stderr.write(f"unknown mode {mode!r}\n")
     return 2
 
