@@ -13,6 +13,7 @@ import json
 import os
 import re
 import time
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -228,6 +229,11 @@ def _parse_structured(
     return (None if abstained else parsed["answer"]), abstained
 
 
+# How much of the budget is reserved for the Router to time out, report, and cool down
+# a deployment before the outer deadline cancels the whole call.
+_TIMEOUT_MARGIN_S = 0.5
+
+
 # A deny-list, not an allow-list: LiteLLM normalizes `finish_reason` to the OpenAI
 # set, so this covers what it emits, and an unfamiliar reason from a custom provider
 # must not fail an otherwise complete answer.
@@ -235,7 +241,25 @@ _REFUSED_FINISH: dict[str, tuple[ErrorCode, str]] = {
     "length": (ErrorCode.OUTPUT_TRUNCATED, "the model hit the output limit mid-answer"),
     "max_tokens": (ErrorCode.OUTPUT_TRUNCATED, "the model hit the output limit mid-answer"),
     "content_filter": (ErrorCode.CONTENT_FILTERED, "the provider filtered this completion"),
+    # The model stopped to call a tool. This server exposes none, so whatever text
+    # came with it is a preamble, not an answer.
+    "tool_calls": (ErrorCode.UPSTREAM_ERROR, "the model stopped to call a tool, not to answer"),
+    "function_call": (ErrorCode.UPSTREAM_ERROR, "the model stopped to call a tool, not to answer"),
 }
+
+# LiteLLM maps several provider reasons to "stop" that do not mean "finished answering",
+# keeping the original in `provider_specific_fields`. Compared upper-case because the
+# providers disagree on casing.
+_REFUSED_NATIVE_FINISH: frozenset[str] = frozenset(
+    {
+        "MALFORMED_FUNCTION_CALL",
+        "MALFORMED_RESPONSE",
+        "FINISH_REASON_UNSPECIFIED",
+        "TOO_MANY_TOOL_CALLS",
+        "NETWORK_ERROR",
+        "ERROR",
+    }
+)
 
 
 def _completion_of(response: Any) -> tuple[str | None, tuple[ErrorCode, str] | None]:
@@ -253,8 +277,17 @@ def _completion_of(response: Any) -> tuple[str | None, tuple[ErrorCode, str] | N
     if refusal := _REFUSED_FINISH.get(getattr(choice, "finish_reason", None) or ""):
         return None, refusal
 
+    native = (getattr(choice, "provider_specific_fields", None) or {}).get("native_finish_reason")
+    if isinstance(native, str) and native.upper() in _REFUSED_NATIVE_FINISH:
+        return None, (
+            ErrorCode.UPSTREAM_ERROR,
+            f"the provider stopped for {native}, which LiteLLM reports as a normal stop",
+        )
+
     content = getattr(getattr(choice, "message", None), "content", None)
-    if content is None or not content.strip():
+    # A non-string body (content blocks from a custom provider) is a shape this server
+    # does not read, not an answer to hand on.
+    if not isinstance(content, str) or not content.strip():
         return None, (ErrorCode.UPSTREAM_ERROR, "provider returned an empty completion")
     return content, None
 
@@ -312,7 +345,11 @@ class Orchestrator:
 
     async def ask(self, **kwargs: Any) -> AskResponse:
         started = time.perf_counter()
-        capability = kwargs.get("capability", "<unknown>")
+        # Only for the failure envelope, and only if it is a string: an int or a dict
+        # here would fail `AskResponse` validation and raise out of the very path that
+        # exists to guarantee an envelope.
+        requested = kwargs.get("capability")
+        capability = requested if isinstance(requested, str) else "<invalid>"
 
         # Second line of defence: the MCP layer already validated against the same
         # model, but tests and direct callers go through here too.
@@ -354,16 +391,21 @@ class Orchestrator:
         attempts = 1 + (self.limits.schema_repair_attempts if wrapper else 0)
 
         for attempt in range(attempts):
+            # Leave the Router a margin to hit its own timeout first. If the outer
+            # deadline wins, the leg dies of `CancelledError`, which skips LiteLLM's
+            # `except Exception` bookkeeping -- no failure count, no cooldown -- and the
+            # next request picks the stuck deployment straight back up.
+            remaining = self.limits.request_timeout_s - (time.perf_counter() - started)
+            if remaining <= _TIMEOUT_MARGIN_S:
+                raise TimeoutError  # answered as an envelope by the caller's handler
+
             try:
                 response = await self.router.acompletion(
                     model=request.capability,
                     messages=messages,
                     temperature=request.temperature,
                     max_tokens=request.max_output_tokens or self.limits.max_output_tokens,
-                    # What is left of the budget, so a hung leg times out inside the
-                    # Router -- which cools the deployment down -- rather than being
-                    # cut from outside it.
-                    timeout=max(1, self.limits.request_timeout_s - int(time.perf_counter() - started)),
+                    timeout=remaining - _TIMEOUT_MARGIN_S,
                     **self._structured_params(wrapper),
                 )
             except Exception as exc:
@@ -516,9 +558,19 @@ def _tool_signature(request_model: type) -> inspect.Signature:
     return inspect.Signature(parameters, return_annotation=AskResponse)
 
 
+def _version() -> str:
+    """The installed distribution's version, for the `initialize` handshake."""
+    try:
+        return version("orchestrator-mcp-server")
+    except PackageNotFoundError:
+        # Running from a source tree that was never installed. A missing version is
+        # not worth refusing to start over.
+        return "0+unknown"
+
+
 def build_server(config: dict[str, Any] | None = None) -> MCPServer:
     orchestrator = Orchestrator(config if config is not None else load_config())
-    server = MCPServer("orchestrator")
+    server = MCPServer("orchestrator", version=_version())
 
     async def ask(**kwargs: Any) -> AskResponse:
         return await orchestrator.ask(**kwargs)

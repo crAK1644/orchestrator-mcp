@@ -289,13 +289,19 @@ What it does enforce:
 - **An unfinished answer is a failure, not a short answer.** A completion cut off by
   the token limit comes back as `output_truncated` with `content: null`, and one the
   provider filtered as `content_filtered`. Neither is returned as prose, because a
-  half answer reads exactly like a whole one.
+  half answer reads exactly like a whole one. The same applies to a reply that stopped
+  to call a tool (this server exposes none) and to the provider reasons LiteLLM
+  normalizes to a plain `stop` — a malformed function call, an unspecified reason —
+  which are read from the native reason it keeps alongside.
 - **The error tells you what broke, not what the model wrote.** `error.message` gives
   the failing path and constraint (`schema violation at answer/city: failed the
   'maxLength' constraint`) and is capped at 500 characters. The rejected value itself
   goes only back to the model that produced it, in the repair turn.
 - **`request_timeout_s` bounds the call.** Retries, cross-capability fallback, and
-  repair turns all spend from one budget, so `120` cannot become 360.
+  repair turns all spend from one budget, so `120` cannot become 360. Each leg is
+  given slightly less than what is left of that budget, so a hung deployment times out
+  inside LiteLLM — which counts the failure and cools it down — instead of being
+  cancelled from outside, which would leave the next request to pick it again.
 - **Abstention is typed.** With `context` set, the model is given an explicit way to
   say the material does not support an answer; it arrives as `insufficient_context`,
   not as prose you have to pattern-match.
@@ -312,11 +318,17 @@ What it does enforce:
   prompt, and a malformed or oversized `response_schema` all fail before a provider is
   called.
 
-Two known gaps. The MCP SDK drops unknown arguments before the handler sees them, so
+Three known gaps. The MCP SDK drops unknown arguments before the handler sees them, so
 an unrecognized key is ignored at the protocol layer rather than rejected — direct
-calls into `Orchestrator.ask` do reject it. And a `response_schema` containing a
+calls into `Orchestrator.ask` do reject it. A `response_schema` containing a
 pathological `pattern` can burn CPU on the event loop during validation: the schema is
-size-capped but not analyzed, so treat schema authorship as a trusted operation.
+size-capped but not analyzed, so treat schema authorship as a trusted operation. And
+when a provider call raises, `error.message` carries the first 500 characters of the
+provider's own exception text, which some providers fill with the API base, the
+offending request fragment, or a credential's environment variable name — and during a
+repair turn the request contains the model's previously rejected output. That text is
+diagnosis worth keeping for a caller that already reads your config; it is not safe to
+forward somewhere your config is not.
 
 ## Tests
 
@@ -324,7 +336,7 @@ size-capped but not analyzed, so treat schema authorship as a trusted operation.
 uv run pytest -q
 ```
 
-76 tests, no network — deployments are stubbed with LiteLLM's `mock_response`, and the
+88 tests, no network — deployments are stubbed with LiteLLM's `mock_response`, and the
 shapes it cannot express (no choices, null content, a truncated or filtered reply) are
 stubbed as raw `ModelResponse` objects. Includes the rate-limit-then-fallback path and
 the cooled-down-group path.
