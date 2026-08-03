@@ -3,22 +3,34 @@ name: release
 # Publishes to PyPI when a GitHub Release is published. Authentication is
 # Trusted Publishing: PyPI mints a short-lived token from this workflow's OIDC
 # identity, so there is no API token stored anywhere in the repo.
+#
+# Actions are pinned to commit SHAs rather than tags. A tag is movable, so a
+# compromised (or merely retagged) action would otherwise change what runs in a
+# job that can mint a PyPI credential.
 on:
   release:
     types: [published]
 
 jobs:
-  publish:
+  # Everything that runs project code -- dependency resolution, the test suite,
+  # the build backend -- happens here, in a job with no `id-token: write`. Any of
+  # it could request an OIDC token if this job could mint one, and publish a
+  # substituted distribution under this project's name.
+  build:
     runs-on: ubuntu-latest
     permissions:
       # Declaring this block replaces the defaults rather than extending them,
       # so checkout needs `contents: read` spelled out or it 404s on its own repo.
       contents: read
-      # The OIDC token PyPI verifies. Without this the job cannot authenticate.
-      id-token: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          # Pinning the action pins the installer, not the uv it downloads. The
+          # checksum is for the x86_64 linux tarball, which is what ubuntu-latest
+          # pulls; a different runner arch would need its own.
+          version: "0.11.26"
+          checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
 
       # A release that fails its own tests should not reach PyPI, and a version
       # is not withdrawable once uploaded.
@@ -37,6 +49,32 @@ jobs:
           fi
 
       - run: uv build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # The only job that can mint a PyPI credential, and it runs no project code:
+  # it downloads the finished distributions and uploads them.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Named so PyPI's publisher can be narrowed to this environment, and so the
+    # repo can require a review before a release is uploadable.
+    environment: pypi
+    permissions:
+      # The OIDC token PyPI verifies. Without this the job cannot authenticate.
+      id-token: write
+    steps:
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: dist
+          path: dist/
       # `always` fails loudly if OIDC is unavailable, rather than falling back
       # to prompting for a password in a non-interactive runner.
       - run: uv publish --trusted-publishing always

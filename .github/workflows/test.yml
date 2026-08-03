@@ -13,10 +13,15 @@ jobs:
       matrix:
         python: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9.0.0
+      # SHA-pinned, like the release workflow: a tag can be moved, a commit cannot.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: ${{ matrix.python }}
+          # Same pin as the release workflow, so the tests that gate a release run
+          # under the uv that will build it. Checksum is the x86_64 linux tarball.
+          version: "0.11.26"
+          checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
       - run: uv sync --all-extras --dev
       # No network: every deployment is stubbed, so this needs no API keys.
       - run: uv run pytest -q
