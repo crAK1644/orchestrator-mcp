@@ -8,12 +8,18 @@
 [![Tests](https://github.com/crAK1644/orchestrator-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/crAK1644/orchestrator-mcp/actions/workflows/test.yml)
 
 **[Quick Start](#quick-start)** · **[How It Works](#how-it-works)** · **[Tools](#tools)** ·
-**[Configuration](#configuration)** · **[Guardrails](#guardrails-and-their-limits)** ·
-**[Troubleshooting](#troubleshooting)** · **[Contributing](#contributing)**
+**[Consult](#consulting-another-agent)** · **[Configuration](#configuration)** ·
+**[Guardrails](#guardrails-and-their-limits)** · **[Troubleshooting](#troubleshooting)** ·
+**[Contributing](#contributing)**
 
 Research to one model, coding to another, cheap extraction to a third — and every answer
 comes back through the same validated envelope. Pointing a capability at your own
 deployment is a YAML edit. There is no code to change.
+
+Since 0.2.0 there is a second path: [**consult**](#consulting-another-agent) routes a
+question to another vendor's *coding agent* — a Codex or Claude Code CLI on your machine,
+under its own account — so Claude Code can ask GPT and Codex can ask Claude, in either
+direction, with no second API key.
 
 > Published to PyPI as **`orchestrator-mcp-server`** — the shorter name is an empty
 > registered project owned by someone else. The import package is `orchestrator_mcp`.
@@ -102,6 +108,8 @@ fast path to a specific answer.
 - [Tools](#tools) — `ask` and `list_capabilities`
 - [The response envelope](#the-response-envelope) — what every call returns
 - [Error codes](#error-codes) — the closed set callers branch on
+- [Consulting another agent](#consulting-another-agent) — `consult`, and the CLI path
+- [The dashboard](#the-dashboard) — read-only page over stored consultations
 
 **Understanding it**
 - [How It Works](#how-it-works) — why capabilities and not a classifier
@@ -209,6 +217,172 @@ A closed set, so callers branch on a value instead of matching substrings.
 `error.message` is bounded at 500 characters and never quotes the rejected output
 back at you.
 
+## Consulting another agent
+
+`ask` talks to a **model** over HTTP. `consult` talks to an **agent runtime** — the
+`codex` or `claude` CLI installed on the same machine, launched as a subprocess, already
+logged into its own account. That difference is the whole point: it brings its own
+subscription, its own web search, and its own conversation state, so a multi-turn
+consultation with a *different vendor's* agent needs no key you do not already have.
+
+Text goes out, structured text comes back. The consulted agent runs with its tools off,
+its sandbox read-only, and no MCP config, so it can answer and nothing else.
+
+### Enabling it
+
+Two things: a `consult:` block (see [`config.example.yaml`](config.example.yaml), which
+ships one commented out) and `ORCHESTRATOR_HOST_RUNTIME`, naming the runtime this
+installation *is*.
+
+```yaml
+consult:
+  database_path: ~/.orchestrator-mcp/consultations.sqlite3
+  timeout_s: 180
+  agents:
+    codex-sol:
+      runtime: codex
+      command: codex
+      model: gpt-5.6-sol
+      priority: 10
+      web_search: true
+      scores: { coding: 95, research: 85, reasoning: 90 }
+```
+
+```bash
+claude mcp add orchestrator --env ORCHESTRATOR_CONFIG=$PWD/config.yaml --env ORCHESTRATOR_HOST_RUNTIME=claude -- uvx orchestrator-mcp-server
+```
+
+The same server installed under Codex sets `ORCHESTRATOR_HOST_RUNTIME=codex`, and the
+routing table reverses itself. That variable is read from the environment and **never**
+from a tool argument: an agent that could name the host runtime could name someone
+else's and hand the work straight back to itself. Configure `consult:` without it and the
+server refuses to start.
+
+No `consult:` block, no change: the server advertises exactly `ask` and
+`list_capabilities`, byte for byte, which a snapshot test asserts.
+
+### Tools
+
+| Tool | What it does |
+|---|---|
+| `consult` | Route a question to a configured agent and return one envelope. |
+| `list_consult_agents` | Configured agents, their scores, and whether each is installed and logged in. |
+| `get_consultation` | A stored consultation: its turns, usage, and why that agent was chosen. |
+
+`consult` arguments:
+
+| Argument | Notes |
+|---|---|
+| `capability` | One of `coding`, `research`, `writing`, `reasoning`, `review`. A fixed vocabulary, not your `capabilities:` block — a score only means something against a name that means the same thing everywhere. |
+| `prompt` | Required. Capped at 100,000 characters. |
+| `context` | Source material, framed to the target as untrusted evidence rather than instructions. Capped at 1,000,000. |
+| `source_mode` | `auto` (default) → `document` when `context` is set, else `model`. `document` grounds the answer in `context` with every tool off. `web` enables only the target's own web search. `model` uses neither. |
+| `consultation_id` | Omit on the first call; send back the one you got to continue the same session. |
+| `target_agent` | Optional explicit agent id, advertised as an enum of *your* configured ids. |
+| `conversation_label` | Free text, recorded with the consultation. |
+
+Routing is deterministic and operator-controlled: disabled agents are dropped, every
+agent whose runtime equals the host's is dropped, then score descending, priority
+ascending, id ascending. There is no fallback to a second candidate — if the chosen
+agent is not logged in, that is the answer you get, not a quiet substitution.
+
+### Keep the `consultation_id`
+
+MCP gives a server no reliable identifier for the host's own conversation, so the
+returned `consultation_id` **is** the binding mechanism. Send it back on every later call
+about the same topic and the same native CLI session continues; omit it and each call
+starts a fresh one that remembers nothing. The tool description says so to the calling
+model, but a host that drops the field will silently get single-turn behaviour.
+
+A consultation is pinned to the agent, runtime, and model it started on. Pointing a
+resumed one at a different target is `session_target_mismatch`, never a silent restart
+somewhere else.
+
+### The envelope
+
+```json
+{
+  "ok": true,
+  "consultation_id": "6f1c…",
+  "content": {
+    "answer": "…",
+    "assumptions": [],
+    "uncertainties": ["whether the index is hot"],
+    "follow_up_questions": ["how large is the table?"],
+    "sources": [{ "title": "model", "locator": "internal", "source_type": "model" }]
+  },
+  "capability_requested": "coding",
+  "source_mode_used": "model",
+  "route": { "agent_id": "codex-sol", "runtime": "codex", "model": "gpt-5.6-sol",
+             "capability_score": 95, "priority": 10, "explicitly_selected": false },
+  "usage": { "prompt_tokens": 900, "completion_tokens": 120, "total_tokens": 1020 },
+  "latency_ms": 8412,
+  "error": null
+}
+```
+
+Every content field is required, and arrays may be empty but never absent: "no
+assumptions" is a claim the consulted agent has to make, not one you have to infer from a
+missing key. When `ok` is `false`, `content` is `null` — a failed consultation never
+carries text that could read as an answer.
+
+### Consult error codes
+
+| Code | Means |
+|---|---|
+| `invalid_request` | Rejected at the boundary — `document` mode with no `context`, an unknown agent id. |
+| `no_agent_available` | No enabled, non-host agent scores above zero for that capability. |
+| `agent_not_installed` | The configured `command` is not on `PATH`. |
+| `connection_required` | The CLI is installed but not logged in. Carries `required_action.command` — for *you* to run, never the server. |
+| `configured_model_unavailable` | The CLI answered as a different model than the one configured. |
+| `agent_unavailable` | The CLI reported the turn failed, or exited nonzero. |
+| `session_not_found` | The native session behind that `consultation_id` is gone. Start a new consultation. |
+| `session_busy` | Another process holds the lease on that consultation. |
+| `session_target_mismatch` | A resumed consultation was pointed at a different agent, runtime, or model. |
+| `protocol_validation_failed` | The reply did not match the contract, or the agent tried to act — a command, a file change, an MCP call, a subagent. |
+| `web_search_unavailable` | `source_mode: web` against an agent without `web_search: true`. |
+| `transport_error` | The CLI produced nothing usable. |
+| `timeout` | `consult.timeout_s` elapsed. The child's whole process group is killed. |
+
+### What this path enforces
+
+- **It never consults itself.** The host runtime is excluded at routing *and* refused on
+  resume, so a stored consultation cannot become a loop back into the caller.
+- **No silent substitution.** Not of the agent — there is no fallback candidate — and not
+  of the model: both adapters check what the CLI reports it actually used against what
+  you configured, and disagreement is `configured_model_unavailable`.
+- **The consulted agent may not act.** Codex runs `--sandbox read-only
+  --ask-for-approval never --ignore-user-config --ignore-rules` with shell and subagents
+  off; Claude Code runs `--safe-mode --strict-mcp-config --tools ""`. Any action event in
+  the stream fails the turn closed rather than being ignored.
+- **No credentials, ever.** Preflight reads one bit: `codex login status`'s exit code, or
+  the `loggedIn` boolean out of `claude auth status --json`. Codex's login output is not
+  even captured, and no part of either payload has a column to be stored in.
+  Authentication is something you do in your own terminal — the server only ever tells
+  you which command to run.
+- **No shell.** Every invocation is `create_subprocess_exec` with an argument list, and
+  the prompt travels over stdin, so there is neither an injection surface nor an argv
+  ceiling. Children get their own process group and a timeout kills the group.
+- **Failures are envelopes.** Including the ones that are not this server's fault.
+
+The database at `database_path` holds every prompt and every answer verbatim — directory
+`0700`, file `0600`, set before anything is written. Set `store_full_content: false` to
+keep metadata and routing only. Nothing from a subprocess environment is stored at all.
+
+### The dashboard
+
+Off by default. `dashboard.enabled: true`, then:
+
+```bash
+ORCHESTRATOR_CONFIG=config.yaml orchestrator-mcp-dashboard
+```
+
+A read-only page over the same SQLite file: agents and their last status check, the last
+200 consultations, and per turn the compiled prompt, the answer, latency, usage, and any
+error. It opens the database `mode=ro`, serves `GET` and nothing else, refuses to bind
+anywhere but loopback, and rejects a request whose `Host` is not one — because what it
+serves is every prompt you have ever sent.
+
 ## System Requirements
 
 - Python 3.11, 3.12, or 3.13
@@ -216,6 +390,9 @@ back at you.
 - An MCP client that speaks stdio (Claude Code, Codex, or your own)
 - At least one provider you hold credentials for, or a local endpoint
 - Network access to whatever your `config.yaml` points at — nothing else phones home
+- For [`consult`](#consulting-another-agent) only: the `codex` and/or `claude` CLI
+  installed and logged in, and `ORCHESTRATOR_HOST_RUNTIME` set. Nothing else changes if
+  you leave that block out.
 
 A local Ollama endpoint works and costs nothing, which makes it a reasonable way to
 try the server before wiring up paid providers:
@@ -336,13 +513,20 @@ forward somewhere your config is not.
 uv run pytest -q
 ```
 
-88 tests, no network — deployments are stubbed with LiteLLM's `mock_response`, and the
-shapes it cannot express (no choices, null content, a truncated or filtered reply) are
-stubbed as raw `ModelResponse` objects. Includes the rate-limit-then-fallback path and
-the cooled-down-group path.
+298 tests, no network and no CLI installed. Deployments are stubbed with LiteLLM's
+`mock_response`, and the shapes it cannot express (no choices, null content, a truncated
+or filtered reply) are stubbed as raw `ModelResponse` objects. Includes the
+rate-limit-then-fallback path and the cooled-down-group path.
 
-Because all of that is stubbed, it proves the orchestrator's logic and nothing about
-your providers. For that:
+The consult path is stubbed the same way: `codex` and `claude` are replaced with small
+Python scripts on `PATH` that replay recorded event streams — success, resume, a
+substituted model, a tool-use event, a stream that never ends, one that ignores `SIGTERM`
+so the process-group kill has to be proven. Cross-process behaviour (leases, migrations)
+is tested with real OS processes rather than tasks, because an in-process lock would pass
+either way.
+
+Because all of that is stubbed, it proves this server's logic and nothing about your
+providers or your CLIs. For those:
 
 ```bash
 uv run python smoke_live.py
@@ -355,6 +539,14 @@ the model honours the abstention path instead of inventing, and what the provide
 actually sends as `finish_reason` when it runs out of room. Name capabilities as
 arguments to check only some (`uv run python smoke_live.py fast`).
 
+```bash
+ORCHESTRATOR_HOST_RUNTIME=claude uv run python smoke_consult_live.py
+```
+
+The same deal for the consult path, and the only thing that confirms the real CLI flags
+and event names: it needs both CLIs installed and logged in, and it spends whatever your
+subscriptions charge. Also not for CI.
+
 ## Troubleshooting
 
 | Symptom | Cause |
@@ -366,6 +558,21 @@ arguments to check only some (`uv run python smoke_live.py fast`).
 | `output_truncated` | The answer did not fit. Raise `max_output_tokens`, in the request or in `limits`. |
 | `schema_validation_failed` after repairs | The model cannot produce your schema. Simplify it, or route the capability at a model that supports `response_format` natively. |
 | `timeout` on a local model | `request_timeout_s` covers the entire call including model load. A 7B model on a laptop wants more than the default. |
+
+Consult path:
+
+| Symptom | Cause |
+|---|---|
+| `ORCHESTRATOR_HOST_RUNTIME must be set to codex or claude` at startup | The `consult:` block is present and the variable is not. Add it to the *client's* `env` block, not your shell. |
+| `consult` is not advertised at all | No `consult:` block in the config the server actually loaded. Check `ORCHESTRATOR_CONFIG` is an absolute path. |
+| `agent_not_installed` for a CLI you can run yourself | The client's `PATH` is not your shell's — a GUI-launched client often has neither `~/.local/bin` nor a version manager's shims. Use an absolute path in `command`. |
+| `connection_required` | Run the command in `error.required_action.command` in your own terminal, then retry. The server will not log anything in on your behalf. |
+| `no_agent_available` with agents configured | Every candidate is disabled, scores 0 for that capability, or runs the host's own runtime. `list_consult_agents` shows which. |
+| `configured_model_unavailable` | The CLI answered as something other than `model:`. Either it fell back internally, or the configured string does not match what that CLI calls the model. |
+| Each call starts over, no memory of the last one | The host is not sending `consultation_id` back. It is the only binding there is — see [Keep the `consultation_id`](#keep-the-consultation_id). |
+| `session_busy` | Another process holds the lease on that consultation, or one died mid-turn. Leases expire; wait it out or start a new consultation. |
+| `protocol_validation_failed` mentioning a tool or command | The consulted agent tried to act instead of answer. The turn is refused on purpose; the answer it produced alongside is not returned. |
+| Dashboard exits with `dashboard is disabled` | `consult.dashboard.enabled` is `false`. It serves every stored prompt, so it stays off until you say otherwise. |
 
 ## Bug Reports
 

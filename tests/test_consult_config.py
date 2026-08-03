@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
+import yaml
 
 from orchestrator_mcp.contract import ConfigError
 from orchestrator_mcp.consult.config import HOST_RUNTIME_ENV, ConsultConfig, host_runtime, load_consult_config
@@ -109,3 +113,14 @@ def test_every_content_field_is_required_even_when_empty():
         answer="hi", assumptions=[], uncertainties=[], follow_up_questions=[], sources=[]
     )
     assert content.sources == []
+
+
+def test_the_commented_consult_block_in_the_example_config_still_loads():
+    """The example is documentation that can rot. Uncomment it and it must validate,
+    or the first thing a new user copies is a startup error."""
+    text = (Path(__file__).parent.parent / "config.example.yaml").read_text()
+    block = "consult:" + text.split("# consult:", 1)[1]
+    doc = yaml.safe_load("\n".join(re.sub(r"^# ?", "", line) for line in block.splitlines()))
+    config = load_consult_config(doc)
+    assert sorted(config.agents) == ["claude-opus", "codex-sol"]
+    assert config.dashboard.enabled is False
