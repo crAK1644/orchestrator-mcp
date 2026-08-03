@@ -16,7 +16,7 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from ..contract import MAX_ERROR_CHARS, Usage
 from .errors import ConsultErrorCode
@@ -134,7 +134,9 @@ class ConsultResponse(BaseModel):
     """
 
     ok: bool
-    consultation_id: UUID
+    # Null only when the failure happened before a consultation existed -- a bad
+    # request, or no eligible agent. Any other outcome has an id worth sending back.
+    consultation_id: UUID | None = None
     content: ConsultationContent | None = None
     capability_requested: str
     source_mode_used: SourceMode
@@ -172,6 +174,62 @@ class ConsultAgentInfo(BaseModel):
 class ConsultAgentsResponse(BaseModel):
     host_runtime: Runtime
     agents: list[ConsultAgentInfo]
+
+
+class ConsultationRecord(BaseModel):
+    """What `get_consultation` returns: the session, its turns, and why this agent."""
+
+    consultation_id: UUID
+    target_agent_id: str
+    target_runtime: Runtime
+    target_model: str
+    capability: str
+    source_modes: list[str]
+    conversation_label: str | None
+    status: str
+    native_session_bound: bool
+    created_at: str
+    updated_at: str
+    turns: list[dict[str, Any]]
+    routing: list[dict[str, Any]]
+
+
+def _agent_enum(agent_ids: list[str]):
+    """Advertise `target_agent` as the configured ids, or null.
+
+    Same reason as `_always_an_enum` on the LiteLLM path: a calling model reads the
+    enum out of the tool schema, and one that cannot name an unconfigured agent
+    cannot ask for one. Written flat rather than as an `anyOf`, which is what a
+    nullable `Literal` would otherwise produce, because a plain enum survives
+    translation into a function-calling definition far more widely.
+    """
+
+    def patch(schema: dict[str, Any]) -> None:
+        schema.pop("const", None)
+        schema.pop("anyOf", None)
+        schema["type"] = ["string", "null"]
+        schema["enum"] = [*agent_ids, None]
+
+    return patch
+
+
+def build_consult_request(agent_ids: list[str]) -> type[ConsultRequest]:
+    """Specialize `ConsultRequest` to the configured agents."""
+    if not agent_ids:
+        raise ValueError("no consult agents configured")
+
+    return create_model(
+        "ConsultRequest",
+        __base__=ConsultRequest,
+        target_agent=(
+            Literal[tuple(agent_ids)] | None,  # type: ignore[valid-type]
+            Field(
+                default=None,
+                description=ConsultRequest.model_fields["target_agent"].description,
+                json_schema_extra=_agent_enum(agent_ids),
+            ),
+        ),
+    )
 
 
 def consultation_content_schema() -> dict[str, Any]:

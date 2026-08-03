@@ -100,6 +100,10 @@ class ConsultAdapter(Protocol):
 
     runtime: str
 
+    def connect_command(self, agent: AgentConfig) -> str:
+        """What the *user* runs to log this runtime in. Never run by this server."""
+        ...
+
     async def preflight(self, agent: AgentConfig) -> AgentStatus: ...
 
     async def start(

@@ -16,6 +16,7 @@ import time
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import UUID
 
 import jsonschema
 import litellm
@@ -37,8 +38,11 @@ from .contract import (
     Usage,
     build_ask_request,
 )
+from .consult.config import host_runtime, load_consult_config
+from .consult.contract import ConsultAgentsResponse, ConsultationRecord, ConsultResponse
+from .consult.service import ConsultService
 
-__all__ = ["ConfigError", "Orchestrator", "build_server", "load_config", "main", "validate_config"]
+__all__ =["ConfigError", "Orchestrator", "build_server", "load_config", "main", "validate_config"]
 
 CONFIG_ENV = "ORCHESTRATOR_CONFIG"
 DEFAULT_CONFIG = "config.yaml"
@@ -302,6 +306,9 @@ class Orchestrator:
 
     def __init__(self, config: dict[str, Any]) -> None:
         validate_config(config)
+        # Kept so `build_server` can read the `consult:` block off it rather than
+        # loading the file a second time.
+        self.config = config
         self.capabilities: dict[str, str] = config["capabilities"]
         try:
             self.limits = Limits(**(config.get("limits") or {}))
@@ -536,7 +543,7 @@ class Orchestrator:
         ).check_invariants()
 
 
-def _tool_signature(request_model: type) -> inspect.Signature:
+def _tool_signature(request_model: type, return_annotation: type = AskResponse) -> inspect.Signature:
     """Expose the request model's fields as flat keyword arguments.
 
     Nesting the model under one `request` parameter is what the SDK does by default;
@@ -553,7 +560,7 @@ def _tool_signature(request_model: type) -> inspect.Signature:
         )
         for name, field in request_model.model_fields.items()
     ]
-    return inspect.Signature(parameters, return_annotation=AskResponse)
+    return inspect.Signature(parameters, return_annotation=return_annotation)
 
 
 def _version() -> str:
@@ -592,7 +599,57 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
         and where it falls back when they are unavailable."""
         return orchestrator.list_capabilities()
 
+    # The whole consultation path hangs off this one branch. A config with no
+    # `consult:` block advertises exactly the two tools above, byte for byte, which
+    # is what the compatibility snapshot asserts.
+    consult_config = load_consult_config(orchestrator.config)
+    if consult_config is not None:
+        _add_consult_tools(server, ConsultService(consult_config, host_runtime()))
+
     return server
+
+
+def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
+    async def consult(**kwargs: Any) -> ConsultResponse:
+        # Opened on first use rather than at boot: a server whose consult path is
+        # configured but never called should not create a database for it.
+        await service.open()
+        return await service.consult(**kwargs)
+
+    consult.__name__ = "consult"
+    consult.__signature__ = _tool_signature(service.request_model, ConsultResponse)  # type: ignore[attr-defined]
+    consult.__annotations__ = {
+        p.name: p.annotation for p in consult.__signature__.parameters.values()
+    } | {"return": ConsultResponse}
+    consult.__doc__ = (
+        "Consult another vendor's coding agent -- a Codex or Claude Code CLI running "
+        "under its own account -- and get back a structured second opinion.\n\n"
+        "Keep the `consultation_id` from the response and send it back on every later "
+        "call about the same topic: that is what continues the same conversation on "
+        "the other side, and without it each call starts a new one that remembers "
+        "nothing.\n\n"
+        "Returns an envelope: `ok`, `content` (answer, assumptions, uncertainties, "
+        "follow_up_questions, sources), `route`, `usage`, and `error` (a code from a "
+        "closed set). A failed call never carries answer text -- check `ok` first. An "
+        "error with `required_action` means the agent needs the user to run that "
+        "command; nothing else will make it available."
+    )
+    server.add_tool(consult, name="consult")
+
+    @server.tool(name="list_consult_agents")
+    async def list_consult_agents() -> ConsultAgentsResponse:
+        """List consultable agents: runtime, model, capability scores, and whether each
+        is installed and logged in. The host's own runtime is listed but never routed
+        to."""
+        await service.open()
+        return await service.list_agents()
+
+    @server.tool(name="get_consultation")
+    async def get_consultation(consultation_id: UUID) -> ConsultationRecord:
+        """Retrieve a stored consultation: its turns, usage, and why this agent was
+        chosen."""
+        await service.open()
+        return await service.get_consultation(consultation_id)
 
 
 def main() -> None:

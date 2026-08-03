@@ -48,6 +48,9 @@ class CodexCliAdapter:
     def __init__(self, timeout_s: float) -> None:
         self.timeout_s = timeout_s
 
+    def connect_command(self, agent: AgentConfig) -> str:
+        return f"{agent.command} login"
+
     async def preflight(self, agent: AgentConfig) -> AgentStatus:
         try:
             command = resolve_command(agent)
