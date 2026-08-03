@@ -33,6 +33,8 @@ Issues = "https://github.com/crAK1644/orchestrator-mcp/issues"
 
 [project.scripts]
 orchestrator-mcp-server = "orchestrator_mcp.server:main"
+# Opt-in, loopback, read-only: it serves every stored prompt and answer.
+orchestrator-mcp-dashboard = "orchestrator_mcp.consult.dashboard:main"
 
 [dependency-groups]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
