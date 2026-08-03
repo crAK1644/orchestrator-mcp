@@ -54,3 +54,58 @@ limits:
   max_output_tokens: 4096
   request_timeout_s: 120
   schema_repair_attempts: 1
+
+# --- consult: the second path, optional ------------------------------------
+#
+# Everything above routes to a *model* over HTTP. This block routes to an *agent
+# runtime* -- a Codex or Claude Code CLI installed on this machine, running under
+# its own account -- so Claude Code can consult GPT and Codex can consult Claude
+# without either one holding the other's API key.
+#
+# Delete the whole block and the server is exactly what it was: `ask` and
+# `list_capabilities`, nothing else advertised.
+#
+# One environment variable is required alongside it: ORCHESTRATOR_HOST_RUNTIME,
+# set to `codex` or `claude` to say which runtime this installation *is*. It is
+# never a tool argument, because an agent that could name the host runtime could
+# route the work straight back to itself. Missing it is a startup error.
+#
+# consult:
+#   # Every prompt and every answer is stored here verbatim. Directory 0700, file
+#   # 0600, and nothing from a subprocess environment or a login command has a
+#   # column to land in.
+#   database_path: ~/.orchestrator-mcp/consultations.sqlite3
+#   timeout_s: 180            # per consultation turn, subprocess included
+#   store_full_content: true  # false stores metadata and routing only
+#   web_turn_limit: 8         # web mode: assistant turns before the child is killed
+#   protocol_version: consult-v1
+#
+#   agents:
+#     codex-sol:              # the id callers name in `target_agent`
+#       runtime: codex        # codex | claude
+#       command: codex        # resolved on PATH; an absolute path works too
+#       model: gpt-5.6-sol    # verified against what the CLI reports it used
+#       priority: 10          # ascending: lower wins a tie
+#       web_search: true      # required before `source_mode: web` will route here
+#       scores:               # 0..100 per capability; omitted means 0, i.e. never
+#         coding: 95          # the vocabulary is fixed: coding, research,
+#         research: 85        # writing, reasoning, review
+#         reasoning: 90
+#
+#     claude-opus:
+#       runtime: claude
+#       command: claude
+#       model: claude-opus-4-6
+#       priority: 20
+#       web_search: true
+#       scores:
+#         writing: 95
+#         review: 90
+#
+#   # Read-only page over the stored consultations, loopback only, started
+#   # separately with `orchestrator-mcp-dashboard`. Off unless you turn it on: it
+#   # serves every prompt and answer in the database.
+#   dashboard:
+#     enabled: false
+#     host: 127.0.0.1
+#     port: 8765
