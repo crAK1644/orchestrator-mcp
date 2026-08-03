@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
     BaseModel,
@@ -97,11 +97,21 @@ class AskRequest(BaseModel):
     temperature: float = Field(default=0.2, ge=0.0, le=1.0)
     max_output_tokens: int | None = Field(default=None, ge=1)
 
+    # Overwritten by `build_ask_request` from the configured limits. The cap lives here
+    # rather than only at the later runtime check because the string arm is parsed by
+    # the validator below, and parsing megabytes of JSON to then reject it is the cost
+    # the cap exists to avoid.
+    max_schema_chars: ClassVar[int] = Limits.model_fields["max_schema_chars"].default
+
     @field_validator("response_schema", mode="before")
     @classmethod
     def _parse_schema_string(cls, value: Any) -> Any:
         if not isinstance(value, str):
             return value
+        if len(value) > cls.max_schema_chars:
+            raise ValueError(
+                f"`response_schema` is larger than max_schema_chars ({cls.max_schema_chars})"
+            )
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError as exc:
@@ -183,7 +193,7 @@ def build_ask_request(capabilities: list[str], limits: Limits) -> type[AskReques
     if not capabilities:
         raise ValueError("no capabilities configured")
 
-    return create_model(
+    model = create_model(
         "AskRequest",
         __base__=AskRequest,
         capability=(
@@ -215,8 +225,20 @@ def build_ask_request(capabilities: list[str], limits: Limits) -> type[AskReques
                 description=AskRequest.model_fields["system"].description,
             ),
         ),
+        response_schema=(
+            dict[str, Any] | Annotated[str, Field(max_length=limits.max_schema_chars)] | None,
+            Field(
+                default=None,
+                description=AskRequest.model_fields["response_schema"].description,
+            ),
+        ),
         max_output_tokens=(
             int | None,
             Field(default=None, ge=1, le=limits.max_output_tokens),
         ),
     )
+    # The `maxLength` above only advertises the cap -- the before-validator has already
+    # turned a string into a dict by the time the union is checked -- so the enforcing
+    # copy goes where that validator reads it.
+    model.max_schema_chars = limits.max_schema_chars
+    return model

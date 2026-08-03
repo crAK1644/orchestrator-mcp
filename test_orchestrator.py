@@ -8,8 +8,10 @@ reach the caller as if a model had produced it.
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import json
 import time
+from types import SimpleNamespace
 
 import litellm
 import pytest
@@ -157,6 +159,13 @@ async def test_usage_and_latency_are_reported():
         ({"capability": "fast", "prompt": "x" * 500}, "hi"),  # over the prompt cap
         ({"capability": "fast", "prompt": ""}, "hi"),  # empty prompt
         ({"capability": "fast", "prompt": "q", "bogus": 1}, "hi"),  # unknown key
+        # A non-string capability used to be echoed straight into the failure
+        # envelope, where `capability_requested: str` rejected it and the guaranteed
+        # envelope became a raised ValidationError instead.
+        ({"capability": 123, "prompt": "q"}, "hi"),
+        ({"capability": None, "prompt": "q"}, "hi"),
+        ({"capability": ["fast"], "prompt": "q"}, "hi"),
+        ({"capability": {"name": "fast"}, "prompt": "q"}, "hi"),
         ({"capability": "fast", "prompt": "q"}, "litellm.RateLimitError"),  # upstream
         (
             {"capability": "fast", "prompt": "q", "response_schema": SCHEMA},
@@ -180,8 +189,26 @@ async def test_failures_never_carry_an_answer(kwargs, mock):
         (choice("half an ans", "length"), ErrorCode.OUTPUT_TRUNCATED),
         (choice("half an ans", "max_tokens"), ErrorCode.OUTPUT_TRUNCATED),
         (choice("", "content_filter"), ErrorCode.CONTENT_FILTERED),
+        # The model stopped to call a tool. Whatever prose came with it is a preamble.
+        (choice("let me look that up", "tool_calls"), ErrorCode.UPSTREAM_ERROR),
+        (choice("let me look that up", "function_call"), ErrorCode.UPSTREAM_ERROR),
+        # LiteLLM maps these to "stop" and keeps the original in
+        # `provider_specific_fields`, so the normalized reason alone says "finished".
+        (choice("partial call", "MALFORMED_FUNCTION_CALL"), ErrorCode.UPSTREAM_ERROR),
+        (choice("something", "FINISH_REASON_UNSPECIFIED"), ErrorCode.UPSTREAM_ERROR),
     ],
-    ids=["no-choices", "null-content", "blank-content", "length", "max_tokens", "filtered"],
+    ids=[
+        "no-choices",
+        "null-content",
+        "blank-content",
+        "length",
+        "max_tokens",
+        "filtered",
+        "tool_calls",
+        "function_call",
+        "native-malformed-function-call",
+        "native-unspecified",
+    ],
 )
 async def test_incomplete_provider_replies_are_failures(choices, expected):
     """A half answer that reads as a whole one is the failure this server prevents."""
@@ -232,6 +259,33 @@ async def test_failures_without_a_reply_have_no_finish_reason():
     response = await orchestrator.ask(capability="fast", prompt="q")
 
     assert response.ok is False and response.finish_reason is None
+
+
+async def test_a_non_string_completion_is_a_failure():
+    """A custom provider answering in content blocks is a shape we do not read.
+
+    LiteLLM's own `Message` refuses a list, so this is only reachable from a reply
+    object that never went through it -- which is exactly what a trust boundary is for.
+    """
+    orchestrator = single("unused")
+    blocks = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason="stop",
+                provider_specific_fields=None,
+                message=SimpleNamespace(content=[{"type": "text", "text": "hi"}]),
+            )
+        ]
+    )
+
+    async def reply(**_):
+        return blocks
+
+    orchestrator.router.acompletion = reply
+    response = await orchestrator.ask(capability="fast", prompt="q")
+
+    assert response.error.code is ErrorCode.UPSTREAM_ERROR
+    assert response.content is None
 
 
 async def test_truncation_is_caught_before_the_schema_parse():
@@ -330,21 +384,49 @@ async def test_structured_mode_pins_temperature():
 
 
 async def test_the_deadline_covers_the_whole_call_not_each_attempt():
-    """Two repair turns must not buy three times the configured timeout."""
+    """Two repair turns must not buy three times the configured timeout.
+
+    Every attempt finishes well inside the budget on its own; only their sum exceeds
+    it. A per-attempt timeout would let all three run and end in a schema failure, so
+    this fails if the deadline is ever renewed per leg.
+    """
     orchestrator = single("unused", repairs=2)
     orchestrator.limits.request_timeout_s = 1
+    calls = 0
 
-    async def slow(**_):
-        await asyncio.sleep(5)
+    async def slow_but_not_too_slow(**_):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.6)
+        return ModelResponse(choices=choice("not json"))
 
-    orchestrator.router.acompletion = slow
+    orchestrator.router.acompletion = slow_but_not_too_slow
     started = time.perf_counter()
     response = await orchestrator.ask(capability="fast", prompt="q", response_schema=SCHEMA)
     elapsed = time.perf_counter() - started
 
     assert response.error.code is ErrorCode.TIMEOUT
     assert response.content is None
-    assert elapsed < 3, f"budget was 1s across all attempts, took {elapsed:.1f}s"
+    assert calls < 3, "the budget was spent, so the third attempt must not start"
+    assert elapsed < 1.5, f"budget was 1s across all attempts, took {elapsed:.1f}s"
+
+
+async def test_the_router_gets_a_shorter_deadline_than_the_call():
+    """A leg must time out inside LiteLLM, which records the failure and cools the
+    deployment down. Cancelling from outside skips that, and the next request picks
+    the same stuck deployment."""
+    orchestrator = single("unused")
+    orchestrator.limits.request_timeout_s = 2
+    seen: list[float] = []
+
+    async def reply(**kwargs):
+        seen.append(kwargs["timeout"])
+        return ModelResponse(choices=choice("hi"))
+
+    orchestrator.router.acompletion = reply
+    await orchestrator.ask(capability="fast", prompt="q")
+
+    assert seen and seen[0] < 2, "the Router must be given less than the whole budget"
 
 
 # --- bounds -----------------------------------------------------------------
@@ -404,6 +486,24 @@ async def test_oversized_side_channels_are_rejected(kwargs):
     orchestrator.router.acompletion = fail
     response = await orchestrator.ask(capability="fast", prompt="q", **kwargs)
     assert response.error.code is ErrorCode.INVALID_REQUEST
+
+
+async def test_an_oversized_schema_string_is_refused_before_it_is_parsed(monkeypatch):
+    """The string arm is parsed by a validator, so the cap has to bite before the parse
+    rather than at the later runtime check -- otherwise a megabyte of JSON is decoded
+    only to be thrown away, and outside the call's deadline at that."""
+    orchestrator = single("hi")
+
+    def exploded(*_args, **_kwargs):
+        raise AssertionError("an oversized schema string was parsed")
+
+    monkeypatch.setattr("orchestrator_mcp.contract.json.loads", exploded)
+    response = await orchestrator.ask(
+        capability="fast", prompt="q", response_schema="x" * 30_000
+    )
+
+    assert response.error.code is ErrorCode.INVALID_REQUEST
+    assert "max_schema_chars" in response.error.message
 
 
 async def test_unresolvable_ref_fails_as_a_rejected_reply():
@@ -505,8 +605,18 @@ async def test_tool_schema_advertises_capabilities_and_caps():
     assert "response_schema" in properties
     # nullable fields advertise their cap inside `anyOf`, and keep their description
     assert properties["system"]["anyOf"][0]["maxLength"] == 10_000
+    # the schema-as-JSON-text arm advertises its cap too, so a caller sees it up front
+    schema_arms = properties["response_schema"]["anyOf"]
+    assert next(a for a in schema_arms if a.get("type") == "string")["maxLength"] == 20_000
     assert properties["system"]["description"] and properties["context"]["description"]
     assert set(ask.output_schema["properties"]) >= {"ok", "content", "data", "error", "fallback_used"}
+
+
+async def test_the_handshake_reports_the_installed_version():
+    """`initialize` returned an empty version string until this was wired up."""
+    server = build_server(config(deployment("fast", "hi")))
+    assert server.version == importlib.metadata.version("orchestrator-mcp-server")
+    assert server.version != ""
 
 
 async def test_a_single_capability_still_advertises_an_enum():
