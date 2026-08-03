@@ -1,0 +1,511 @@
+"""Local record of every consultation.
+
+Stdlib `sqlite3` behind `asyncio.to_thread` rather than `aiosqlite`: a turn writes
+a handful of short statements around a subprocess call that takes seconds, so the
+driver is never the thing waiting, and this keeps the dependency list where it is.
+
+Two things this file is careful about. Everything a consultation sent and received
+is stored in full by default, which makes the database as sensitive as the prompts
+themselves -- hence `0700` on the directory and `0600` on the file, set before
+anything is written into it. And nothing from a subprocess environment or from an
+authentication command has a column to land in; the schema is the enforcement.
+
+Concurrency is cross-process, not just cross-task: two MCP servers can be pointed
+at one database, and both could try to advance the same native CLI session. The
+lease table is what makes the second one wait, so it is taken in a transaction
+SQLite itself serializes rather than in an `asyncio.Lock` that only one process
+would honour.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sqlite3
+import time
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+from .contract import ConsultRoute, SourceMode
+from .errors import ConsultErrorCode
+from .routing import RoutingDecision
+
+# Applied in order, by index. Append only -- an edit to a shipped migration is a
+# database that disagrees with itself depending on when it was created.
+MIGRATIONS: list[str] = [
+    """
+    CREATE TABLE profiles (
+        id          TEXT PRIMARY KEY,
+        created_at  TEXT NOT NULL
+    );
+
+    CREATE TABLE consultations (
+        id                 TEXT PRIMARY KEY,
+        profile_id         TEXT NOT NULL REFERENCES profiles(id),
+        origin_runtime     TEXT NOT NULL,
+        target_agent_id    TEXT NOT NULL,
+        target_runtime     TEXT NOT NULL,
+        target_model       TEXT NOT NULL,
+        capability         TEXT NOT NULL,
+        native_session_id  TEXT,
+        conversation_label TEXT,
+        protocol_version   TEXT NOT NULL,
+        config_hash        TEXT NOT NULL,
+        status             TEXT NOT NULL,
+        created_at         TEXT NOT NULL,
+        updated_at         TEXT NOT NULL
+    );
+
+    CREATE TABLE consultation_turns (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        consultation_id         TEXT NOT NULL REFERENCES consultations(id),
+        sequence_number         INTEGER NOT NULL,
+        source_mode             TEXT NOT NULL,
+        user_prompt             TEXT,
+        context                 TEXT,
+        compiled_prompt         TEXT,
+        raw_output              TEXT,
+        validated_response_json TEXT,
+        input_tokens            INTEGER NOT NULL DEFAULT 0,
+        output_tokens           INTEGER NOT NULL DEFAULT 0,
+        cost_usd                REAL,
+        latency_ms              INTEGER NOT NULL DEFAULT 0,
+        error_code              TEXT,
+        created_at              TEXT NOT NULL,
+        UNIQUE (consultation_id, sequence_number)
+    );
+
+    CREATE TABLE routing_decisions (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        consultation_id TEXT NOT NULL REFERENCES consultations(id),
+        capability      TEXT NOT NULL,
+        selected_agent  TEXT,
+        explicit        INTEGER NOT NULL DEFAULT 0,
+        excluded_json   TEXT NOT NULL,
+        error_code      TEXT,
+        created_at      TEXT NOT NULL
+    );
+
+    CREATE TABLE agent_status_checks (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id      TEXT NOT NULL,
+        installed     INTEGER,
+        authenticated INTEGER,
+        detail        TEXT,
+        checked_at    TEXT NOT NULL
+    );
+
+    CREATE TABLE consultation_leases (
+        consultation_id TEXT PRIMARY KEY,
+        holder          TEXT NOT NULL,
+        expires_at      REAL NOT NULL
+    );
+    """
+]
+
+DEFAULT_PROFILE = "default"
+LEASE_TTL_S = 300.0
+
+
+class StoreError(Exception):
+    """A refusal with a code the caller's envelope can carry."""
+
+    def __init__(self, code: ConsultErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class Consultation:
+    id: str
+    profile_id: str
+    origin_runtime: str
+    target_agent_id: str
+    target_runtime: str
+    target_model: str
+    capability: str
+    native_session_id: str | None
+    conversation_label: str | None
+    protocol_version: str
+    config_hash: str
+    status: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class Turn:
+    sequence_number: int
+    source_mode: str
+    user_prompt: str | None
+    context: str | None
+    compiled_prompt: str | None
+    raw_output: str | None
+    validated_response_json: str | None
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float | None
+    latency_ms: int
+    error_code: str | None
+    created_at: str
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+class ConsultStore:
+    """Every method is async and does its SQLite work in a worker thread."""
+
+    def __init__(self, path: Path, store_full_content: bool = True) -> None:
+        self.path = Path(path)
+        self.store_full_content = store_full_content
+        self._connection: sqlite3.Connection | None = None
+        self._holder = f"pid-{os.getpid()}"
+
+    # --- lifecycle ----------------------------------------------------------
+
+    async def open(self) -> ConsultStore:
+        await asyncio.to_thread(self._open)
+        return self
+
+    def _open(self) -> None:
+        # `0700` before the file exists, so there is no window where a fresh
+        # database is world-readable.
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        connection = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+        # Every open, not only the first: a database that was already there with
+        # looser permissions is exactly the one worth tightening.
+        os.chmod(self.path, 0o600)
+        connection.row_factory = sqlite3.Row
+        # WAL so a reader (the dashboard) never blocks the writer mid-consultation.
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA foreign_keys=ON")
+        # Long enough to outlast another process's short write, short enough that a
+        # wedged one surfaces as an error instead of hanging the consultation.
+        connection.execute("PRAGMA busy_timeout=5000")
+        self._connection = connection
+        self._migrate()
+
+    def _migrate(self) -> None:
+        db = self._db
+        db.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+        applied = {row[0] for row in db.execute("SELECT version FROM schema_migrations")}
+        for version, statements in enumerate(MIGRATIONS):
+            if version in applied:
+                continue
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                # Not `executescript`, which commits any open transaction before it
+                # runs: the schema and the row saying it was applied have to land
+                # together, or a half-applied migration re-runs into a CREATE that
+                # already exists. Splitting on `;` is safe for these -- no statement
+                # here contains one inside a literal.
+                for statement in filter(str.strip, statements.split(";")):
+                    db.execute(statement)
+                db.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (version, _now()),
+                )
+                db.execute(
+                    "INSERT OR IGNORE INTO profiles (id, created_at) VALUES (?, ?)",
+                    (DEFAULT_PROFILE, _now()),
+                )
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+            db.execute("COMMIT")
+
+    async def close(self) -> None:
+        if self._connection is not None:
+            connection, self._connection = self._connection, None
+            await asyncio.to_thread(connection.close)
+
+    @property
+    def _db(self) -> sqlite3.Connection:
+        if self._connection is None:
+            raise StoreError(ConsultErrorCode.TRANSPORT_ERROR, "consultation store is not open")
+        return self._connection
+
+    # --- consultations ------------------------------------------------------
+
+    async def create_consultation(
+        self,
+        consultation_id: UUID,
+        origin_runtime: str,
+        route: ConsultRoute,
+        capability: str,
+        protocol_version: str,
+        config_hash: str,
+        conversation_label: str | None = None,
+        profile_id: str = DEFAULT_PROFILE,
+    ) -> Consultation:
+        def work() -> Consultation:
+            now = _now()
+            self._db.execute(
+                "INSERT INTO consultations (id, profile_id, origin_runtime, target_agent_id, "
+                "target_runtime, target_model, capability, native_session_id, conversation_label, "
+                "protocol_version, config_hash, status, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    str(consultation_id),
+                    profile_id,
+                    origin_runtime,
+                    route.agent_id,
+                    route.runtime,
+                    route.model,
+                    capability,
+                    None,
+                    conversation_label,
+                    protocol_version,
+                    config_hash,
+                    "open",
+                    now,
+                    now,
+                ),
+            )
+            return self._fetch(str(consultation_id))
+
+        return await asyncio.to_thread(work)
+
+    async def get_consultation(self, consultation_id: UUID | str) -> Consultation:
+        return await asyncio.to_thread(self._fetch, str(consultation_id))
+
+    def _fetch(self, consultation_id: str) -> Consultation:
+        row = self._db.execute(
+            "SELECT * FROM consultations WHERE id = ?", (consultation_id,)
+        ).fetchone()
+        if row is None:
+            # A consultation id this server never issued, or one from a database the
+            # host has since been repointed away from. Either way there is no session
+            # behind it, and inventing one would silently start a new conversation.
+            raise StoreError(
+                ConsultErrorCode.SESSION_NOT_FOUND,
+                f"no consultation `{consultation_id}` in this store; start a new one",
+            )
+        return Consultation(**dict(row))
+
+    async def bind_native_session(self, consultation_id: UUID | str, native_session_id: str) -> None:
+        """Record the session id the runtime gave us, once."""
+
+        def work() -> None:
+            current = self._fetch(str(consultation_id)).native_session_id
+            if current is not None and current != native_session_id:
+                raise StoreError(
+                    ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                    f"consultation `{consultation_id}` is already bound to native session "
+                    f"`{current}`",
+                )
+            self._db.execute(
+                "UPDATE consultations SET native_session_id = ?, updated_at = ? WHERE id = ?",
+                (native_session_id, _now(), str(consultation_id)),
+            )
+
+        await asyncio.to_thread(work)
+
+    def check_target(self, consultation: Consultation, target_agent: str | None) -> None:
+        """A consultation is bound to the agent it started with, for its whole life.
+
+        Continuing it against a different agent would hand a second vendor's model a
+        conversation it never had, and the caller would read the reply as the same
+        agent's next turn.
+        """
+        if target_agent is not None and target_agent != consultation.target_agent_id:
+            raise StoreError(
+                ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                f"consultation `{consultation.id}` is bound to `{consultation.target_agent_id}`; "
+                f"start a new consultation to ask `{target_agent}`",
+            )
+
+    async def set_status(self, consultation_id: UUID | str, status: str) -> None:
+        await asyncio.to_thread(
+            lambda: self._db.execute(
+                "UPDATE consultations SET status = ?, updated_at = ? WHERE id = ?",
+                (status, _now(), str(consultation_id)),
+            )
+        )
+
+    # --- turns --------------------------------------------------------------
+
+    async def next_sequence(self, consultation_id: UUID | str) -> int:
+        def work() -> int:
+            row = self._db.execute(
+                "SELECT COALESCE(MAX(sequence_number), 0) FROM consultation_turns "
+                "WHERE consultation_id = ?",
+                (str(consultation_id),),
+            ).fetchone()
+            return int(row[0]) + 1
+
+        return await asyncio.to_thread(work)
+
+    async def record_turn(
+        self,
+        consultation_id: UUID | str,
+        sequence_number: int,
+        source_mode: SourceMode,
+        user_prompt: str,
+        context: str | None,
+        compiled_prompt: str,
+        raw_output: str | None = None,
+        validated_response: dict[str, Any] | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost_usd: float | None = None,
+        latency_ms: int = 0,
+        error_code: ConsultErrorCode | None = None,
+    ) -> None:
+        # `store_full_content: false` drops the bodies and keeps the shape: an
+        # operator who cannot keep prompts on disk still gets timings, usage and
+        # failures, which is what makes the record worth having at all.
+        keep = self.store_full_content
+
+        def work() -> None:
+            self._db.execute(
+                "INSERT INTO consultation_turns (consultation_id, sequence_number, source_mode, "
+                "user_prompt, context, compiled_prompt, raw_output, validated_response_json, "
+                "input_tokens, output_tokens, cost_usd, latency_ms, error_code, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    str(consultation_id),
+                    sequence_number,
+                    source_mode.value,
+                    user_prompt if keep else None,
+                    context if keep else None,
+                    compiled_prompt if keep else None,
+                    raw_output if keep else None,
+                    json.dumps(validated_response) if (keep and validated_response) else None,
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                    latency_ms,
+                    error_code.value if error_code else None,
+                    _now(),
+                ),
+            )
+            self._db.execute(
+                "UPDATE consultations SET updated_at = ? WHERE id = ?",
+                (_now(), str(consultation_id)),
+            )
+
+        await asyncio.to_thread(work)
+
+    async def turns(self, consultation_id: UUID | str) -> list[Turn]:
+        def work() -> list[Turn]:
+            rows = self._db.execute(
+                "SELECT sequence_number, source_mode, user_prompt, context, compiled_prompt, "
+                "raw_output, validated_response_json, input_tokens, output_tokens, cost_usd, "
+                "latency_ms, error_code, created_at FROM consultation_turns "
+                "WHERE consultation_id = ? ORDER BY sequence_number",
+                (str(consultation_id),),
+            ).fetchall()
+            return [Turn(**dict(row)) for row in rows]
+
+        return await asyncio.to_thread(work)
+
+    # --- diagnostics --------------------------------------------------------
+
+    async def record_routing(self, consultation_id: UUID | str, decision: RoutingDecision) -> None:
+        def work() -> None:
+            self._db.execute(
+                "INSERT INTO routing_decisions (consultation_id, capability, selected_agent, "
+                "explicit, excluded_json, error_code, created_at) VALUES (?,?,?,?,?,?,?)",
+                (
+                    str(consultation_id),
+                    decision.capability,
+                    decision.route.agent_id if decision.route else None,
+                    int(bool(decision.route and decision.route.explicitly_selected)),
+                    json.dumps([{"agent_id": e.agent_id, "reason": e.reason} for e in decision.excluded]),
+                    decision.error[0].value if decision.error else None,
+                    _now(),
+                ),
+            )
+
+        await asyncio.to_thread(work)
+
+    async def routing_for(self, consultation_id: UUID | str) -> list[dict[str, Any]]:
+        def work() -> list[dict[str, Any]]:
+            rows = self._db.execute(
+                "SELECT capability, selected_agent, explicit, excluded_json, error_code, created_at "
+                "FROM routing_decisions WHERE consultation_id = ? ORDER BY id",
+                (str(consultation_id),),
+            ).fetchall()
+            return [dict(row) | {"excluded": json.loads(row["excluded_json"])} for row in rows]
+
+        return await asyncio.to_thread(work)
+
+    async def record_status_check(
+        self,
+        agent_id: str,
+        installed: bool | None,
+        authenticated: bool | None,
+        detail: str | None = None,
+    ) -> None:
+        # `detail` is ours to write -- a short explanation like "not on PATH". The
+        # output of a login command never reaches this argument.
+        await asyncio.to_thread(
+            lambda: self._db.execute(
+                "INSERT INTO agent_status_checks (agent_id, installed, authenticated, detail, "
+                "checked_at) VALUES (?,?,?,?,?)",
+                (
+                    agent_id,
+                    None if installed is None else int(installed),
+                    None if authenticated is None else int(authenticated),
+                    detail,
+                    _now(),
+                ),
+            )
+        )
+
+    # --- leases -------------------------------------------------------------
+
+    @asynccontextmanager
+    async def lease(self, consultation_id: UUID | str, ttl_s: float = LEASE_TTL_S):
+        """Hold the right to advance one consultation's native session.
+
+        Turns on a CLI session are inherently serial: two of them interleaved would
+        produce one conversation with two futures. `BEGIN IMMEDIATE` is what makes
+        the check-and-take atomic across processes, which an in-process lock cannot
+        be.
+        """
+        await asyncio.to_thread(self._acquire, str(consultation_id), ttl_s)
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(self._release, str(consultation_id))
+
+    def _acquire(self, consultation_id: str, ttl_s: float) -> None:
+        db = self._db
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            now = time.time()
+            # A holder that died mid-turn leaves its row behind; the expiry is what
+            # keeps that from wedging the consultation forever.
+            db.execute("DELETE FROM consultation_leases WHERE expires_at <= ?", (now,))
+            cursor = db.execute(
+                "INSERT OR IGNORE INTO consultation_leases (consultation_id, holder, expires_at) "
+                "VALUES (?,?,?)",
+                (consultation_id, self._holder, now + ttl_s),
+            )
+            taken = cursor.rowcount == 1
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("COMMIT")
+
+        if not taken:
+            raise StoreError(
+                ConsultErrorCode.SESSION_BUSY,
+                f"consultation `{consultation_id}` already has a turn in flight; "
+                "wait for it to finish before sending the next one",
+            )
+
+    def _release(self, consultation_id: str) -> None:
+        self._db.execute(
+            "DELETE FROM consultation_leases WHERE consultation_id = ? AND holder = ?",
+            (consultation_id, self._holder),
+        )
