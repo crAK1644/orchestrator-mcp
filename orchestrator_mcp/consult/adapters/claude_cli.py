@@ -50,6 +50,9 @@ class ClaudeCliAdapter:
         self.timeout_s = timeout_s
         self.web_turn_limit = web_turn_limit
 
+    def connect_command(self, agent: AgentConfig) -> str:
+        return f"{agent.command} auth login"
+
     async def preflight(self, agent: AgentConfig) -> AgentStatus:
         try:
             command = resolve_command(agent)

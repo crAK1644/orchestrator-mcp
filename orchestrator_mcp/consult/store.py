@@ -171,7 +171,10 @@ class ConsultStore:
     # --- lifecycle ----------------------------------------------------------
 
     async def open(self) -> ConsultStore:
-        await asyncio.to_thread(self._open)
+        # Idempotent, because the MCP tools open on first use rather than at boot and
+        # every call goes through the same door.
+        if self._connection is None:
+            await asyncio.to_thread(self._open)
         return self
 
     def _open(self) -> None:
