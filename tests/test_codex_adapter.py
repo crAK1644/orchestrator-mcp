@@ -223,11 +223,34 @@ async def test_no_events_at_all_is_a_transport_error(tmp_path, monkeypatch, adap
 
 
 async def test_a_stream_with_no_final_message_is_a_transport_error(tmp_path, monkeypatch, adapter):
-    stdout = jsonl({"type": "thread.started", "thread_id": THREAD}, {"type": "turn.failed"})
+    stdout = jsonl({"type": "thread.started", "thread_id": THREAD}, {"type": "turn.completed"})
     agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": stdout}])
     with pytest.raises(AdapterError) as exc:
         await adapter.start(agent(), prompt(), SourceMode.MODEL)
     assert exc.value.code is ConsultErrorCode.TRANSPORT_ERROR
+
+
+async def test_a_failed_turn_is_refused_even_with_an_answer_before_it(
+    tmp_path, monkeypatch, adapter
+):
+    """A well-formed message earlier in the stream does not undo the CLI saying the
+    turn failed -- that answer was abandoned, not delivered."""
+    stdout = transcript() + jsonl({"type": "turn.failed", "error": "model overloaded"})
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": stdout}])
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert exc.value.code is ConsultErrorCode.AGENT_UNAVAILABLE
+    assert "model overloaded" in str(exc.value)
+
+
+async def test_a_nonzero_exit_is_refused_even_with_an_answer(tmp_path, monkeypatch, adapter):
+    agent_stub.install(
+        "codex", tmp_path, monkeypatch,
+        runs=[{"stdout": transcript(), "stderr": "killed", "returncode": 1}],
+    )
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert exc.value.code is ConsultErrorCode.AGENT_UNAVAILABLE
 
 
 async def test_a_non_json_line_is_not_a_failure(tmp_path, monkeypatch, adapter):

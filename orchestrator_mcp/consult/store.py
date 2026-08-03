@@ -23,12 +23,15 @@ import asyncio
 import json
 import os
 import sqlite3
+import threading
 import time
+import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from uuid import UUID
 
 from .contract import ConsultRoute, SourceMode
@@ -111,6 +114,8 @@ MIGRATIONS: list[str] = [
 DEFAULT_PROFILE = "default"
 LEASE_TTL_S = 300.0
 
+_T = TypeVar("_T")
+
 
 class StoreError(Exception):
     """A refusal with a code the caller's envelope can carry."""
@@ -166,15 +171,25 @@ class ConsultStore:
         self.path = Path(path)
         self.store_full_content = store_full_content
         self._connection: sqlite3.Connection | None = None
-        self._holder = f"pid-{os.getpid()}"
+        # One connection shared by every worker thread, so one lock decides who is
+        # using it. Without this, two `to_thread` workers can interleave inside a
+        # `BEGIN IMMEDIATE` -- SQLite raises "cannot start a transaction within a
+        # transaction", and worse, an unrelated write lands inside someone else's
+        # open transaction and rolls back with it.
+        self._lock = threading.RLock()
+        self._open_lock = asyncio.Lock()
 
     # --- lifecycle ----------------------------------------------------------
 
     async def open(self) -> ConsultStore:
-        # Idempotent, because the MCP tools open on first use rather than at boot and
-        # every call goes through the same door.
+        # Idempotent *and* concurrency-safe: the MCP tools open on first use, so two
+        # simultaneous first calls both arrive here with no connection, and two
+        # threads racing to create the schema is how one of them gets
+        # "database is locked" instead of an envelope.
         if self._connection is None:
-            await asyncio.to_thread(self._open)
+            async with self._open_lock:
+                if self._connection is None:
+                    await asyncio.to_thread(self._open)
         return self
 
     def _open(self) -> None:
@@ -186,12 +201,14 @@ class ConsultStore:
         # looser permissions is exactly the one worth tightening.
         os.chmod(self.path, 0o600)
         connection.row_factory = sqlite3.Row
+        # First, so that every statement below -- including the journal-mode switch,
+        # which takes a lock of its own -- waits for another process instead of
+        # failing on it. Long enough to outlast a short write, short enough that a
+        # wedged one surfaces as an error rather than hanging the consultation.
+        connection.execute("PRAGMA busy_timeout=5000")
         # WAL so a reader (the dashboard) never blocks the writer mid-consultation.
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
-        # Long enough to outlast another process's short write, short enough that a
-        # wedged one surfaces as an error instead of hanging the consultation.
-        connection.execute("PRAGMA busy_timeout=5000")
         self._connection = connection
         self._migrate()
 
@@ -235,6 +252,21 @@ class ConsultStore:
             raise StoreError(ConsultErrorCode.TRANSPORT_ERROR, "consultation store is not open")
         return self._connection
 
+    async def _run(self, work: Callable[[], _T]) -> _T:
+        """Run one unit of SQLite work in a thread, alone on the connection.
+
+        Every database access in this class goes through here. The lock is held for
+        the whole unit rather than per statement, because the units that matter are
+        transactions: a `BEGIN IMMEDIATE` that another thread can slip a statement
+        into is not a transaction.
+        """
+
+        def guarded() -> _T:
+            with self._lock:
+                return work()
+
+        return await asyncio.to_thread(guarded)
+
     # --- consultations ------------------------------------------------------
 
     async def create_consultation(
@@ -274,10 +306,10 @@ class ConsultStore:
             )
             return self._fetch(str(consultation_id))
 
-        return await asyncio.to_thread(work)
+        return await self._run(work)
 
     async def get_consultation(self, consultation_id: UUID | str) -> Consultation:
-        return await asyncio.to_thread(self._fetch, str(consultation_id))
+        return await self._run(lambda: self._fetch(str(consultation_id)))
 
     def _fetch(self, consultation_id: str) -> Consultation:
         row = self._db.execute(
@@ -309,7 +341,7 @@ class ConsultStore:
                 (native_session_id, _now(), str(consultation_id)),
             )
 
-        await asyncio.to_thread(work)
+        await self._run(work)
 
     def check_target(self, consultation: Consultation, target_agent: str | None) -> None:
         """A consultation is bound to the agent it started with, for its whole life.
@@ -326,7 +358,7 @@ class ConsultStore:
             )
 
     async def set_status(self, consultation_id: UUID | str, status: str) -> None:
-        await asyncio.to_thread(
+        await self._run(
             lambda: self._db.execute(
                 "UPDATE consultations SET status = ?, updated_at = ? WHERE id = ?",
                 (status, _now(), str(consultation_id)),
@@ -344,7 +376,7 @@ class ConsultStore:
             ).fetchone()
             return int(row[0]) + 1
 
-        return await asyncio.to_thread(work)
+        return await self._run(work)
 
     async def record_turn(
         self,
@@ -395,7 +427,7 @@ class ConsultStore:
                 (_now(), str(consultation_id)),
             )
 
-        await asyncio.to_thread(work)
+        await self._run(work)
 
     async def turns(self, consultation_id: UUID | str) -> list[Turn]:
         def work() -> list[Turn]:
@@ -408,7 +440,7 @@ class ConsultStore:
             ).fetchall()
             return [Turn(**dict(row)) for row in rows]
 
-        return await asyncio.to_thread(work)
+        return await self._run(work)
 
     # --- diagnostics --------------------------------------------------------
 
@@ -428,7 +460,7 @@ class ConsultStore:
                 ),
             )
 
-        await asyncio.to_thread(work)
+        await self._run(work)
 
     async def routing_for(self, consultation_id: UUID | str) -> list[dict[str, Any]]:
         def work() -> list[dict[str, Any]]:
@@ -439,7 +471,7 @@ class ConsultStore:
             ).fetchall()
             return [dict(row) | {"excluded": json.loads(row["excluded_json"])} for row in rows]
 
-        return await asyncio.to_thread(work)
+        return await self._run(work)
 
     async def record_status_check(
         self,
@@ -450,7 +482,7 @@ class ConsultStore:
     ) -> None:
         # `detail` is ours to write -- a short explanation like "not on PATH". The
         # output of a login command never reaches this argument.
-        await asyncio.to_thread(
+        await self._run(
             lambda: self._db.execute(
                 "INSERT INTO agent_status_checks (agent_id, installed, authenticated, detail, "
                 "checked_at) VALUES (?,?,?,?,?)",
@@ -474,14 +506,23 @@ class ConsultStore:
         produce one conversation with two futures. `BEGIN IMMEDIATE` is what makes
         the check-and-take atomic across processes, which an in-process lock cannot
         be.
+
+        `ttl_s` has to outlive the turn it guards, or the lease expires under a
+        consultation that is still running and a second caller is let in beside it.
+        The service passes its configured timeout; the default here is only for
+        callers that have no timeout of their own.
         """
-        await asyncio.to_thread(self._acquire, str(consultation_id), ttl_s)
+        # A fresh token per acquisition, not a per-process id: after an expiry, the
+        # same process can hold the *next* lease on the same consultation, and a
+        # release keyed on the process would delete a lease it does not own.
+        token = f"pid-{os.getpid()}-{uuid.uuid4().hex[:12]}"
+        await self._run(lambda: self._acquire(str(consultation_id), ttl_s, token))
         try:
             yield
         finally:
-            await asyncio.to_thread(self._release, str(consultation_id))
+            await self._run(lambda: self._release(str(consultation_id), token))
 
-    def _acquire(self, consultation_id: str, ttl_s: float) -> None:
+    def _acquire(self, consultation_id: str, ttl_s: float, token: str) -> None:
         db = self._db
         db.execute("BEGIN IMMEDIATE")
         try:
@@ -492,7 +533,7 @@ class ConsultStore:
             cursor = db.execute(
                 "INSERT OR IGNORE INTO consultation_leases (consultation_id, holder, expires_at) "
                 "VALUES (?,?,?)",
-                (consultation_id, self._holder, now + ttl_s),
+                (consultation_id, token, now + ttl_s),
             )
             taken = cursor.rowcount == 1
         except Exception:
@@ -507,8 +548,8 @@ class ConsultStore:
                 "wait for it to finish before sending the next one",
             )
 
-    def _release(self, consultation_id: str) -> None:
+    def _release(self, consultation_id: str, token: str) -> None:
         self._db.execute(
             "DELETE FROM consultation_leases WHERE consultation_id = ? AND holder = ?",
-            (consultation_id, self._holder),
+            (consultation_id, token),
         )

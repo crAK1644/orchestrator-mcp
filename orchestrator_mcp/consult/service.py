@@ -19,7 +19,8 @@ from uuid import UUID, uuid4
 
 from ..contract import MAX_ERROR_CHARS, Usage
 from .adapters import AdapterError, adapter_for
-from .adapters.base import AgentStatus, ConsultAdapter
+from .adapters.base import GRACE_S, AgentStatus, ConsultAdapter
+from .adapters.claude_cli import PREFLIGHT_TIMEOUT_S
 from .config import AgentConfig, ConsultConfig
 from .contract import (
     ConsultAgentInfo,
@@ -62,6 +63,9 @@ class ConsultService:
     def adapter(self, agent: AgentConfig) -> ConsultAdapter:
         return adapter_for(agent, self.config)
 
+    def _lease_ttl(self) -> float:
+        return self.config.timeout_s + PREFLIGHT_TIMEOUT_S + GRACE_S + 30.0
+
     # --- consultation -------------------------------------------------------
 
     async def consult(self, **kwargs: Any) -> ConsultResponse:
@@ -92,7 +96,11 @@ class ConsultService:
 
         consultation_id = UUID(consultation.id)
         try:
-            async with self.store.lease(consultation_id):
+            # The lease has to outlive the turn it guards: a preflight, a CLI run
+            # bounded by `timeout_s`, and the grace period spent killing a child that
+            # ignored SIGTERM. Expiring earlier would let a second caller in beside a
+            # consultation that is still running.
+            async with self.store.lease(consultation_id, ttl_s=self._lease_ttl()):
                 return await self._turn(
                     consultation_id, agent, route, request, source_mode, resuming, started
                 )
@@ -116,6 +124,27 @@ class ConsultService:
                     ConsultErrorCode.SESSION_TARGET_MISMATCH,
                     f"consultation `{consultation.id}` is bound to agent "
                     f"`{consultation.target_agent_id}`, which is no longer configured",
+                )
+            # The id surviving a config edit does not mean the agent behind it did.
+            # An id reassigned to another runtime or model is a different agent
+            # wearing an old name, and resuming into it would continue someone
+            # else's conversation -- including, if the new runtime is ours, straight
+            # back into the host.
+            if agent.runtime != consultation.target_runtime or agent.model != consultation.target_model:
+                raise StoreError(
+                    ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                    f"consultation `{consultation.id}` was bound to "
+                    f"`{consultation.target_agent_id}` running "
+                    f"{consultation.target_runtime}/{consultation.target_model}, which is now "
+                    f"configured as {agent.runtime}/{agent.model}; start a new consultation",
+                )
+            if agent.runtime == self.host_runtime:
+                # Checked independently of the pair above, because the host runtime is
+                # the one exclusion that must hold no matter how the config got here.
+                raise StoreError(
+                    ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                    f"consultation `{consultation.id}` is bound to `{agent.agent_id}`, which now "
+                    f"runs this host's own runtime ({self.host_runtime}) and cannot be consulted",
                 )
             route = ConsultRoute(
                 agent_id=agent.agent_id,

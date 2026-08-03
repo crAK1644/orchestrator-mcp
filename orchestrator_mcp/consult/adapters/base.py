@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 from collections.abc import Callable
@@ -42,6 +43,16 @@ GRACE_S = 2.0
 # One event line can carry a whole answer, and the default 64 KiB would raise
 # `LimitOverrunError` on it rather than returning a truncated line.
 STREAM_LINE_LIMIT = 16 * 1024 * 1024
+
+# The ceiling on everything one child may produce. A consultation's answer is a
+# small JSON object; a runtime emitting tens of megabytes is looping, not
+# answering, and reading all of it into this process is how a runaway CLI takes
+# the server down with it.
+MAX_OUTPUT_BYTES = 32 * 1024 * 1024
+
+# Read in chunks so the cap is checked before the memory is committed, rather
+# than after `communicate()` has already buffered whatever arrived.
+_CHUNK = 64 * 1024
 
 # Passed through to a consulted CLI. `HOME` because that is where its own saved
 # credentials live, the rest because a process without them misbehaves in ways
@@ -152,12 +163,35 @@ def parse_content(text: str) -> ConsultationContent:
         ) from exc
 
 
+# Tokens that name a size, tier, or variant rather than a family. Two names that
+# disagree on one of these are different models however much else they share, which
+# is what plain containment cannot see: `gpt-5` is a substring of `gpt-5-mini`.
+VARIANT_TOKENS = frozenset(
+    {
+        "mini", "nano", "small", "medium", "large", "lite", "micro",
+        "haiku", "sonnet", "opus",
+        "turbo", "flash", "pro", "max", "ultra", "thinking", "reasoning",
+        "high", "low", "fast", "instant", "preview", "codex",
+    }
+)
+
+
+def _tokens(name: str) -> list[str]:
+    return [part for part in re.split(r"[^a-z0-9]+", name.strip().lower()) if part]
+
+
 def check_model(agent: AgentConfig, reported: str | None) -> str:
     """Reject a substituted model, but only when the runtime actually said which.
 
     Containment, not equality, and in both directions: an operator configures `opus`
     and the CLI reports `claude-opus-5`. What this is for is the runtime's own silent
     fallback -- an answer from a model nobody chose, presented as the one they did.
+
+    Containment alone is not enough, because a fallback is usually a *smaller sibling*
+    and its name usually contains the bigger one's: `gpt-5` sits inside `gpt-5-mini`.
+    So the variant tokens have to agree exactly as well -- one name claiming `mini`
+    when the other does not is a different model, not a longer spelling of the same
+    one.
     """
     if not reported:
         # No metadata is not evidence of substitution. The spec asks for this check
@@ -166,7 +200,11 @@ def check_model(agent: AgentConfig, reported: str | None) -> str:
         return agent.model
 
     configured, actual = agent.model.strip().lower(), reported.strip().lower()
-    if configured not in actual and actual not in configured:
+    family_agrees = configured in actual or actual in configured
+    variants_agree = VARIANT_TOKENS.intersection(_tokens(configured)) == VARIANT_TOKENS.intersection(
+        _tokens(actual)
+    )
+    if not (family_agrees and variants_agree):
         raise AdapterError(
             ConsultErrorCode.CONFIGURED_MODEL_UNAVAILABLE,
             f"agent `{agent.agent_id}` is configured for model `{agent.model}` but the "
@@ -191,20 +229,42 @@ def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env | (extra or {})
 
 
+class _OutputTooLarge(Exception):
+    """A child wrote past `MAX_OUTPUT_BYTES`."""
+
+
+async def _read_capped(stream: asyncio.StreamReader, cap: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await stream.read(_CHUNK):
+        total += len(chunk)
+        if total > cap:
+            raise _OutputTooLarge
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def run_process(
     argv: list[str],
     stdin_text: str | None,
     timeout_s: float,
     env: dict[str, str] | None = None,
     cwd: str | os.PathLike[str] | None = None,
+    capture: bool = True,
 ) -> ProcessResult:
-    """Run one child to completion, or kill its whole group trying."""
+    """Run one child to completion, or kill its whole group trying.
+
+    `capture=False` sends both streams to `/dev/null` and returns empty text. That
+    is for the auth probes: their exit code is the whole answer, and output we do
+    not need is output that must not reach this process's memory.
+    """
+    sink = asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL
     try:
         process = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=sink,
+            stderr=sink,
             env=env if env is not None else child_env(),
             cwd=cwd,
             # Its own process group, so the kill below reaches everything the CLI
@@ -216,21 +276,46 @@ async def run_process(
             ConsultErrorCode.TRANSPORT_ERROR, f"could not start `{argv[0]}`: {exc}"
         ) from exc
 
-    payload = stdin_text.encode() if stdin_text is not None else None
+    # Read both streams under a cap rather than `communicate()`, which buffers
+    # whatever a child chooses to send. Two tasks, because draining only one of a
+    # pair of pipes deadlocks against the buffer nobody is emptying.
+    readers = [
+        asyncio.create_task(_read_capped(stream, MAX_OUTPUT_BYTES))
+        for stream in (process.stdout, process.stderr)
+        if stream is not None
+    ]
     try:
         async with asyncio.timeout(timeout_s):
-            stdout, stderr = await process.communicate(payload)
-    except (TimeoutError, asyncio.CancelledError) as exc:
-        # Cancellation too: an outer deadline cancelling this coroutine must not
-        # leave a CLI running against the user's account with nobody reading it.
+            if process.stdin is not None:
+                if stdin_text is not None:
+                    process.stdin.write(stdin_text.encode())
+                    with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                        await process.stdin.drain()
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    process.stdin.close()
+            captured = await asyncio.gather(*readers)
+            await process.wait()
+    except BaseException as exc:
+        # Cancellation and overflow as well as the timeout: an outer deadline, or a
+        # child that will not stop talking, must not leave a CLI running against the
+        # user's account with nobody reading it.
+        for reader in readers:
+            reader.cancel()
         await _terminate(process)
-        if isinstance(exc, asyncio.CancelledError):
-            raise
-        raise AdapterError(
-            ConsultErrorCode.TIMEOUT,
-            f"`{argv[0]}` did not answer within {timeout_s:g}s and was terminated",
-        ) from exc
+        if isinstance(exc, _OutputTooLarge):
+            raise AdapterError(
+                ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
+                f"`{argv[0]}` produced more than {MAX_OUTPUT_BYTES // 1024 // 1024} MiB "
+                "instead of an answer, and was terminated",
+            ) from exc
+        if isinstance(exc, TimeoutError):
+            raise AdapterError(
+                ConsultErrorCode.TIMEOUT,
+                f"`{argv[0]}` did not answer within {timeout_s:g}s and was terminated",
+            ) from exc
+        raise
 
+    stdout, stderr = captured if capture else (b"", b"")
     return ProcessResult(
         returncode=process.returncode or 0,
         stdout=stdout.decode(errors="replace"),
@@ -285,7 +370,11 @@ async def run_streaming(
                 process.stdin.close()
 
             stopped = False
+            total = 0
             async for raw in process.stdout:
+                total += len(raw)
+                if total > MAX_OUTPUT_BYTES:
+                    raise _OutputTooLarge
                 lines.append(raw.decode(errors="replace"))
                 if not on_line(lines[-1]):
                     stopped = True
@@ -305,6 +394,21 @@ async def run_streaming(
             raise AdapterError(
                 ConsultErrorCode.TIMEOUT,
                 f"`{argv[0]}` did not answer within {timeout_s:g}s and was terminated",
+            ) from exc
+        if isinstance(exc, _OutputTooLarge):
+            raise AdapterError(
+                ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
+                f"`{argv[0]}` produced more than {MAX_OUTPUT_BYTES // 1024 // 1024} MiB "
+                "instead of an answer, and was terminated",
+            ) from exc
+        if isinstance(exc, ValueError):
+            # A single line past `STREAM_LINE_LIMIT`. `StreamReader` raises a bare
+            # `ValueError` for it, which would otherwise cross the MCP boundary as an
+            # exception instead of a code the caller can branch on.
+            raise AdapterError(
+                ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
+                f"`{argv[0]}` emitted a single event larger than "
+                f"{STREAM_LINE_LIMIT // 1024 // 1024} MiB, which is not an answer",
             ) from exc
         raise
 

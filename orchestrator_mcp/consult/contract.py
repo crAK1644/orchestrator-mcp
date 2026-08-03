@@ -31,6 +31,15 @@ Runtime = Literal["codex", "claude"]
 
 PROTOCOL_VERSION = "consult-v1"
 
+# Caps on the free text a caller may send. Generous enough for a real document-mode
+# consultation -- a megabyte of context is a long paper -- and finite, which is the
+# point: every one of these is copied into a compiled prompt, encoded onto a child's
+# stdin, and stored, so an uncapped field is several times its own size in memory
+# and on disk before anything refuses it.
+MAX_PROMPT_CHARS = 100_000
+MAX_CONTEXT_CHARS = 1_000_000
+MAX_LABEL_CHARS = 200
+
 
 class SourceMode(str, Enum):
     AUTO = "auto"
@@ -46,9 +55,14 @@ class ConsultRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     capability: Capability = Field(description="Which capability this consultation needs.")
-    prompt: str = Field(min_length=1, description="The task or question for the consulted agent.")
+    prompt: str = Field(
+        min_length=1,
+        max_length=MAX_PROMPT_CHARS,
+        description="The task or question for the consulted agent.",
+    )
     context: str | None = Field(
         default=None,
+        max_length=MAX_CONTEXT_CHARS,
         description="Source material. Treated as untrusted evidence, never as instructions.",
     )
     source_mode: SourceMode = Field(
@@ -70,7 +84,9 @@ class ConsultRequest(BaseModel):
         default=None, description="Optional explicit agent id, overriding the scores."
     )
     conversation_label: str | None = Field(
-        default=None, description="Free-text label recorded with the consultation."
+        default=None,
+        max_length=MAX_LABEL_CHARS,
+        description="Free-text label recorded with the consultation.",
     )
 
 

@@ -181,7 +181,7 @@ class ClaudeCliAdapter:
                 # land on stdout is not a protocol failure.
                 return True
             events.append(event)
-            _check_tools(event)
+            _check_event(event)
             if event.get("type") == "assistant":
                 state["turns"] += 1
                 return state["turns"] < self.web_turn_limit
@@ -255,20 +255,52 @@ def _envelope(result: ProcessResult) -> dict:
     return envelope
 
 
-def _check_tools(event: dict) -> None:
-    """Fail closed on a tool we did not ask for.
+def _check_event(event: dict) -> None:
+    """Fail closed on anything that is not the two web tools.
 
-    The init event lists what the CLI actually enabled, which is the only place a
-    disagreement between our flags and its behaviour is visible before it acts.
+    Two checks, because the init event and the turns can disagree. The init event
+    lists what the CLI says it enabled, which is where a mismatch between our flags
+    and its configuration shows up before it acts. Every later event is then
+    searched for the act itself: a stream that declared `tools: []` and then used
+    `Bash` has done the thing the declaration promised it would not.
     """
-    if event.get("type") != "system" or event.get("subtype") != "init":
-        return
-    unexpected = [t for t in event.get("tools") or [] if t not in WEB_TOOLS]
-    if unexpected:
+    if event.get("type") == "system" and event.get("subtype") == "init":
+        unexpected = [t for t in event.get("tools") or [] if t not in WEB_TOOLS]
+        if unexpected:
+            raise AdapterError(
+                ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
+                f"the agent started with tools we did not enable: {', '.join(sorted(unexpected))}",
+            )
+
+    if used := sorted(_tools_used(event) - set(WEB_TOOLS)):
         raise AdapterError(
             ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
-            f"the agent started with tools we did not enable: {', '.join(sorted(unexpected))}",
+            f"the agent tried to act rather than answer (used {', '.join(used)})",
         )
+
+
+def _tools_used(node: Any) -> set[str]:
+    """Every tool name anywhere in an event.
+
+    Recursive and shape-agnostic on purpose: a `tool_use` block can sit inside
+    `message.content`, inside a nested block, or somewhere a future release moves
+    it, and a check that only knows today's path fails open when it moves.
+    """
+    found: set[str] = set()
+    if isinstance(node, dict):
+        # `tool_result` is deliberately not here: it is the reply to a `tool_use` we
+        # have already seen and judged, and it carries no name of its own.
+        if node.get("type") in ("tool_use", "server_tool_use", "mcp_tool_use"):
+            name = node.get("name") or node.get("tool_name")
+            # An unnamed tool block is still a tool block, and cannot be permitted by
+            # a set membership test it does not appear in.
+            found.add(name if isinstance(name, str) and name else "<unnamed>")
+        for value in node.values():
+            found |= _tools_used(value)
+    elif isinstance(node, list):
+        for item in node:
+            found |= _tools_used(item)
+    return found
 
 
 def _reported_model(envelope: dict) -> str | None:
