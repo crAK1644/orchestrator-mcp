@@ -155,6 +155,26 @@ async def test_an_oversized_body_is_refused_before_it_is_read(serve, editable): 
     assert not editable.path.exists()
 
 
+@pytest.mark.parametrize("length", ["banana", "-1"], ids=["not a number", "negative"])
+async def test_a_content_length_that_is_not_a_length_is_refused(serve, editable, length):  # noqa: F811
+    """`int()` used to run on it before anything had been checked, so the answer to a
+    header like this was a traceback in a request thread rather than a page. `-1` is the
+    other half: `rfile.read(-1)` reads until the client stops sending."""
+    from http.client import HTTPConnection
+
+    get, _ = serve(editable())
+    connection = HTTPConnection("127.0.0.1", get.port, timeout=5)
+    connection.putrequest("POST", "/agents", skip_host=True)
+    connection.putheader("Host", f"127.0.0.1:{get.port}")
+    connection.putheader("Content-Type", "application/x-www-form-urlencoded")
+    connection.putheader("Content-Length", length)
+    connection.endheaders()
+
+    assert connection.getresponse().status == 403
+    connection.close()
+    assert not editable.path.exists()
+
+
 async def test_an_unknown_post_path_is_a_404_and_not_a_write(serve, editable):  # noqa: F811
     get, _ = serve(editable())
     status, _, _ = get.post("/agents/anything", form(_token=get.token))
@@ -261,8 +281,9 @@ async def test_editing_an_agent_shows_what_is_stored_and_replaces_it(serve, edit
     status, body = get("/agents/codex-luna")
     assert status == 200
     assert "gpt-5.6-luna" in body and "value='95'" in body
+    assert "name=_editing" in body, "which is what tells the save this is not a new agent"
 
-    get.post("/agents", form(_token=get.token, model="gpt-5.6-sol"))
+    get.post("/agents", form(_token=get.token, _editing="codex-luna", model="gpt-5.6-sol"))
     assert written(editable.path)["codex-luna"]["model"] == "gpt-5.6-sol"
 
 
@@ -333,6 +354,52 @@ async def test_a_failed_save_leaves_an_existing_file_byte_identical(serve, edita
     assert editable.path.read_bytes() == before
 
 
+async def test_a_failed_edit_comes_back_as_an_edit(serve, editable):  # noqa: F811
+    """It used to come back as `New agent`, with the id no longer `readonly`. Correcting
+    the field the error named and saving then filed a second agent under whatever the id
+    box happened to say."""
+    get, _ = serve(editable())
+    get.post("/agents", form(_token=get.token))
+
+    get, _ = serve(editable())
+    status, body, _ = get.post(
+        "/agents", form(_token=get.token, _editing="codex-luna", model="")
+    )
+    assert status == 200
+    assert "Edit agent" in body and "New agent" not in body
+    assert "readonly" in body
+
+
+async def test_an_edit_cannot_be_turned_into_a_rename(serve, editable):  # noqa: F811
+    """`readonly` is the browser's half. This is the half that holds when the post did
+    not come from the browser: renaming this way would leave the old agent in place."""
+    get, _ = serve(editable())
+    get.post("/agents", form(_token=get.token))
+
+    get, _ = serve(editable())
+    status, body, _ = get.post(
+        "/agents", form(_token=get.token, _editing="codex-luna", id="codex-sol-2")
+    )
+    assert status == 200
+    assert "codex-luna" in body
+    assert sorted(written(editable.path)) == ["codex-luna"]
+
+
+async def test_adding_an_agent_that_is_already_here_is_refused_rather_than_replacing_it(
+    serve, editable  # noqa: F811
+):
+    """Only `config.yaml` ids used to be checked, so `Add an agent` with an id already
+    in this file overwrote it and reported a save."""
+    get, _ = serve(editable())
+    get.post("/agents", form(_token=get.token))
+
+    get, _ = serve(editable())
+    status, body, _ = get.post("/agents", form(_token=get.token, model="gpt-5.6-sol"))
+    assert status == 200
+    assert "already configured here" in body
+    assert written(editable.path)["codex-luna"]["model"] == "gpt-5.6-luna"
+
+
 async def test_a_priority_field_left_empty_is_the_default_and_not_an_error(serve, editable):  # noqa: F811
     """A cleared number input is dropped from the body entirely, which is what tells
     the difference between "not set" and "set to nonsense"."""
@@ -369,6 +436,23 @@ async def test_a_managed_file_that_cannot_be_read_refuses_the_write(serve, edita
     assert "mapping" in body
 
     assert editable.path.read_bytes() == before
+
+
+async def test_a_hand_edited_entry_the_form_cannot_fix_blocks_the_write(serve, editable):  # noqa: F811
+    """A save rewrites the whole file, so it puts this process's name on every entry in
+    it -- including one someone else broke. Writing that back means the next start
+    refuses on a file the page reported as saved."""
+    get, _ = serve(editable())
+    editable.path.parent.mkdir(parents=True)
+    editable.path.write_text(yaml.safe_dump({"agents": {"": agent("codex", "m")}}))
+
+    status, body, _ = get.post("/agents", form(_token=get.token))
+    assert status == 200
+    assert "blank id" in body
+    assert written(editable.path) == {"": agent("codex", "m")}, "left as it was found"
+
+    _, page = get("/agents")
+    assert "No agents configured here yet" in page, "and not offered for editing"
 
 
 async def test_two_saves_at_once_both_survive(serve, editable, monkeypatch):  # noqa: F811

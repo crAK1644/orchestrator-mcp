@@ -29,11 +29,12 @@ import secrets
 import sqlite3
 import sys
 import threading
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.metadata import PackageNotFoundError, version as _distribution_version
 from pathlib import Path
-from typing import Any, Callable, get_args
+from typing import Any, get_args
 from urllib.parse import parse_qs, unquote, urlparse
 
 from pydantic import ValidationError
@@ -342,9 +343,16 @@ class ConsultDashboard:
         """
         written = {aid: a for aid, a in self.config.agents.items() if not a.managed}
         try:
+            on_disk = read_managed(self.config.managed_agents_path)
+            # Reading the file here skips `_label_agents`, which is where a boot refuses
+            # a blank id. Without this the page renders a nameless row, offers to edit
+            # it, and the server it is configuring will not start.
+            unbootable = _unbootable(on_disk)
+            if unbootable:
+                raise ConfigError(unbootable)
             managed = {
                 aid: AgentConfig(agent_id=aid, managed=True, **data)
-                for aid, data in read_managed(self.config.managed_agents_path).items()
+                for aid, data in on_disk.items()
             }
         except (ConfigError, ValidationError, TypeError, OSError):
             # A hand-edit can put anything in that file. Falling back to what booted
@@ -380,6 +388,13 @@ class ConsultDashboard:
             refusal = change(agents)
             if refusal is not None:
                 return refusal
+            # What is about to be written has to be something the server can boot on.
+            # The form cannot produce a bad entry, but it can be asked to save alongside
+            # one a hand-edit left there -- and writing that back is this process
+            # putting its name on a file that will refuse the next start.
+            unbootable = _unbootable(agents)
+            if unbootable:
+                return HTTPStatus.CONFLICT, unbootable
             write_managed(self.config.managed_agents_path, agents)
             return None
 
@@ -481,13 +496,20 @@ class ConsultDashboard:
         agent: AgentConfig | None,
         values: dict[str, str] | None = None,
         error: str = "",
+        editing: bool | None = None,
     ) -> str:
         """The form, rendered from an existing agent, or from what was just submitted.
 
         Re-rendering from the submission is the point of `values`: a save that fails
-        validation must come back with what was typed, not with an empty form."""
+        validation must come back with what was typed, not with an empty form.
+
+        `editing` is separate from `agent` for that same re-render: a failed edit has no
+        stored agent to render from -- what was typed did not validate -- but it is
+        still an edit, and coming back as a New agent form with a writable id turns a
+        mistyped field into a second agent.
+        """
         v = values if values is not None else _as_form(agent)
-        editing = agent is not None
+        editing = (agent is not None) if editing is None else editing
         scores = "".join(
             f"<label><span>{_e(capability)}</span>"
             f"<input type=number name='score.{_e(capability)}' min=0 max=100 "
@@ -512,7 +534,11 @@ class ConsultDashboard:
             + (f"<p class=error>{_e(error)}</p>" if error else "")
             + "<form method=post action='/agents'>"
             f"<input type=hidden name=_token value='{_e(self.token)}'>"
-            f"<label><span>agent id</span><input type=text name=id required "
+            # Which agent this form is replacing, so the save can tell an edit from a
+            # new agent that happens to be typed with the same id. `readonly` above is
+            # the browser's half of that and is not a check.
+            + (f"<input type=hidden name=_editing value='{_e(v.get('id', ''))}'>" if editing else "")
+            + f"<label><span>agent id</span><input type=text name=id required "
             f"value='{_e(v.get('id', ''))}'{' readonly' if editing else ''}></label>"
             f"<label><span>runtime</span><select name=runtime>{runtimes}</select></label>"
             "<label><span>command &mdash; a name on PATH, or an absolute path. The Codex "
@@ -537,15 +563,34 @@ class ConsultDashboard:
 
     def save(self, form: dict[str, str]) -> tuple[int, str, str | None]:
         agent_id = (form.get("id") or "").strip()
+        editing = (form.get("_editing") or "").strip()
         managed, written = self._split_agents()
 
         def refuse(message: str) -> tuple[int, str, str | None]:
-            return HTTPStatus.OK, self.agent_form(None, values=form, error=message), None
+            # `editing` and not `agent is not None`: a failed edit has no valid agent to
+            # render from, and coming back as a New agent form would offer a writable id
+            # on a page the operator opened to change one field.
+            return HTTPStatus.OK, self.agent_form(
+                None, values=form, error=message, editing=bool(editing)
+            ), None
 
         if not AGENT_ID.match(agent_id):
             return refuse(
                 "An agent id must start with a letter or digit and use only lowercase "
                 "letters, digits, dots, dashes and underscores."
+            )
+        if editing and editing != agent_id:
+            # The id field is `readonly`, so a browser cannot produce this. Renaming by
+            # writing the new id and leaving the old one behind is not a rename, and
+            # silently doing it is worse than saying no.
+            return refuse(
+                f"This form is editing `{editing}`. Renaming an agent means adding the "
+                "new one and deleting the old one, so that nothing is left behind."
+            )
+        if not editing and agent_id in managed:
+            return refuse(
+                f"`{agent_id}` is already configured here. Edit it rather than adding it "
+                "again -- saving this would replace it without saying so."
             )
         if agent_id in written:
             return refuse(
@@ -650,6 +695,25 @@ def _from_form(form: dict[str, str]) -> dict[str, object]:
     return fields
 
 
+def _unbootable(agents: dict[str, Any]) -> str | None:
+    """Why the next server start would refuse this mapping, or None if it would not.
+
+    The same two rules a boot applies -- an id that is not blank, and an entry
+    `AgentConfig` accepts -- checked here so that neither a page nor a save has to
+    assume the file only ever held what this form put in it.
+    """
+    for agent_id, data in sorted(agents.items()):
+        if not str(agent_id).strip():
+            return "An agent in this file has a blank id, which the server refuses to start on."
+        try:
+            AgentConfig(agent_id=str(agent_id), **data)
+        except ValidationError as exc:
+            return f"`{agent_id}` in this file is not a valid agent: {_first_error(exc)}"
+        except TypeError:
+            return f"`{agent_id}` in this file is not a mapping of settings."
+    return None
+
+
 def _first_error(exc: ValidationError) -> str:
     """One message, in the operator's terms. A pydantic dump names `value_error` and a
     model class; the person reading it typed into a box."""
@@ -744,8 +808,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._refuse("That form was submitted from another site.")
             return
 
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_BODY_BYTES:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._refuse("That request did not say how long its body was.")
+            return
+        # The lower bound matters as much as the cap: `rfile.read(-1)` reads until the
+        # client decides to stop, which is a header away from holding a thread open.
+        if not 0 <= length <= MAX_BODY_BYTES:
             self._refuse("That form was too large to be one of ours.")
             return
 
@@ -779,8 +849,18 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
     def _host_allowed(self) -> bool:
-        host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
-        return host in ALLOWED_HOSTS or host == ""
+        """No header at all is refused, not waved through: a request that will not say
+        what it was addressed to is exactly the one this check exists for."""
+        host = (self.headers.get("Host") or "").strip()
+        if not host:
+            return False
+        if host.startswith("["):
+            # `[::1]:8765` -- the brackets are there precisely so the port colon can be
+            # told apart from the address's own, and `rsplit` cannot.
+            host = host.partition("]")[0] + "]"
+        elif host.count(":") == 1:
+            host = host.rsplit(":", 1)[0]
+        return host in ALLOWED_HOSTS
 
     def _origin_allowed(self) -> bool:
         """A browser sends `Origin` on form posts. Absent is allowed -- curl does not

@@ -427,10 +427,18 @@ it, so if the last one ran on a different configuration you get a banner rather 
 guess.
 
 What a save can do is deliberately small. It validates the agent exactly as boot would,
-checks the command resolves — a `which`, not a subprocess — and writes one file `0600` in
-a `0700` directory, atomically. It never runs a login command, never starts a
-consultation, and never touches anything else in your config. Writes carry a per-process
-token, because loopback is not a boundary a browser respects.
+checks the command resolves — a `which`, not a subprocess — and writes one file
+atomically, `0600`, in a directory it creates `0700`. A directory that already exists
+keeps the mode it has: `managed_agents_path` can name any file, its parent might be
+`$HOME`, and tightening someone else's directory behind their back is not this program's
+call. A save never runs a login command, never starts a consultation, and never touches
+anything else in your config. Writes carry a per-process token, because loopback is not a
+boundary a browser respects.
+
+It also refuses to write a file the server could not then boot on. If a hand-edit left a
+blank id or a malformed entry beside the agent you are changing, the save says so and
+changes nothing — rewriting the file would put the dashboard's name on an entry it cannot
+fix, and the next start would refuse.
 
 ## System Requirements
 
@@ -636,6 +644,8 @@ Consult path:
 | `/agents` answers 403 `Read-only` | `consult.dashboard.editable` is `false`. Viewing and editing are separate opt-ins. |
 | Server refuses to boot: agent defined in both the config and `agents.yaml` | The same id is in `config.yaml` and the dashboard's file. Delete one — the server will not pick, because the copy it ignored would look saved to whoever wrote it. |
 | Saved an agent, `list_consult_agents` does not show it | The MCP server read its config at boot. Restart Claude Code. |
+| A save is refused naming another agent in `agents.yaml` | A hand-edit left an entry that will not boot. The dashboard will not rewrite the file around it — fix that entry, or delete it, and save again. |
+| A save is refused because the agent is "already configured here" | You are on **Add an agent** with an id that already exists. Use its **edit** link; adding it again would replace it without saying so. |
 
 ## Bug Reports
 

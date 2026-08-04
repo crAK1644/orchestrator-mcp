@@ -111,6 +111,11 @@ class ConsultConfig(BaseModel):
     @field_validator("database_path", "managed_agents_path")
     @classmethod
     def _expand(cls, value: Path) -> Path:
+        # `Path("")` is `Path(".")`, so a blank path silently becomes the working
+        # directory and everything downstream tries to open a directory as a file.
+        # Refusing says which line is empty; the alternative reads as a bug in us.
+        if str(value).strip() in ("", "."):
+            raise ValueError("must name a file, not a blank path")
         return Path(os.path.expandvars(str(value))).expanduser()
 
     @field_validator("protocol_version")
