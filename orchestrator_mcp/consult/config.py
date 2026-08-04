@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from ..contract import ConfigError
 from .contract import PROTOCOL_VERSION, Capability, Runtime
+from .managed import DEFAULT_MANAGED_PATH, managed_path, read_managed
 
 HOST_RUNTIME_ENV = "ORCHESTRATOR_HOST_RUNTIME"
 
@@ -45,6 +46,12 @@ class AgentConfig(BaseModel):
     # not the operator's. A closed set because a typo would otherwise be invisible --
     # it would run, quietly, at a depth nobody chose.
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    # Which file this came from, so the dashboard can offer to edit the ones it owns
+    # and only show the rest. `exclude=True` keeps it out of `model_dump`, which is
+    # what `config_hash` hashes and what gets written back: moving an agent between
+    # two files does not change how it routes, so it must not change the hash a stored
+    # consultation is read against.
+    managed: bool = Field(default=False, exclude=True)
 
     def score_for(self, capability: str) -> int:
         return self.scores.get(capability, 0)  # type: ignore[arg-type]
@@ -64,6 +71,10 @@ class DashboardConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    # A second flag rather than a mode of the first: turning the dashboard on gets you
+    # a window, and read-only stays what that word means. Editing is a different thing
+    # to consent to, so it is a different line in the config.
+    editable: bool = False
     # Loopback only, and validated as such: a read-only page over stored prompts is
     # still every prompt the user has ever sent.
     host: str = "127.0.0.1"
@@ -84,6 +95,9 @@ class ConsultConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_default=True)
 
     database_path: Path = Path("~/.orchestrator-mcp/consultations.sqlite3")
+    # The file the dashboard writes. Agents in it are merged with the ones below at
+    # load; see `managed.py` for why they are not simply kept here.
+    managed_agents_path: Path = DEFAULT_MANAGED_PATH
     timeout_s: int = Field(default=180, ge=1)
     protocol_version: str = PROTOCOL_VERSION
     store_full_content: bool = True
@@ -94,7 +108,7 @@ class ConsultConfig(BaseModel):
     agents: dict[str, AgentConfig] = Field(min_length=1)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
 
-    @field_validator("database_path")
+    @field_validator("database_path", "managed_agents_path")
     @classmethod
     def _expand(cls, value: Path) -> Path:
         return Path(os.path.expandvars(str(value))).expanduser()
@@ -140,10 +154,51 @@ def load_consult_config(config: dict[str, Any]) -> ConsultConfig | None:
         return None
     if not isinstance(block, dict):
         raise ConfigError("`consult:` must be a mapping")
+
+    block = dict(block) | {"agents": _merged_agents(block)}
     try:
         return ConsultConfig(**block)
     except ValidationError as exc:
         raise ConfigError(f"invalid `consult:` block: {exc}") from exc
+
+
+def _merged_agents(block: dict[str, Any]) -> dict[str, Any]:
+    """The agents from `config.yaml` and the ones the dashboard owns, as one mapping.
+
+    Merged before `ConsultConfig` is built, so everything downstream -- routing, the
+    config hash, the store, the dashboard's own tables -- sees one set of agents and
+    none of them needs to know there are two files.
+    """
+    written = block.get("agents") or {}
+    if not isinstance(written, dict):
+        return written  # let pydantic produce the error, in its own words
+
+    path = managed_path(block)
+    managed = read_managed(path)
+
+    both = sorted(set(written) & set(managed))
+    if both:
+        raise ConfigError(
+            f"agent{'s' if len(both) > 1 else ''} {', '.join(repr(a) for a in both)} "
+            f"defined in both the config and {path}. Delete one: the server will not "
+            "guess which was meant, because the copy it ignored would look edited and "
+            "saved to whoever wrote it."
+        )
+
+    # `managed` is a declared field, so a hand-written `managed: true` in either file is
+    # accepted and then overwritten here -- in both directions. Where an agent lives is
+    # decided by which file it is in and not by what it claims, or the dashboard would
+    # offer to edit an entry it has no business writing.
+    def labelled(agents: dict[str, Any], owned: bool) -> dict[str, Any]:
+        # Anything that is not a mapping is passed through untouched, so pydantic gets
+        # to describe it in its own words rather than this raising a `dict()` TypeError
+        # from three frames away.
+        return {
+            aid: (a | {"managed": owned}) if isinstance(a, dict) else a
+            for aid, a in agents.items()
+        }
+
+    return labelled(written, False) | labelled(managed, True)
 
 
 def host_runtime() -> Runtime:
