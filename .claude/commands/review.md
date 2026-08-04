@@ -53,11 +53,18 @@ and say so in the prompt.
 
 ```
 mcp__orchestrator__consult
-  capability:    "review"
-  target_agent:  "codex-luna"
-  prompt:        <the review prompt you wrote>
-  context:       <the diff, then each file's full text under a clear header>
+  capability:       "review"
+  target_agent:     "codex-luna"
+  prompt:           <the review prompt you wrote>
+  context:          <the diff, then each file's full text under a clear header>
+  consultation_id:  <the id of an earlier review of this same change, if there is one>
 ```
+
+**Pass `consultation_id` whenever one exists for this change** — a re-review after
+fixes, or any follow-up question. That resumes the same Codex session, which already
+holds the diff and its own findings, so the second round is a short prompt about what
+changed rather than another 400,000 characters. Omit it only for the first review of a
+change, or when the previous one failed with `SESSION_NOT_FOUND`.
 
 `source_mode` resolves itself to `document` because context is present. This runs on
 the ChatGPT subscription, not an API key, and takes a while at `xhigh` — the timeout
@@ -83,6 +90,15 @@ the envelope, and it is exactly what gets lost when a summary is written instead
 State the `consultation_id` in your response. Follow-up questions must pass it back,
 or they start a cold session that remembers none of this.
 
+State which model answered, from `route`:
+
+- `model_verified: true` — the runtime named the model itself and it matched. Say the
+  name plainly.
+- `model_verified: false` — that is the model that was *asked for*; nothing confirmed
+  it. Say so, in those words. A substitution would have been refused, so this is not a
+  warning that the review is wrong — it is the difference between knowing and assuming,
+  and reporting them identically is the same as having no check.
+
 ## 6. Stop and ask
 
 Re-list the findings as a numbered list with their severities, then use
@@ -91,6 +107,14 @@ back on some, or nothing for now.
 
 **Make no edits before that answer.** The point of a second opinion is that a human
 decides what to do with it.
+
+## 7. After the fixes
+
+If the user asks for a re-review, go back to step 1 with the `consultation_id` from
+the first one. Send only what changed — the new diff of the files you touched and a
+short statement of which findings you addressed and how. The reviewer still has the
+original change and its own findings, and re-sending them invites it to review its own
+review rather than your fixes.
 
 ## Safety
 

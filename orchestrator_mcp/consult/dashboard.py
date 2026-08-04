@@ -30,6 +30,7 @@ import sqlite3
 import sys
 import threading
 from collections.abc import Callable
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.metadata import PackageNotFoundError, version as _distribution_version
@@ -43,6 +44,7 @@ from pydantic import ValidationError
 from ..contract import ConfigError
 from .adapters import adapter_for
 from .adapters.base import AdapterError, resolve_command
+from .adapters.codex_cli import rate_limit as codex_rate_limit
 from .config import AgentConfig, ConsultConfig, load_consult_config
 from .contract import Capability
 from .managed import read_managed, write_managed
@@ -183,7 +185,7 @@ class ConsultDashboard:
             "Consultations",
             f"<h1>Consult Protocol v1</h1><p class=meta>orchestrator-mcp-server {_e(self.version)}"
             f" &middot; {_e(str(self.config.database_path))}{link}</p>"
-            f"<h2>Agents</h2>{self._agents_table()}"
+            f"<h2>Agents</h2>{self._agents_table()}{self._rate_limit_line()}"
             f"<h2>Consultations</h2>{self._consultations_table()}",
         )
 
@@ -219,6 +221,29 @@ class ConsultDashboard:
             "<th>web<th>last status<th>connect with</tr>"
         )
         return f"<table>{head}{''.join(rows)}</table>"
+
+    def _rate_limit_line(self) -> str:
+        """What is left of the Codex subscription window, when anything knows.
+
+        Under the table rather than in it: one `~/.codex` serves every codex agent, so
+        a per-row copy of the same number would read as several separate budgets.
+        Nothing at all when no codex agent is configured, or when no consultation has
+        run yet to be told a number.
+        """
+        if not any(agent.runtime == "codex" for agent in self.config.agents.values()):
+            return ""
+        limit = codex_rate_limit()
+        if not limit:
+            return ""
+        window = _window(limit.get("window_minutes"))
+        when = _resets(limit.get("resets_at"))
+        plan = f" &middot; {_e(str(limit['plan_type']))} plan" if limit.get("plan_type") else ""
+        return (
+            f"<p class=meta>codex usage: {limit['used_percent']:.0f}%{window} used{when}{plan}"
+            # Said plainly because it is: this is whatever the last consultation was
+            # told, not a number this page went and asked for.
+            " &middot; as of the last consultation</p>"
+        )
 
     def _consultations_table(self) -> str:
         rows = self._query(
@@ -899,6 +924,37 @@ def _pretty(value: str | None) -> str | None:
         return json.dumps(json.loads(value), indent=2, ensure_ascii=False)
     except ValueError:
         return value
+
+
+def _window(minutes: object) -> str:
+    """A rate-limit window, in the unit it reads naturally in.
+
+    Codex plans quote both a weekly window and a five-hour one, so dividing by a day
+    and printing days would render the short one as `0d` -- a number that is wrong
+    rather than merely coarse.
+    """
+    if not isinstance(minutes, int) or minutes <= 0:
+        return ""
+    if minutes >= 1440:
+        return f" of the last {minutes // 1440}d"
+    if minutes >= 60:
+        return f" of the last {minutes // 60}h"
+    return f" of the last {minutes}m"
+
+
+def _resets(when: object) -> str:
+    """When the window rolls over, if that is a time at all.
+
+    The epoch here came out of a file this server does not own, and a number that is
+    not a plausible timestamp raises rather than returning something wrong -- which on
+    a render path means a 500 on a page whose whole job is to still be readable.
+    """
+    if not isinstance(when, (int, float)) or isinstance(when, bool):
+        return ""
+    try:
+        return f", resets {datetime.fromtimestamp(when, UTC):%Y-%m-%d %H:%M} UTC"
+    except (OSError, OverflowError, ValueError):
+        return ""
 
 
 def _status_cell(row: sqlite3.Row | None) -> str:

@@ -281,8 +281,11 @@ class ConsultService:
             capability_requested=capability,
             source_mode_used=source_mode,
             # The model that actually answered, not the one configured: they agree
-            # or the adapter has already refused the turn.
-            route=route.model_copy(update={"model": result.model_used}),
+            # or the adapter has already refused the turn. `model_verified` is how a
+            # caller tells that apart from a runtime that named no model at all.
+            route=route.model_copy(
+                update={"model": result.model_used, "model_verified": result.model_verified}
+            ),
             usage=result.usage,
             latency_ms=int((time.perf_counter() - started) * 1000),
         ).check_invariants()

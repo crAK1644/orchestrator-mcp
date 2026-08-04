@@ -34,10 +34,17 @@ ANSWER = ConsultationContent(
 class StubAdapter:
     """Records what it was asked to do and answers with whatever it was given."""
 
-    def __init__(self, runtime: str = "codex", status: AgentStatus | None = None, error=None) -> None:
+    def __init__(
+        self,
+        runtime: str = "codex",
+        status: AgentStatus | None = None,
+        error=None,
+        verified: bool = False,
+    ) -> None:
         self.runtime = runtime
         self._status = status
         self._error = error
+        self._verified = verified
         self.calls: list[tuple[str, str | None, SourceMode, int]] = []
 
     def connect_command(self, agent):
@@ -61,6 +68,7 @@ class StubAdapter:
             content=ANSWER,
             native_session_id=native,
             model_used="gpt-5.6-sol",
+            model_verified=self._verified,
             raw_output='{"answer": "blue"}',
             usage=Usage(prompt_tokens=10, completion_tokens=2, total_tokens=12),
         )
@@ -99,6 +107,18 @@ async def test_a_first_consultation_creates_a_session_and_answers(service_factor
     # Host is claude, so the codex agent is the only eligible one.
     assert response.route.agent_id == "codex-sol"
     assert response.usage.total_tokens == 12
+
+
+@pytest.mark.parametrize("verified", [True, False])
+async def test_the_envelope_says_whether_the_model_was_checked(service_factory, verified):
+    """`route.model` is the same string either way -- the configured name, or the one a
+    runtime confirmed. Without this flag a caller cannot tell "Sol answered" from
+    "we asked for Sol and nobody said", which is the same as having no check."""
+    service = await service_factory(StubAdapter(verified=verified))
+    response = await service.consult(capability="coding", prompt="what colour is the sky")
+
+    assert response.route.model == "gpt-5.6-sol"
+    assert response.route.model_verified is verified
 
 
 async def test_the_returned_id_continues_the_same_conversation(service_factory):

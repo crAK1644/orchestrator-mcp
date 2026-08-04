@@ -234,7 +234,8 @@ class ClaudeCliAdapter:
                 f"the agent reported a failure: {str(envelope.get('result'))[:400]}",
             )
 
-        model_used = check_model(agent, _reported_model(envelope))
+        reported = _reported_model(envelope)
+        model_used = check_model(agent, reported)
         content = parse_content(str(envelope.get("result", "")))
         native = str(envelope.get("session_id") or session_id or "")
         if not native:
@@ -246,6 +247,7 @@ class ClaudeCliAdapter:
             content=content,
             native_session_id=native,
             model_used=model_used,
+            model_verified=reported is not None,
             raw_output=result.stdout,
             usage=_usage(envelope),
         )
