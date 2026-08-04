@@ -8,6 +8,7 @@ right.
 
 from __future__ import annotations
 
+import os
 import stat
 
 import pytest
@@ -395,7 +396,9 @@ async def test_adding_an_agent_that_is_already_here_is_refused_rather_than_repla
 
     get, _ = serve(editable())
     status, body, _ = get.post("/agents", form(_token=get.token, model="gpt-5.6-sol"))
-    assert status == 200
+    # 409 and not 200: the same refusal the delete beside it answers with, carrying the
+    # form back so nothing typed is lost.
+    assert status == 409
     assert "already configured here" in body
     assert written(editable.path)["codex-luna"]["model"] == "gpt-5.6-luna"
 
@@ -428,7 +431,7 @@ async def test_a_managed_file_that_cannot_be_read_refuses_the_write(serve, edita
     assert status == 200, "reading the page still works"
 
     status, body, _ = get.post("/agents", form(_token=get.token))
-    assert status == 200, "a form again -- not a traceback in the request thread"
+    assert status == 409, "a form again -- not a traceback in the request thread"
     assert "mapping" in body and "<form" in body
 
     status, body, _ = get.post("/agents/delete", {"_token": get.token, "id": "codex-luna"})
@@ -447,12 +450,115 @@ async def test_a_hand_edited_entry_the_form_cannot_fix_blocks_the_write(serve, e
     editable.path.write_text(yaml.safe_dump({"agents": {"": agent("codex", "m")}}))
 
     status, body, _ = get.post("/agents", form(_token=get.token))
-    assert status == 200
-    assert "blank id" in body
+    assert status == 409
+    assert "blank or non-text id" in body
     assert written(editable.path) == {"": agent("codex", "m")}, "left as it was found"
 
     _, page = get("/agents")
     assert "No agents configured here yet" in page, "and not offered for editing"
+
+
+async def test_a_file_with_two_kinds_of_key_refuses_the_write_rather_than_crashing(
+    serve, editable  # noqa: F811
+):
+    """`1:` is an int key and `alpha:` is a string one, and the two cannot be compared,
+    so sorting them raised out of the request thread past every catch around it."""
+    get, _ = serve(editable())
+    editable.path.parent.mkdir(parents=True)
+    editable.path.write_text(
+        yaml.safe_dump({"agents": {1: agent("codex", "m"), "alpha": agent("codex", "m")}})
+    )
+    before = editable.path.read_bytes()
+
+    status, body, _ = get.post("/agents", form(_token=get.token))
+    assert status == 409
+    assert "non-text id" in body
+    assert editable.path.read_bytes() == before
+
+    status, _ = get("/agents")
+    assert status == 200, "and the page still renders"
+
+
+async def test_an_entry_that_spells_out_its_own_agent_id_is_not_refused(serve, editable):  # noqa: F811
+    """A boot accepts `agent_id:` inside an entry and overwrites it from the key. This
+    page has to accept it too, or it refuses a file the server starts on fine -- and
+    refuses it while showing a table that looks perfectly normal."""
+    get, _ = serve(editable())
+    editable.path.parent.mkdir(parents=True)
+    editable.path.write_text(
+        yaml.safe_dump({"agents": {"alpha": agent("codex", "m") | {"agent_id": "alpha"}}})
+    )
+
+    _, page = get("/agents")
+    assert "alpha" in page, "shown, because the next boot shows it too"
+
+    status, _, location = get.post("/agents", form(_token=get.token))
+    assert status == 303, "and saving alongside it is not a conflict"
+    assert location == "/agents?saved=codex-luna"
+    assert sorted(written(editable.path)) == ["alpha", "codex-luna"]
+
+
+async def test_an_id_in_both_files_blocks_the_write_before_the_next_boot_refuses_it(
+    serve, editable  # noqa: F811
+):
+    """Two files naming one agent is a startup error. Writing that file back would mean
+    this page reporting a save on a config that will not start."""
+    get, _ = serve(editable())
+    editable.path.parent.mkdir(parents=True)
+    editable.path.write_text(yaml.safe_dump({"agents": {"codex-sol": agent("codex", "m")}}))
+    before = editable.path.read_bytes()
+
+    status, body, _ = get.post("/agents", form(_token=get.token))
+    assert status == 409
+    assert "config.yaml" in body
+    assert editable.path.read_bytes() == before
+
+
+async def test_a_managed_file_that_is_not_text_refuses_the_write(serve, editable):  # noqa: F811
+    """Bytes that are not text read fine and fail at decoding, which is not an
+    `OSError` and used to escape the only catch that was there."""
+    get, _ = serve(editable())
+    editable.path.parent.mkdir(parents=True)
+    editable.path.write_bytes(b"\xff\xfe agents:")
+    before = editable.path.read_bytes()
+
+    status, body, _ = get.post("/agents", form(_token=get.token))
+    assert status == 409
+    assert "<form" in body, "a page, not a traceback"
+    assert editable.path.read_bytes() == before
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can write a directory it has no bit for")
+async def test_a_managed_file_that_cannot_be_written_says_so(serve, editable):  # noqa: F811
+    """Readable and unwritable is a state the read guard says nothing about: the file
+    parses, the entry validates, and the failure lands on `os.replace`."""
+    get, _ = serve(editable())
+    editable.path.parent.mkdir(parents=True)
+    editable.path.write_text(yaml.safe_dump({"agents": {}}))
+    os.chmod(editable.path.parent, 0o500)
+    try:
+        status, body, _ = get.post("/agents", form(_token=get.token))
+    finally:
+        os.chmod(editable.path.parent, 0o700)
+
+    assert status == 500
+    assert "could not be written" in body
+    assert written(editable.path) == {}
+
+
+async def test_an_agent_deleted_while_the_form_was_open_is_not_recreated_by_saving_it(
+    serve, editable  # noqa: F811
+):
+    """The duplicate and existence checks used to run against the page's reading of the
+    file, which is a guess by the time the form comes back."""
+    get, _ = serve(editable())
+    get.post("/agents", form(_token=get.token))
+    editable.path.write_text(yaml.safe_dump({"agents": {}}))
+
+    status, body, _ = get.post("/agents", form(_token=get.token, _editing="codex-luna"))
+    assert status == 409
+    assert "no longer in this file" in body
+    assert written(editable.path) == {}
 
 
 async def test_two_saves_at_once_both_survive(serve, editable, monkeypatch):  # noqa: F811

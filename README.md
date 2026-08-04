@@ -436,9 +436,13 @@ anything else in your config. Writes carry a per-process token, because loopback
 boundary a browser respects.
 
 It also refuses to write a file the server could not then boot on. If a hand-edit left a
-blank id or a malformed entry beside the agent you are changing, the save says so and
-changes nothing — rewriting the file would put the dashboard's name on an entry it cannot
-fix, and the next start would refuse.
+blank id, a malformed entry, or an id that `config.yaml` also defines beside the agent you
+are changing, the save says so and changes nothing — rewriting the file would put the
+dashboard's name on an entry it cannot fix, and the next start would refuse.
+
+One dashboard writes that file. The lock that makes two simultaneous saves safe belongs to
+the process holding it, so pointing two dashboards at one `managed_agents_path` is not a
+supported arrangement and can still lose an edit between them.
 
 ## System Requirements
 

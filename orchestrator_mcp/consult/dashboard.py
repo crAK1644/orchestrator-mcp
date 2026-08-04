@@ -347,14 +347,14 @@ class ConsultDashboard:
             # Reading the file here skips `_label_agents`, which is where a boot refuses
             # a blank id. Without this the page renders a nameless row, offers to edit
             # it, and the server it is configuring will not start.
-            unbootable = _unbootable(on_disk)
+            unbootable = self._unbootable(on_disk)
             if unbootable:
                 raise ConfigError(unbootable)
             managed = {
-                aid: AgentConfig(agent_id=aid, managed=True, **data)
+                aid: AgentConfig(agent_id=aid, managed=True, **_settings(data))
                 for aid, data in on_disk.items()
             }
-        except (ConfigError, ValidationError, TypeError, OSError):
+        except (ConfigError, ValidationError, TypeError, OSError, UnicodeDecodeError):
             # A hand-edit can put anything in that file. Falling back to what booted
             # keeps the page readable; the file itself is what the next server start
             # refuses on, and it says why in far more detail than a table cell could.
@@ -378,12 +378,21 @@ class ConsultDashboard:
         read refuses the write and says why, rather than raising in a request thread
         where nothing turns it into a page.
 
+        The lock is this object's, so it covers this dashboard and nothing else. Two
+        dashboards on two ports pointed at one managed file would still lose an update
+        between them. That is not a supported arrangement -- one file, one process that
+        writes it -- and a lock file would only make the unsupported case fail more
+        quietly, so what stands in for it is this paragraph.
+
         Returns None when it wrote, or a status and a message when it did not.
         """
         with self._writing:
             try:
                 agents = read_managed(self.config.managed_agents_path)
-            except (ConfigError, OSError) as exc:
+            # A decode error is not an `OSError`: bytes that are not text read fine and
+            # fail at the last step, which is a hand-edit in the wrong encoding and
+            # exactly the case this exists to answer.
+            except (ConfigError, OSError, UnicodeDecodeError) as exc:
                 return HTTPStatus.CONFLICT, str(exc)
             refusal = change(agents)
             if refusal is not None:
@@ -392,11 +401,53 @@ class ConsultDashboard:
             # The form cannot produce a bad entry, but it can be asked to save alongside
             # one a hand-edit left there -- and writing that back is this process
             # putting its name on a file that will refuse the next start.
-            unbootable = _unbootable(agents)
+            unbootable = self._unbootable(agents)
             if unbootable:
                 return HTTPStatus.CONFLICT, unbootable
-            write_managed(self.config.managed_agents_path, agents)
+            try:
+                write_managed(self.config.managed_agents_path, agents)
+            except OSError as exc:
+                # A readable file in a directory this user cannot write to. The read
+                # above says nothing about that, so the failure lands here and has to
+                # become a page rather than a traceback in a request thread.
+                return HTTPStatus.INTERNAL_SERVER_ERROR, (
+                    f"{self.config.managed_agents_path} could not be written: {exc}"
+                )
             return None
+
+    def _unbootable(self, agents: dict[str, Any]) -> str | None:
+        """Why the next server start would refuse this mapping, or None if it would not.
+
+        The rules a boot applies -- a text id that is not blank, no id also in
+        `config.yaml`, and an entry `AgentConfig` accepts -- checked here so that
+        neither a page nor a save has to assume the file only ever held what this form
+        put in it.
+        """
+        written = {aid for aid, a in self.config.agents.items() if not a.managed}
+        # Sorted by the *string* of the key: a file holding both `1:` and `alpha:` has
+        # keys that cannot be compared to each other at all, and a `TypeError` from
+        # inside `sorted` would escape every catch below.
+        for agent_id, data in sorted(agents.items(), key=lambda item: str(item[0])):
+            if not isinstance(agent_id, str) or not agent_id.strip():
+                return (
+                    "An agent in this file has a blank or non-text id, which the server "
+                    "refuses to start on."
+                )
+            if agent_id in written:
+                return (
+                    f"`{agent_id}` is defined in config.yaml as well as in this file, and "
+                    "the server refuses to start with both. Delete one of the two."
+                )
+            if not isinstance(data, dict):
+                return f"`{agent_id}` in this file is not a mapping of settings."
+            try:
+                AgentConfig(agent_id=agent_id, **_settings(data))
+            except ValidationError as exc:
+                return f"`{agent_id}` in this file is not a valid agent: {_first_error(exc)}"
+            except TypeError:
+                # Keys that are not strings, which `**` refuses.
+                return f"`{agent_id}` in this file is not a mapping of settings."
+        return None
 
     def _restart_banner(self) -> str:
         """Say whether the running MCP server is on a different configuration.
@@ -564,13 +615,13 @@ class ConsultDashboard:
     def save(self, form: dict[str, str]) -> tuple[int, str, str | None]:
         agent_id = (form.get("id") or "").strip()
         editing = (form.get("_editing") or "").strip()
-        managed, written = self._split_agents()
+        _, written = self._split_agents()
 
-        def refuse(message: str) -> tuple[int, str, str | None]:
+        def refuse(message: str, status: int = HTTPStatus.OK) -> tuple[int, str, str | None]:
             # `editing` and not `agent is not None`: a failed edit has no valid agent to
             # render from, and coming back as a New agent form would offer a writable id
             # on a page the operator opened to change one field.
-            return HTTPStatus.OK, self.agent_form(
+            return status, self.agent_form(
                 None, values=form, error=message, editing=bool(editing)
             ), None
 
@@ -586,11 +637,6 @@ class ConsultDashboard:
             return refuse(
                 f"This form is editing `{editing}`. Renaming an agent means adding the "
                 "new one and deleting the old one, so that nothing is left behind."
-            )
-        if not editing and agent_id in managed:
-            return refuse(
-                f"`{agent_id}` is already configured here. Edit it rather than adding it "
-                "again -- saving this would replace it without saying so."
             )
         if agent_id in written:
             return refuse(
@@ -614,15 +660,30 @@ class ConsultDashboard:
         data = agent.model_dump(mode="json", exclude_defaults=True)
         data.pop("agent_id", None)
 
-        def store(agents: dict[str, Any]) -> None:
+        def store(agents: dict[str, Any]) -> tuple[int, str] | None:
+            # Inside the lock, against the file as it is now, because a form is open for
+            # as long as someone leaves it open. What was true when the page rendered is
+            # a guess by the time it is submitted.
+            if editing and agent_id not in agents:
+                return HTTPStatus.CONFLICT, (
+                    f"`{agent_id}` is no longer in this file -- it was deleted while this "
+                    "form was open. Add it as a new agent if you meant to bring it back."
+                )
+            if not editing and agent_id in agents:
+                return HTTPStatus.CONFLICT, (
+                    f"`{agent_id}` is already configured here. Edit it rather than adding "
+                    "it again -- saving this would replace it without saying so."
+                )
             agents[agent_id] = data
+            return None
 
         problem = self._rewrite(store)
         if problem:
             # Back into the form rather than out as a bare status: whoever is looking at
             # this typed a page of fields, and the file being unreadable is not a reason
-            # to make them type it again.
-            return refuse(problem[1])
+            # to make them type it again. The status is the one `_rewrite` decided, so a
+            # refusal is not answered 200 here and 409 by the delete beside it.
+            return refuse(problem[1], problem[0])
         return HTTPStatus.SEE_OTHER, "", f"/agents?saved={agent_id}"
 
     def delete(self, form: dict[str, str]) -> tuple[int, str, str | None]:
@@ -695,23 +756,14 @@ def _from_form(form: dict[str, str]) -> dict[str, object]:
     return fields
 
 
-def _unbootable(agents: dict[str, Any]) -> str | None:
-    """Why the next server start would refuse this mapping, or None if it would not.
+def _settings(data: dict[str, Any]) -> dict[str, Any]:
+    """An entry without the `agent_id` it may spell out for itself.
 
-    The same two rules a boot applies -- an id that is not blank, and an entry
-    `AgentConfig` accepts -- checked here so that neither a page nor a save has to
-    assume the file only ever held what this form put in it.
+    A boot accepts that field and then overwrites it from the mapping key, in
+    `_label_agents`. Passing both to `AgentConfig` is a duplicate-argument `TypeError`,
+    which would make this page and this save refuse a file the server starts on fine.
     """
-    for agent_id, data in sorted(agents.items()):
-        if not str(agent_id).strip():
-            return "An agent in this file has a blank id, which the server refuses to start on."
-        try:
-            AgentConfig(agent_id=str(agent_id), **data)
-        except ValidationError as exc:
-            return f"`{agent_id}` in this file is not a valid agent: {_first_error(exc)}"
-        except TypeError:
-            return f"`{agent_id}` in this file is not a mapping of settings."
-    return None
+    return {key: value for key, value in data.items() if key != "agent_id"}
 
 
 def _first_error(exc: ValidationError) -> str:
