@@ -582,15 +582,96 @@ async def test_a_config_yaml_that_cannot_be_read_falls_back_to_what_booted(
     """Moved, or half-written by an editor that truncates before it saves. Stale is a
     worse answer than fresh and a much better one than treating the file as empty,
     which would let every id in it through."""
-    get, _ = serve(editable(), tmp_path / "not-here.yaml")
+    missing = tmp_path / "not-here.yaml"
+    get, _ = serve(editable(), missing)
     status, body, _ = get.post("/agents", form(_token=get.token, id="codex-sol"))
-    assert status == 200 and "config.yaml" in body
+    assert status == 200 and str(missing) in body, "and the refusal names the file it read"
 
     source = tmp_path / "config.yaml"
     source.write_text("consult: {agents: [")
     get, _ = serve(editable(), source)
     status, body, _ = get.post("/agents", form(_token=get.token, id="codex-sol"))
-    assert status == 200 and "config.yaml" in body
+    assert status == 200 and str(source) in body
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("", id="truncated to nothing"),
+        pytest.param("capabilities: {}\n", id="truncated above the consult block"),
+        pytest.param("consult:\n", id="a consult block with nothing under it"),
+    ],
+)
+async def test_a_config_yaml_caught_mid_write_does_not_read_as_no_agents(
+    serve, editable, tmp_path, content  # noqa: F811
+):
+    """An editor that truncates before it writes leaves the file empty for a moment. Read
+    as "config.yaml defines nobody", that window is when this check waves through the
+    duplicate it exists to catch -- and the operator's editor finishes a keystroke later,
+    putting the id back and leaving a file the next start refuses."""
+    source = tmp_path / "config.yaml"
+    source_config(source, {"codex-sol": agent()})
+    get, _ = serve(editable(), source)
+
+    source.write_text(content)
+    status, body, _ = get.post("/agents", form(_token=get.token, id="codex-sol"))
+
+    assert status == 200 and str(source) in body
+    assert not editable.path.exists()
+
+
+async def test_a_config_yaml_that_really_has_no_agents_is_taken_at_its_word(
+    serve, editable, tmp_path  # noqa: F811
+):
+    """The other side of that: every agent living in the managed file is a supported
+    config, not a truncated read, so an empty `agents:` under a real `consult:` must not
+    be second-guessed into refusing a save."""
+    source = tmp_path / "config.yaml"
+    source.write_text(yaml.safe_dump(base_config() | {"consult": {"timeout_s": 60}}))
+    get, _ = serve(editable(), source)
+
+    status, _, location = get.post("/agents", form(_token=get.token, id="codex-sol"))
+    assert status == 303 and location == "/agents?saved=codex-sol"
+
+
+async def test_an_id_in_both_files_still_leaves_the_row_that_can_delete_it(
+    serve, editable, tmp_path  # noqa: F811
+):
+    """The duplicate is only fixable from here by deleting the managed copy, so the page
+    that reports it has to keep the row with that button on it. Dropping the whole
+    editable table over a duplicate leaves the operator the refusal and no way to act on
+    it."""
+    source = tmp_path / "config.yaml"
+    source_config(source, {"claude-opus": agent("claude", "opus")})
+    get, _ = serve(editable(), source)
+    get.post("/agents", form(_token=get.token))  # saved while config.yaml had no codex-luna
+
+    source_config(source, {"claude-opus": agent("claude", "opus"), "codex-luna": agent()})
+    status, body = get("/agents")
+
+    assert status == 200
+    assert "/agents/codex-luna" in body, "the row is still there, and still editable"
+    assert "codex-luna" in written(editable.path)
+
+
+async def test_an_agent_moved_out_of_config_yaml_is_not_listed_as_still_being_in_it(
+    serve, editable, tmp_path  # noqa: F811
+):
+    """Moving an agent between the files is the whole point of allowing the save. Listing
+    it in both tables afterwards says the config is in the state the server refuses to
+    start on, which is the opposite of what just happened."""
+    source = tmp_path / "config.yaml"
+    source_config(source, {"codex-sol": agent()})
+    get, _ = serve(editable(), source)
+
+    source_config(source, {"claude-opus": agent("claude", "opus")})
+    get.post("/agents", form(_token=get.token, id="codex-sol"))
+    _, body = get("/agents")
+
+    assert "/agents/codex-sol" in body, "editable, because that is where it lives now"
+    _, read_only = body.split("Defined in config.yaml")
+    assert "claude-opus" in read_only, "the section is rendered, so the next line means something"
+    assert "codex-sol" not in read_only, "and does not still claim the agent that moved out"
 
 
 async def test_a_managed_file_that_is_not_text_refuses_the_write(serve, editable):  # noqa: F811

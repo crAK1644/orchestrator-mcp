@@ -442,9 +442,18 @@ dashboard's name on an entry it cannot fix, and the next start would refuse.
 
 The duplicate half of that check reads `config.yaml` again rather than trusting what this
 process loaded, so an agent you add to that file by hand is refused here without a restart,
-and one you delete from it stops being refused. Only the ids are re-read: an agent added
-to `config.yaml` while the page is open is not in the read-only table until the dashboard
-restarts, but it is enough to keep a save from writing something the next boot rejects.
+and one you delete from it stops being refused. The read-only table follows the same file:
+an agent you delete from `config.yaml` stops being listed there, which is what makes moving
+one into the dashboard leave a single row rather than two contradictory ones. Only the ids
+are re-read, so the traffic goes one way — an agent *added* to `config.yaml` while the page
+is open is not in that table until the dashboard restarts, but it is enough to keep a save
+from writing something the next boot rejects. The row the dashboard owns stays visible and
+deletable while a duplicate exists, since deleting it is the only fix available from here.
+
+An empty or half-written `config.yaml` — the state an editor leaves for a moment when it
+truncates before writing — is not read as "that file defines no agents". The check falls
+back to what the server booted with, because guessing "empty" during that window is exactly
+how it would wave through the duplicate it exists to catch.
 
 One dashboard writes that file. The lock that makes two simultaneous saves safe belongs to
 the process holding it, so pointing two dashboards at one `managed_agents_path` is not a
