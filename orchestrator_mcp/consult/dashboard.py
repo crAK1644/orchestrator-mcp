@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, get_args
 from urllib.parse import parse_qs, unquote, urlparse
 
+import yaml
 from pydantic import ValidationError
 
 from ..contract import ConfigError
@@ -105,8 +106,14 @@ class ConsultDashboard:
     """Renders pages. Holds no connection between requests -- one per request, closed
     with it, so the page cannot hold a handle on a database the operator has moved."""
 
-    def __init__(self, config: ConsultConfig) -> None:
+    def __init__(self, config: ConsultConfig, config_path: Path | None = None) -> None:
         self.config = config
+        # Where `config.yaml` is, so the duplicate-id check can ask what it holds now
+        # rather than what it held when this process started. Optional because a test
+        # that builds a `ConsultConfig` directly has no such file; without it the check
+        # falls back to the boot snapshot, which is what it used to be. See
+        # `_written_ids`.
+        self.config_path = config_path
         self.version = _version()
         # One per process, embedded in every form and required by every write. A page
         # on the internet can aim a form post at 127.0.0.1, but it cannot read this out
@@ -412,6 +419,35 @@ class ConsultDashboard:
                 )
             return None
 
+    def _written_ids(self) -> set[str]:
+        """The agent ids `config.yaml` holds now, or the ones it held at boot.
+
+        The boot snapshot alone is not enough to predict the next start. An operator who
+        adds `beta` to `config.yaml` by hand and then adds `beta` here gets a save this
+        process thinks is fine and a next boot that refuses the duplicate -- a file
+        written broken, by the check that exists to prevent exactly that.
+
+        So this reads the ids back off disk, and only the ids: the merge those agents go
+        through raises rather than returns, and a page render has nowhere to put that.
+        Names are all the duplicate check needs, and a name is the one thing a partially
+        edited file still yields.
+
+        A file that has moved, or that is mid-edit and unparseable, falls back to the
+        snapshot rather than to nothing -- stale is a worse answer than fresh and a much
+        better one than treating `config.yaml` as empty.
+        """
+        booted = {aid for aid, a in self.config.agents.items() if not a.managed}
+        if self.config_path is None:
+            return booted
+        try:
+            document = yaml.safe_load(self.config_path.read_text()) or {}
+            agents = ((document.get("consult") or {}).get("agents")) or {}
+            if not isinstance(agents, dict):
+                return booted
+            return {str(agent_id) for agent_id in agents}
+        except (OSError, UnicodeDecodeError, AttributeError, yaml.YAMLError):
+            return booted
+
     def _unbootable(self, agents: dict[str, Any]) -> str | None:
         """Why a server start would refuse this mapping, or None if it would not.
 
@@ -419,15 +455,8 @@ class ConsultDashboard:
         `config.yaml`, and an entry `AgentConfig` accepts -- checked here so that
         neither a page nor a save has to assume the file only ever held what this form
         put in it.
-
-        The `config.yaml` half is the copy this process booted on, which is the only one
-        it has: re-reading that file means re-running the merge, and the merge raises
-        rather than returns. So an operator who edits `config.yaml` underneath a running
-        dashboard gets an answer about the configuration it started with -- which is also
-        the one the running MCP server is on, and the restart banner is what says when
-        those have parted company.
         """
-        written = {aid for aid, a in self.config.agents.items() if not a.managed}
+        written = self._written_ids()
         # Sorted by the *string* of the key: a file holding both `1:` and `alpha:` has
         # keys that cannot be compared to each other at all, and a `TypeError` from
         # inside `sorted` would escape every catch below.
@@ -439,10 +468,8 @@ class ConsultDashboard:
                 )
             if agent_id in written:
                 return (
-                    f"`{agent_id}` was in config.yaml when this dashboard started, and a "
-                    "server refuses to boot with the same agent in both files. Delete one "
-                    "of the two -- and if you already deleted it from config.yaml, restart "
-                    "this dashboard so it can see that."
+                    f"`{agent_id}` is defined in config.yaml as well as in this file, and "
+                    "the server refuses to start with both. Delete one of the two."
                 )
             if not isinstance(data, dict):
                 return f"`{agent_id}` in this file is not a mapping of settings."
@@ -627,7 +654,6 @@ class ConsultDashboard:
     def save(self, form: dict[str, str]) -> tuple[int, str, str | None]:
         agent_id = (form.get("id") or "").strip()
         editing = (form.get("_editing") or "").strip()
-        _, written = self._split_agents()
 
         def refuse(message: str, status: int = HTTPStatus.OK) -> tuple[int, str, str | None]:
             # `editing` and not `agent is not None`: a failed edit has no valid agent to
@@ -650,7 +676,11 @@ class ConsultDashboard:
                 f"This form is editing `{editing}`. Renaming an agent means adding the "
                 "new one and deleting the old one, so that nothing is left behind."
             )
-        if agent_id in written:
+        # `_written_ids` and not the boot snapshot, so that this refusal and the one
+        # `_unbootable` raises inside the lock are answering from the same file. The
+        # snapshot cannot see an id added to `config.yaml` since, and goes on refusing
+        # one deleted from it.
+        if agent_id in self._written_ids():
             return refuse(
                 f"`{agent_id}` is already defined in config.yaml. Delete it there first, "
                 "or pick another id -- the server refuses to boot with both."
@@ -932,7 +962,9 @@ class _Handler(BaseHTTPRequestHandler):
         # Everything after the address used to be discarded, so `[::1]garbage` and
         # `[::1]:evil` were both read as `[::1]` and allowed. A port is digits or it is
         # not a port, and a host that spells itself that way is not one of ours.
-        if port and not port.isdigit():
+        # `isascii` as well, because `isdigit` is true of `٥` and every other numeral in
+        # Unicode, none of which a port is written in.
+        if port and not (port.isascii() and port.isdigit()):
             return False
         return host in ALLOWED_HOSTS
 
@@ -979,13 +1011,15 @@ class _Handler(BaseHTTPRequestHandler):
         nobody asked for."""
 
 
-def build_httpd(config: ConsultConfig) -> ThreadingHTTPServer:
+def build_httpd(config: ConsultConfig, config_path: Path | None = None) -> ThreadingHTTPServer:
     if config.dashboard.host not in ALLOWED_HOSTS:
         # The config validator already refuses this; kept because the bind is the
         # thing that actually matters and it should refuse on its own terms.
         raise ConfigError(f"dashboard.host must be a loopback address, not {config.dashboard.host}")
 
-    handler = type("_BoundHandler", (_Handler,), {"dashboard": ConsultDashboard(config)})
+    handler = type(
+        "_BoundHandler", (_Handler,), {"dashboard": ConsultDashboard(config, config_path)}
+    )
     return ThreadingHTTPServer((config.dashboard.host, config.dashboard.port), handler)
 
 
@@ -993,9 +1027,15 @@ def main() -> int:
     # Imported here rather than at module scope: `load_config` lives in the module
     # that builds the LiteLLM router, and a dashboard should not pay for that import
     # to print a usage error.
-    from ..server import load_config
+    import os
 
-    consult = load_consult_config(load_config())
+    from ..server import CONFIG_ENV, DEFAULT_CONFIG, load_config
+
+    # Resolved here rather than left to `load_config`'s own default, because the
+    # dashboard needs the path as well as the contents: it re-reads that file to see
+    # which agent ids `config.yaml` claims now. See `ConsultDashboard._written_ids`.
+    config_path = Path(os.environ.get(CONFIG_ENV) or DEFAULT_CONFIG)
+    consult = load_consult_config(load_config(config_path))
     if consult is None:
         print("no `consult:` block in the config -- nothing to show", file=sys.stderr)
         return 2
@@ -1007,7 +1047,7 @@ def main() -> int:
         )
         return 2
 
-    httpd = build_httpd(consult)
+    httpd = build_httpd(consult, config_path)
     host, port = httpd.server_address[0], httpd.server_address[1]
     mode = (
         f"editing agents in {consult.managed_agents_path}"

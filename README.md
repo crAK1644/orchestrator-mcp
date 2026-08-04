@@ -440,6 +440,12 @@ blank id, a malformed entry, or an id that `config.yaml` also defines beside the
 are changing, the save says so and changes nothing — rewriting the file would put the
 dashboard's name on an entry it cannot fix, and the next start would refuse.
 
+The duplicate half of that check reads `config.yaml` again rather than trusting what this
+process loaded, so an agent you add to that file by hand is refused here without a restart,
+and one you delete from it stops being refused. Only the ids are re-read: an agent added
+to `config.yaml` while the page is open is not in the read-only table until the dashboard
+restarts, but it is enough to keep a save from writing something the next boot rejects.
+
 One dashboard writes that file. The lock that makes two simultaneous saves safe belongs to
 the process holding it, so pointing two dashboards at one `managed_agents_path` is not a
 supported arrangement and can still lose an edit between them.
