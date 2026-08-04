@@ -178,7 +178,7 @@ Behaviour worth knowing:
 - Routing is predictable: the highest capability score wins, then the lowest priority number, then the agent ID. A score of 0, or a capability left out of the map, means that agent is not eligible.
 - If the chosen agent fails, that is the answer. Orchestrator does not quietly try the next one.
 - A consultation is pinned to the agent, runtime, and model that started it. Naming a different `target_agent` later returns `session_target_mismatch` rather than switching.
-- If the CLI answers as a different model than the one configured, the consultation fails with `configured_model_unavailable` instead of returning an answer from a model nobody chose.
+- If the CLI answers as a different model than the one configured, the consultation fails with `configured_model_unavailable` instead of returning an answer from a model nobody chose. For Codex this is checked against the session log the CLI writes under `~/.codex/sessions`, because `codex exec --json` on 0.146 does not name the model anywhere in its output. If neither source names one, the configured name is reported unverified — absent metadata is not treated as evidence of substitution, so a quiet release of either CLI does not become an outage.
 - Two processes cannot advance the same consultation at once. The second gets `session_busy`.
 - Nothing is ever run through a shell. Every CLI call is an argument list, and the prompt is written to the process's standard input.
 

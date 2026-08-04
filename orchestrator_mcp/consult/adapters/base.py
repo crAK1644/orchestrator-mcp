@@ -236,7 +236,9 @@ def check_model(agent: AgentConfig, reported: str | None) -> str:
 
     configured, actual = _tokens(agent.model), _tokens(reported)
     variants_agree = VARIANT_TOKENS.intersection(configured) == VARIANT_TOKENS.intersection(actual)
-    if not (_same_model(configured, actual) and variants_agree):
+    # A name with no tokens in it -- `???` -- is not a model, and `_same_model` would
+    # otherwise read the empty list as an unversioned alias and match anything.
+    if not actual or not (_same_model(configured, actual) and variants_agree):
         raise AdapterError(
             ConsultErrorCode.CONFIGURED_MODEL_UNAVAILABLE,
             f"agent `{agent.agent_id}` is configured for model `{agent.model}` but the "

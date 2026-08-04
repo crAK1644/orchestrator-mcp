@@ -14,6 +14,7 @@ and that fails closed rather than being ignored.
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,10 @@ NETWORK_EVENT_MARKERS = ("web", "search", "fetch", "browse")
 # Substrings that mark the run as having failed. Matched the same tolerant way, so
 # `turn.failed`, `error`, and whatever the next release calls it all stop the turn.
 FAILURE_EVENT_MARKERS = ("failed", "failure", "error", "aborted", "cancelled", "canceled")
+
+# A thread id, checked before it is put in a glob pattern. `*` and `?` in an id we did
+# not generate would otherwise match some other session's file.
+_SESSION_ID = re.compile(r"[0-9a-fA-F-]{16,64}")
 
 
 class CodexCliAdapter:
@@ -158,6 +163,11 @@ class CodexCliAdapter:
             # Read the prompt from stdin: no argv ceiling, and no shell to quote for.
             argv.append("-")
 
+            # Where the session log ends *before* this turn runs, so what the turn
+            # appends can be told apart from what an earlier one left behind. Taken
+            # here rather than after the run, which would be after the append.
+            offsets = _rollout_offsets(resume)
+
             # Codex has no `--system-prompt`, so the protocol contract travels with the
             # payload. It stays first, which is what keeps a task from reading as one.
             result = await run_process(
@@ -191,7 +201,9 @@ class CodexCliAdapter:
         return AdapterResult(
             content=parse_content(text),
             native_session_id=thread_id,
-            model_used=check_model(agent, _reported_model(events)),
+            model_used=check_model(
+                agent, _reported_model(events) or _rollout_model(thread_id, offsets)
+            ),
             raw_output=result.stdout,
             usage=_usage(events),
         )
@@ -289,6 +301,100 @@ def _reported_model(events: list[dict]) -> str | None:
             if isinstance(model, str) and model:
                 return model
     return None
+
+
+def _rollout_paths(thread_id: str | None) -> list[Path]:
+    """The CLI's own session logs for this thread, if we can name them safely.
+
+    Dated directories, three deep -- bounded rather than `rglob`, which would walk every
+    session ever recorded to find one file.
+    """
+    # `CODEX_HOME` is not in `PASSTHROUGH_ENV`, so the child used its default, which is
+    # anchored to the `HOME` we did pass. Asking `os.environ` here would be asking about
+    # this process instead of the one that wrote the file.
+    home = child_env().get("HOME")
+    if not home or not thread_id or not _SESSION_ID.fullmatch(thread_id):
+        # A thread id is a UUID. Anything else came from a CLI we do not recognise, and
+        # it is about to be pasted into a glob pattern.
+        return []
+    try:
+        return list(Path(home).glob(f".codex/sessions/*/*/*/rollout-*-{thread_id}.jsonl"))
+    except OSError:
+        return []
+
+
+def _rollout_offsets(thread_id: str | None) -> dict[Path, int]:
+    """Where each session log ends before a turn runs.
+
+    Only a resumed thread has one. A new thread's file does not exist yet, so everything
+    that ends up in it belongs to the turn about to run and the empty mapping is right.
+    """
+    offsets = {}
+    for path in _rollout_paths(thread_id):
+        try:
+            offsets[path] = path.stat().st_size
+        except OSError:
+            continue
+    return offsets
+
+
+def _rollout_model(thread_id: str, offsets: dict[Path, int]) -> str | None:
+    """The model this thread actually ran on, read from the CLI's own session log.
+
+    `--json` on codex-cli 0.146 names the model nowhere: every event it prints is a
+    `thread.started`, a `turn.started`, an `item.completed` or a `turn.completed`, and
+    none of them carries one. So the substitution check had nothing to check and passed
+    every answer through -- a guard that cannot fire is not a guard, it is a comment.
+
+    The CLI does record it, in the rollout file it writes for its own resume support:
+    `turn_context.model`, one per turn. Reading it back is the only way this process can
+    say which model answered rather than which model it asked for.
+
+    Only past `offsets`, which is what makes the answer belong to the turn that just ran.
+    A resumed consultation appends to a file that already names a model, and reading the
+    whole file would let turn N vouch for turn N+1 -- so a build that renames the record,
+    moves the field, or writes somewhere else would go on reporting the previous turn's
+    model as verified rather than reporting nothing.
+
+    Nothing found is `None`, which lands on the same "no metadata is not evidence" path
+    as before: this makes the check work where it can, it does not invent a failure where
+    it cannot.
+    """
+    model = None
+    for path in _rollout_paths(thread_id):
+        try:
+            # Bytes, not text: text mode decodes eagerly, and one bad byte anywhere in a
+            # log we do not own would raise mid-iteration rather than skipping the line
+            # it is on. It also makes the offset a plain byte count rather than a
+            # `tell()` cookie, which is the only thing a text stream may be seeked to.
+            with path.open("rb") as handle:
+                handle.seek(offsets.get(path, 0))
+                for raw in handle:
+                    # Streamed, not read whole: these files hold the entire conversation
+                    # and the reasoning behind it, and only one field is wanted.
+                    if b'"turn_context"' not in raw:
+                        continue
+                    try:
+                        # Strict, not `errors="replace"`: a line we cannot decode is a
+                        # line we do not understand, and replacement characters would
+                        # turn it into a model name that merely looks like one.
+                        # `UnicodeDecodeError` and `JSONDecodeError` are both
+                        # `ValueError`, so one clause covers reading and parsing.
+                        record = json.loads(raw.decode())
+                    except ValueError:
+                        continue
+                    # Every hop checked: a line that is a JSON array, or a `payload` that
+                    # is a string, is a format we do not recognise -- which is the case
+                    # this exists to survive, not a case to raise `AttributeError` on.
+                    payload = record.get("payload") if isinstance(record, dict) else None
+                    if not isinstance(payload, dict):
+                        continue
+                    found = payload.get("model")
+                    if isinstance(found, str) and found:
+                        model = found
+        except OSError:
+            continue  # one unreadable file is not a reason to ignore the others
+    return model
 
 
 def _usage(events: list[dict]) -> Usage:
