@@ -8,6 +8,7 @@ session id onto a page.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from http.client import HTTPConnection
@@ -317,3 +318,94 @@ async def test_the_page_names_the_version_and_the_database(serve):
     _, body = get("/")
     assert "orchestrator-mcp-server" in body
     assert "consultations.sqlite3" in body
+
+
+# --- how much of the codex subscription is left -----------------------------
+
+
+def token_count(used_percent: float, **overrides) -> str:
+    primary = {"used_percent": used_percent, "window_minutes": 10080, "resets_at": 1786288369}
+    limits = {"primary": {**primary, **overrides}, "plan_type": "plus"}
+    return json.dumps(
+        {"type": "event_msg", "payload": {"type": "token_count", "rate_limits": limits}}
+    ) + "\n"
+
+
+def write_rollout(home, text: str) -> None:
+    directory = home / ".codex" / "sessions" / "2026" / "08" / "04"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "rollout-2026-08-04T23-16-52-019fce6c-0218-7cb0-9e79-3de60901c110.jsonl").write_text(text)
+
+
+async def test_the_index_says_how_much_of_the_codex_window_is_spent(serve, tmp_path, monkeypatch):
+    """The question people ask before starting a 300-second review is whether they can
+    afford one, and the CLI's own session log is the only thing on the machine that
+    knows -- there is no API key here to go and ask with."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_rollout(tmp_path, token_count(23.0))
+    get, _ = serve()
+
+    _, body = get("/")
+    assert "codex usage: 23%" in body
+    assert "of the last 7d" in body
+    assert "plus plan" in body
+    # Stale by construction: it is whatever the last consultation was told, and a page
+    # that showed it as current would be claiming a freshness it cannot have.
+    assert "as of the last consultation" in body
+
+
+async def test_nothing_is_claimed_when_no_consultation_has_run(serve, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    get, _ = serve()
+
+    _, body = get("/")
+    assert "codex usage" not in body
+
+
+async def test_a_claude_only_install_is_not_told_about_codex(serve, config, tmp_path, monkeypatch):
+    """The number is per-runtime, and an operator with no codex agent has no window to
+    have spent."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_rollout(tmp_path, token_count(23.0))
+    get, _ = serve(
+        config(agents={"claude-opus": {"runtime": "claude", "command": "claude", "model": "opus"}})
+    )
+
+    _, body = get("/")
+    assert "codex usage" not in body
+
+
+@pytest.mark.parametrize(
+    "minutes, expected",
+    [
+        (10080, "of the last 7d"),
+        # The five-hour window some plans quote. Days would round it to `0d`, which is
+        # a wrong number rather than a coarse one.
+        (300, "of the last 5h"),
+        (0, "codex usage: 23% used"),
+        ("weekly", "codex usage: 23% used"),
+    ],
+)
+async def test_the_window_is_reported_in_a_unit_it_fits(serve, tmp_path, monkeypatch, minutes, expected):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_rollout(tmp_path, token_count(23.0, window_minutes=minutes))
+    get, _ = serve()
+
+    _, body = get("/")
+    assert expected in body
+
+
+@pytest.mark.parametrize("resets", [10**12, -(10**12), "friday", None])
+async def test_a_reset_time_that_is_not_one_is_left_out_not_raised(
+    serve, tmp_path, monkeypatch, resets
+):
+    """The epoch comes from a file this server does not own, and a page whose job is to
+    stay readable cannot answer 500 because a number in it was implausible."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    write_rollout(tmp_path, token_count(23.0, resets_at=resets))
+    get, _ = serve()
+
+    status, body = get("/")
+    assert status == 200
+    assert "codex usage: 23%" in body
+    assert "resets" not in body

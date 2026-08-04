@@ -104,6 +104,10 @@ class AdapterResult:
     model_used: str
     raw_output: str
     usage: Usage = field(default_factory=Usage)
+    # Whether a runtime actually named the model, or `model_used` is the configured name
+    # passed through unchecked. Defaults to the honest answer for an adapter that has not
+    # thought about it.
+    model_verified: bool = False
 
 
 class ConsultAdapter(Protocol):

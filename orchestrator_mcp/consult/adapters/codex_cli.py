@@ -198,12 +198,15 @@ class CodexCliAdapter:
                 f"the agent returned no final message (exit {result.returncode}): {detail}",
             )
 
+        # The stream first, the session log only if it said nothing. Kept in a name so
+        # the envelope can say whether anything was checked at all, rather than
+        # reporting the configured model and an unverified one identically.
+        reported = _reported_model(events) or _rollout_model(thread_id, offsets)
         return AdapterResult(
             content=parse_content(text),
             native_session_id=thread_id,
-            model_used=check_model(
-                agent, _reported_model(events) or _rollout_model(thread_id, offsets)
-            ),
+            model_used=check_model(agent, reported),
+            model_verified=reported is not None,
             raw_output=result.stdout,
             usage=_usage(events),
         )
@@ -395,6 +398,64 @@ def _rollout_model(thread_id: str, offsets: dict[Path, int]) -> str | None:
         except OSError:
             continue  # one unreadable file is not a reason to ignore the others
     return model
+
+
+def rate_limit() -> dict | None:
+    """How much of the Codex subscription window this account has spent.
+
+    Not from an API -- there is no key here and there is not going to be one. The CLI
+    records what the service told it in the same session log the model check reads, as
+    the `rate_limits` of a `token_count` event, and the newest file is the newest answer.
+
+    Worth surfacing because the question people ask before starting a 300-second review
+    is whether they can afford one, and this is the only place on the machine that knows.
+    Stale by definition -- it is whatever the last consultation was told -- and `None`
+    when nothing has run, which is not an error.
+    """
+    home = child_env().get("HOME")
+    if not home:
+        return None
+    try:
+        paths = list(Path(home).glob(".codex/sessions/*/*/*/rollout-*.jsonl"))
+        newest = max(paths, key=lambda path: path.stat().st_mtime, default=None)
+    except (OSError, ValueError):
+        return None
+    if newest is None:
+        return None
+
+    limits = None
+    try:
+        with newest.open("rb") as handle:
+            for raw in handle:
+                if b'"rate_limits"' not in raw:
+                    continue
+                try:
+                    record = json.loads(raw.decode())
+                except ValueError:
+                    continue
+                payload = record.get("payload") if isinstance(record, dict) else None
+                found = payload.get("rate_limits") if isinstance(payload, dict) else None
+                # The last one in the file: a session that ran several turns was told
+                # the number several times, and only the final one is current.
+                if isinstance(found, dict):
+                    limits = found
+    except OSError:
+        return None
+    if not isinstance(limits, dict):
+        return None
+
+    # Only the window that is actually enforced, flattened. `secondary` exists on some
+    # plans and is null on this one, so it is read the same tolerant way as everything
+    # else here: present and well-shaped, or absent.
+    primary = limits.get("primary")
+    if not isinstance(primary, dict) or not isinstance(primary.get("used_percent"), (int, float)):
+        return None
+    return {
+        "used_percent": float(primary["used_percent"]),
+        "window_minutes": primary.get("window_minutes"),
+        "resets_at": primary.get("resets_at"),
+        "plan_type": limits.get("plan_type"),
+    }
 
 
 def _usage(events: list[dict]) -> Usage:

@@ -126,6 +126,11 @@ class ConsultRoute(BaseModel):
     capability_score: int
     priority: int
     explicitly_selected: bool
+    # Whether `model` is what the runtime said answered, or only what it was asked for.
+    # A substitution is already refused, so False does not mean "wrong model" -- it means
+    # the runtime named none and nobody checked. Without this the two are indistinguish-
+    # able in the envelope, which is the same as not having the check.
+    model_verified: bool = False
 
 
 class RequiredAction(BaseModel):

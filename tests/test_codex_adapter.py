@@ -11,9 +11,11 @@ refusal of a substituted model.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
+from orchestrator_mcp.consult.adapters import codex_cli
 from orchestrator_mcp.consult.adapters.base import AdapterError
 from orchestrator_mcp.consult.adapters.codex_cli import CodexCliAdapter
 from orchestrator_mcp.consult.config import AgentConfig
@@ -404,6 +406,7 @@ async def test_the_session_log_confirms_the_configured_model(tmp_path, monkeypat
 
     result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
     assert result.model_used == "gpt-5.6-sol"
+    assert result.model_verified, "a log named it, so this is checked and not assumed"
 
 
 async def test_the_last_turn_is_the_one_checked(tmp_path, monkeypatch, adapter):
@@ -434,6 +437,7 @@ async def test_no_session_log_is_not_a_failure(tmp_path, monkeypatch, adapter):
 
     result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
     assert result.model_used == "gpt-5.6-sol", "the configured name, unverified"
+    assert not result.model_verified, "and the envelope has to say so"
 
 
 async def test_the_stream_is_believed_before_the_file(tmp_path, monkeypatch, adapter):
@@ -508,3 +512,76 @@ async def test_a_session_log_we_do_not_recognise_is_unverified_not_a_crash(
 
     result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
     assert result.model_used == "gpt-5.6-sol"
+
+
+# --- how much of the subscription window is left ----------------------------
+
+
+def token_count(used_percent, **overrides) -> str:
+    """The record codex writes when the service tells it where the account stands.
+
+    Copied from a real `~/.codex` session log rather than the documentation, down to
+    `secondary: null` -- the shape a plan without a second window actually produces."""
+    limits = {
+        "primary": {"used_percent": used_percent, "window_minutes": 10080, "resets_at": 1786288369},
+        "secondary": None,
+        "plan_type": "plus",
+        **overrides,
+    }
+    return json.dumps(
+        {"type": "event_msg", "payload": {"type": "token_count", "rate_limits": limits}}
+    ) + "\n"
+
+
+def test_the_usage_is_read_from_the_newest_session_log(tmp_path, monkeypatch):
+    """Every codex agent shares one `~/.codex`, so the newest file anywhere under it is
+    the newest answer -- not the log of whichever thread we happen to hold an id for."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    old = rollout_path(tmp_path, "019fce6c-0218-7cb0-9e79-000000000001")
+    old.write_text(token_count(11.0))
+    os.utime(old, (1, 1))
+    rollout_path(tmp_path, "019fce6c-0218-7cb0-9e79-000000000002").write_text(token_count(23.0))
+
+    assert codex_cli.rate_limit() == {
+        "used_percent": 23.0,
+        "window_minutes": 10080,
+        "resets_at": 1786288369,
+        "plan_type": "plus",
+    }
+
+
+def test_the_last_record_in_a_session_is_the_current_one(tmp_path, monkeypatch):
+    """A session that ran several turns was told the number several times, and only the
+    final one is what the account looks like now."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rollout_path(tmp_path).write_text(token_count(11.0) + token_count(23.0))
+    assert codex_cli.rate_limit()["used_percent"] == 23.0
+
+
+def test_no_session_log_at_all_is_not_an_error(tmp_path, monkeypatch):
+    """A fresh install has consulted nothing, which is a number nobody has, not a
+    failure to report one."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert codex_cli.rate_limit() is None
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(b'["rate_limits", {"primary": {"used_percent": 23}}]\n', id="a JSON array"),
+        pytest.param(b'{"payload": {"rate_limits": "23%"}}\n', id="a string body"),
+        pytest.param(b'{"payload": {"rate_limits": {"primary": null}}}\n', id="no primary window"),
+        pytest.param(
+            b'{"payload": {"rate_limits": {"primary": {"used_percent": "23"}}}}\n',
+            id="a percentage that is not a number",
+        ),
+        pytest.param(b'{"payload": {"rate_limits": {\n', id="a half-written line"),
+        pytest.param(b'{"payload": {"rate_limits": {"\xff\xfe": 1}}}\n', id="not UTF-8"),
+    ],
+)
+def test_a_shape_we_do_not_recognise_reports_nothing(tmp_path, monkeypatch, line):
+    """Same contract as the model check on the same files: this format is the CLI's and
+    undocumented, so anything unexpected is "no number", never an exception on a page."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rollout_path(tmp_path).write_bytes(line)
+    assert codex_cli.rate_limit() is None
