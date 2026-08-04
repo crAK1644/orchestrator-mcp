@@ -28,11 +28,12 @@ import re
 import secrets
 import sqlite3
 import sys
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.metadata import PackageNotFoundError, version as _distribution_version
 from pathlib import Path
-from typing import get_args
+from typing import Any, Callable, get_args
 from urllib.parse import parse_qs, unquote, urlparse
 
 from pydantic import ValidationError
@@ -111,6 +112,9 @@ class ConsultDashboard:
         # of a response it is not allowed to see -- which is what makes the token, and
         # not the loopback bind, the thing protecting the write.
         self.token = secrets.token_urlsafe(32)
+        # Every write to the managed file is a read, an edit and a write back, and
+        # `ThreadingHTTPServer` gives each request its own thread. See `_rewrite`.
+        self._writing = threading.Lock()
 
     # --- data ---------------------------------------------------------------
 
@@ -342,12 +346,42 @@ class ConsultDashboard:
                 aid: AgentConfig(agent_id=aid, managed=True, **data)
                 for aid, data in read_managed(self.config.managed_agents_path).items()
             }
-        except (ConfigError, ValidationError, TypeError):
+        except (ConfigError, ValidationError, TypeError, OSError):
             # A hand-edit can put anything in that file. Falling back to what booted
             # keeps the page readable; the file itself is what the next server start
             # refuses on, and it says why in far more detail than a table cell could.
             managed = {aid: a for aid, a in self.config.agents.items() if a.managed}
         return managed, written
+
+    def _rewrite(
+        self, change: Callable[[dict[str, Any]], tuple[int, str] | None]
+    ) -> tuple[int, str] | None:
+        """Read the managed file, let `change` edit what is in it, write it back.
+
+        One lock around all three, because they are one operation. Each request runs in
+        its own thread, so two saves that each read the file before either wrote it
+        would leave whichever wrote second having silently dropped the other's agent --
+        a save that succeeded, said so, and lost.
+
+        Reading here rather than reusing `_split_agents` is the other half. That method
+        falls back to the boot-time config so a broken file still renders a readable
+        page; writing that fallback back out would overwrite whatever the operator
+        broke, including the part they were about to fix. So a file this process cannot
+        read refuses the write and says why, rather than raising in a request thread
+        where nothing turns it into a page.
+
+        Returns None when it wrote, or a status and a message when it did not.
+        """
+        with self._writing:
+            try:
+                agents = read_managed(self.config.managed_agents_path)
+            except (ConfigError, OSError) as exc:
+                return HTTPStatus.CONFLICT, str(exc)
+            refusal = change(agents)
+            if refusal is not None:
+                return refusal
+            write_managed(self.config.managed_agents_path, agents)
+            return None
 
     def _restart_banner(self) -> str:
         """Say whether the running MCP server is on a different configuration.
@@ -534,20 +568,33 @@ class ConsultDashboard:
 
         data = agent.model_dump(mode="json", exclude_defaults=True)
         data.pop("agent_id", None)
-        write_managed(self.config.managed_agents_path, read_managed(self.config.managed_agents_path) | {agent_id: data})
+
+        def store(agents: dict[str, Any]) -> None:
+            agents[agent_id] = data
+
+        problem = self._rewrite(store)
+        if problem:
+            # Back into the form rather than out as a bare status: whoever is looking at
+            # this typed a page of fields, and the file being unreadable is not a reason
+            # to make them type it again.
+            return refuse(problem[1])
         return HTTPStatus.SEE_OTHER, "", f"/agents?saved={agent_id}"
 
     def delete(self, form: dict[str, str]) -> tuple[int, str, str | None]:
         agent_id = (form.get("id") or "").strip()
-        agents = read_managed(self.config.managed_agents_path)
-        if agent_id not in agents:
-            return HTTPStatus.NOT_FOUND, _document(
-                "Not found",
-                "<p>No such agent in this file.</p><p><a href='/agents'>Back</a></p>",
-            ), None
 
-        del agents[agent_id]
-        write_managed(self.config.managed_agents_path, agents)
+        def remove(agents: dict[str, Any]) -> tuple[int, str] | None:
+            if agent_id not in agents:
+                return HTTPStatus.NOT_FOUND, "No such agent in this file."
+            del agents[agent_id]
+            return None
+
+        problem = self._rewrite(remove)
+        if problem:
+            status, message = problem
+            return status, _document(
+                "Not deleted", f"<p>{_e(message)}</p><p><a href='/agents'>Back</a></p>"
+            ), None
         return HTTPStatus.SEE_OTHER, "", f"/agents?deleted={agent_id}"
 
 
@@ -583,18 +630,24 @@ def _from_form(form: dict[str, str]) -> dict[str, object]:
         for capability in CAPABILITIES
         if (form.get(f"score.{capability}") or "").strip().lstrip("-").isdigit()
     }
-    return {
+    fields: dict[str, object] = {
         "runtime": form.get("runtime", ""),
         "command": (form.get("command") or "").strip(),
         "model": (form.get("model") or "").strip(),
         "reasoning_effort": (form.get("reasoning_effort") or "").strip() or None,
-        "priority": int(form["priority"]) if (form.get("priority") or "").isdigit() else 100,
         # An unchecked checkbox is absent from the body rather than false, which is why
         # these read presence and not value.
         "enabled": "enabled" in form,
         "web_search": "web_search" in form,
         "scores": scores,
     }
+    # Passed through as typed, so `-1` and `abc` are refused the way a bad score is.
+    # This used to read `.isdigit()` and fall back to 100, which meant a typo saved
+    # successfully at a priority nobody chose. Absent stays absent -- an empty field is
+    # dropped by `parse_qs` before it gets here, and the model's own default covers it.
+    if "priority" in form:
+        fields["priority"] = form["priority"]
+    return fields
 
 
 def _first_error(exc: ValidationError) -> str:

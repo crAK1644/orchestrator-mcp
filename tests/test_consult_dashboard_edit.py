@@ -293,6 +293,10 @@ async def test_a_save_leaves_the_agents_it_did_not_touch_alone(serve, editable):
             id="effort on a runtime that ignores it",
         ),
         pytest.param({"score.review": "101"}, "scores", id="score above 100"),
+        # These two used to save. `.isdigit()` is false for both, and the fallback was
+        # 100 -- so a typo in a routing tie-break was accepted at a number nobody typed.
+        pytest.param({"priority": "-1"}, "priority", id="a negative priority"),
+        pytest.param({"priority": "high"}, "priority", id="a priority that is not a number"),
     ],
 )
 async def test_a_bad_save_re_renders_the_form_and_writes_nothing(
@@ -327,6 +331,77 @@ async def test_a_failed_save_leaves_an_existing_file_byte_identical(serve, edita
 
     get.post("/agents", form(_token=get.token, id="also-fine", model=""))
     assert editable.path.read_bytes() == before
+
+
+async def test_a_priority_field_left_empty_is_the_default_and_not_an_error(serve, editable):  # noqa: F811
+    """A cleared number input is dropped from the body entirely, which is what tells
+    the difference between "not set" and "set to nonsense"."""
+    get, _ = serve(editable())
+    body = form(_token=get.token)
+    body.pop("priority")
+    status, _, _ = get.post("/agents", body)
+
+    assert status == 303
+    assert "priority" not in written(editable.path)["codex-luna"], "the default, unwritten"
+
+
+async def test_a_managed_file_that_cannot_be_read_refuses_the_write(serve, editable):  # noqa: F811
+    """The page falls back to the boot-time config so a broken file still renders. The
+    write must not use that fallback: saving it back would overwrite whatever the
+    operator broke, including the part they opened the file to fix.
+
+    Broken after the server is up, because a file that is already broken refuses the
+    boot -- which is why this is reachable only from a hand-edit while it runs."""
+    get, _ = serve(editable())
+    editable.path.parent.mkdir(parents=True)
+    editable.path.write_text("agents: [not, a, mapping]")
+    before = editable.path.read_bytes()
+
+    status, _ = get("/agents")
+    assert status == 200, "reading the page still works"
+
+    status, body, _ = get.post("/agents", form(_token=get.token))
+    assert status == 200, "a form again -- not a traceback in the request thread"
+    assert "mapping" in body and "<form" in body
+
+    status, body, _ = get.post("/agents/delete", {"_token": get.token, "id": "codex-luna"})
+    assert status == 409
+    assert "mapping" in body
+
+    assert editable.path.read_bytes() == before
+
+
+async def test_two_saves_at_once_both_survive(serve, editable, monkeypatch):  # noqa: F811
+    """Each request gets its own thread, and a save is a read, an edit and a write. Two
+    of them interleaved used to end with whichever wrote second having dropped the
+    other's agent -- both redirecting to `?saved=`, one of them a lie."""
+    import threading
+    import time
+
+    from orchestrator_mcp.consult import dashboard as module
+
+    real = module.read_managed
+
+    def slow(path):
+        agents = real(path)
+        # Wide enough that both requests are certain to have read before either writes,
+        # which is the interleaving. The lock is what has to make it harmless.
+        time.sleep(0.2)
+        return agents
+
+    monkeypatch.setattr(module, "read_managed", slow)
+
+    get, _ = serve(editable())
+    threads = [
+        threading.Thread(target=get.post, args=("/agents", form(_token=get.token, id=f"agent-{n}")))
+        for n in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert sorted(written(editable.path)) == ["agent-0", "agent-1"]
 
 
 async def test_an_agent_id_containing_markup_never_reaches_the_page_as_markup(
