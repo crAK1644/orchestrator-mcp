@@ -38,7 +38,12 @@ def managed_path(block: dict[str, Any]) -> Path:
     Raw, and not from a parsed `ConsultConfig`, because the agents in this file have to
     be merged in *before* that config can be built.
     """
-    raw = block.get("managed_agents_path") or DEFAULT_MANAGED_PATH
+    raw = block.get("managed_agents_path")
+    if raw is None:
+        raw = DEFAULT_MANAGED_PATH
+    # A blank value is deliberately *not* the default here. `ConsultConfig` turns it
+    # into `Path(".")`, and the two disagreeing is how the page ends up reading one
+    # file while the boot merged another.
     return Path(os.path.expandvars(str(raw))).expanduser()
 
 
@@ -50,6 +55,10 @@ def read_managed(path: Path) -> dict[str, Any]:
 
     try:
         document = yaml.safe_load(path.read_text()) or {}
+    except OSError as exc:
+        # A directory, or a file this user cannot open. Both are configuration
+        # mistakes, and both arrive here as an `OSError` nothing upstream expects.
+        raise ConfigError(f"{path} cannot be read: {exc}") from exc
     except yaml.YAMLError as exc:
         raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
 
@@ -65,9 +74,15 @@ def read_managed(path: Path) -> dict[str, Any]:
 def write_managed(path: Path, agents: dict[str, Any]) -> None:
     """Replace the managed file atomically.
 
-    Same posture as the consultation store: the directory is `0700` and the file
-    `0600`, because an agent entry names a path on this machine and, for anyone who
-    edits the default, possibly a private endpoint.
+    Same posture as the consultation store: the file is `0600`, and the directory is
+    created `0700`, because an agent entry names a path on this machine and, for
+    anyone who edits the default, possibly a private endpoint.
+
+    Created, not enforced. A directory that already exists is left at whatever mode it
+    has, because `managed_agents_path` can name any file the operator likes -- its
+    parent may be `$HOME`, or a directory holding other things -- and silently
+    tightening someone else's directory is a worse surprise than the one the `0600`
+    file already covers. The mode of a directory this did not create is theirs.
 
     A temp file in the same directory and `os.replace` so a reader mid-save sees the
     old file or the new one, never half of either -- the reader here being a server

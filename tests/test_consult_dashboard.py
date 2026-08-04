@@ -253,6 +253,38 @@ async def test_a_foreign_host_header_is_refused(serve):
     assert "Loopback only" in body
 
 
+@pytest.mark.parametrize(
+    "host, allowed",
+    [
+        pytest.param("127.0.0.1:8765", True, id="the ordinary one"),
+        pytest.param("localhost", True, id="no port"),
+        pytest.param("[::1]:8765", True, id="v6 with a port"),
+        pytest.param("[::1]", True, id="v6 without one"),
+        pytest.param("::1", True, id="v6 unbracketed"),
+        pytest.param("evil.example.com:8765", False, id="a name that resolves here"),
+        pytest.param("[::ffff:127.0.0.1]", False, id="v6 spelling of a v4 address"),
+    ],
+)
+async def test_the_host_header_is_read_the_way_a_host_header_is_written(serve, host, allowed):
+    """`rsplit(':', 1)` splits inside an IPv6 address, so `[::1]` used to be refused
+    while `[::1]:8765` was allowed -- backwards, and the config permits `::1`."""
+    get, _ = serve()
+    status, _ = get("/", host=host)
+    assert (status == 200) is allowed, host
+
+
+async def test_a_request_with_no_host_header_is_refused(serve):
+    """Absent used to pass. Fail closed: a request that will not say what it was
+    addressed to is the one this check exists for."""
+    get, _ = serve()
+    connection = HTTPConnection("127.0.0.1", get.port, timeout=5)
+    connection.putrequest("GET", "/", skip_host=True)
+    connection.endheaders()
+    response = connection.getresponse()
+    assert response.status == 403
+    connection.close()
+
+
 async def test_it_serves_get_and_post_and_nothing_else(serve):
     """No handler for any other verb, which is how the stdlib refuses one: 501. POST
     exists only for the agents form; PUT and DELETE would be a second write surface to

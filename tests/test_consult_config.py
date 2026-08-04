@@ -47,6 +47,10 @@ def test_the_block_parses_with_defaults():
         pytest.param(consult_block(timeout_s=0), id="zero timeout"),
         pytest.param(consult_block(dashboard={"host": "0.0.0.0"}), id="non-loopback dashboard"),
         pytest.param(consult_block(unknown_key=True), id="unknown top-level key"),
+        # `Path("")` is `Path(".")`, and the merge used to read the default file while
+        # the config that came out of it pointed at the working directory.
+        pytest.param(consult_block(managed_agents_path=""), id="a blank managed path"),
+        pytest.param(consult_block(database_path=""), id="a blank database path"),
         pytest.param("not a mapping", id="not a mapping"),
     ],
 )
