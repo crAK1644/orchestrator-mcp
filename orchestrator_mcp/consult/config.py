@@ -114,9 +114,14 @@ class ConsultConfig(BaseModel):
         # `Path("")` is `Path(".")`, so a blank path silently becomes the working
         # directory and everything downstream tries to open a directory as a file.
         # Refusing says which line is empty; the alternative reads as a bug in us.
-        if str(value).strip() in ("", "."):
+        #
+        # Checked *after* expansion, not before: `$SOMETHING` that expands to nothing
+        # is the same blank path arriving by a longer route, and it is the likelier of
+        # the two -- an unset variable is easier to have than an empty YAML value.
+        expanded = Path(os.path.expandvars(str(value))).expanduser()
+        if str(expanded).strip() in ("", "."):
             raise ValueError("must name a file, not a blank path")
-        return Path(os.path.expandvars(str(value))).expanduser()
+        return expanded
 
     @field_validator("protocol_version")
     @classmethod

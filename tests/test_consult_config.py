@@ -59,6 +59,17 @@ def test_a_bad_block_refuses_to_boot(block):
         load_consult_config(base_config() | {"consult": block})
 
 
+@pytest.mark.parametrize("field", ["database_path", "managed_agents_path"])
+def test_a_variable_that_expands_to_nothing_is_the_same_blank_path(field, monkeypatch):
+    """The blank check ran before expansion, so `$UNSET` walked straight past it and
+    came out as `Path(".")` -- the working directory, opened as a file."""
+    monkeypatch.setenv("ORCHESTRATOR_TEST_EMPTY", "")
+    with pytest.raises(ConfigError):
+        load_consult_config(
+            base_config() | {"consult": consult_block(**{field: "$ORCHESTRATOR_TEST_EMPTY"})}
+        )
+
+
 @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
 def test_every_reasoning_level_the_cli_accepts_is_configurable(effort):
     config = load_consult_config(
