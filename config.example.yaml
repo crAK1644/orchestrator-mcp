@@ -7,6 +7,13 @@
 #
 # This file is LiteLLM's own config schema, so `litellm --config config.yaml` also
 # runs on it unchanged.
+#
+# Everything down to `limits:` configures `ask`, and all of it is optional. Delete it
+# and keep only the `consult:` block at the bottom and you get a working server that
+# needs no API key at all, because a CLI agent carries its own account. That shape is
+# supported, not degraded -- `ask` simply is not advertised. What is *not* accepted is
+# half of it: `capabilities:` without `model_list:`, or the reverse, is a mistake worth
+# hearing about at boot.
 
 capabilities:
   coding: "Writing, refactoring, reviewing, and debugging code."
@@ -84,8 +91,15 @@ limits:
 #   agents:
 #     codex-sol:              # the id callers name in `target_agent`
 #       runtime: codex        # codex | claude
-#       command: codex        # resolved on PATH; an absolute path works too
+#       command: codex        # resolved on PATH; an absolute path works too, which is
+#                             # what the ChatGPT desktop app needs -- it bundles the CLI
+#                             # at /Applications/ChatGPT.app/Contents/Resources/codex
+#                             # and never puts it on PATH
 #       model: gpt-5.6-sol    # verified against what the CLI reports it used
+#       reasoning_effort: xhigh   # codex only: low|medium|high|xhigh|max. Not
+#                                 # inherited from ~/.codex/config.toml -- the adapter
+#                                 # passes `--ignore-user-config` on purpose, so unset
+#                                 # means the model's own default, not yours.
 #       priority: 10          # ascending: lower wins a tie
 #       web_search: true      # required before `source_mode: web` will route here
 #       scores:               # 0..100 per capability; omitted means 0, i.e. never

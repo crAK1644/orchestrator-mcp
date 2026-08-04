@@ -38,6 +38,11 @@ def test_the_block_parses_with_defaults():
         pytest.param({"agents": {"a": agent(scores={"cooking": 50})}}, id="unknown capability"),
         pytest.param({"agents": {"a": agent(model="")}}, id="blank model"),
         pytest.param({"agents": {"a": agent(nonsense=1)}}, id="unknown agent key"),
+        pytest.param({"agents": {"a": agent(reasoning_effort="xtreme")}}, id="unknown effort"),
+        pytest.param(
+            {"agents": {"a": agent(runtime="claude", reasoning_effort="xhigh")}},
+            id="effort on a runtime that ignores it",
+        ),
         pytest.param(consult_block(protocol_version="consult-v2"), id="wrong protocol"),
         pytest.param(consult_block(timeout_s=0), id="zero timeout"),
         pytest.param(consult_block(dashboard={"host": "0.0.0.0"}), id="non-loopback dashboard"),
@@ -48,6 +53,21 @@ def test_the_block_parses_with_defaults():
 def test_a_bad_block_refuses_to_boot(block):
     with pytest.raises(ConfigError):
         load_consult_config(base_config() | {"consult": block})
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+def test_every_reasoning_level_the_cli_accepts_is_configurable(effort):
+    config = load_consult_config(
+        base_config() | {"consult": {"agents": {"a": agent(reasoning_effort=effort)}}}
+    )
+    assert config.agents["a"].reasoning_effort == effort
+
+
+def test_reasoning_effort_defaults_to_unset_rather_than_a_level():
+    """Unset must stay unset: the adapter passes `--ignore-user-config`, so choosing a
+    default here would override the model's own with a number nobody picked."""
+    config = load_consult_config(base_config() | {"consult": {"agents": {"a": agent()}}})
+    assert config.agents["a"].reasoning_effort is None
 
 
 def test_an_omitted_capability_scores_zero():
@@ -103,6 +123,26 @@ def test_the_content_schema_is_generated_from_the_model():
         "sources",
     }
     assert schema["additionalProperties"] is False
+
+
+def test_every_object_in_the_schema_closes_itself_to_extra_keys():
+    """OpenAI's structured outputs refuse a schema where any object -- nested `$defs`
+    included -- omits `additionalProperties: false`. The refusal is a 400 from the
+    provider, which no fixture executable can produce, so only this catches it."""
+    schema = consultation_content_schema()
+
+    def objects(node, path="()"):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                yield path, node
+            for key, value in node.items():
+                yield from objects(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                yield from objects(value, f"{path}[{index}]")
+
+    open_objects = [path for path, obj in objects(schema) if obj.get("additionalProperties") is not False]
+    assert not open_objects
 
 
 def test_every_content_field_is_required_even_when_empty():

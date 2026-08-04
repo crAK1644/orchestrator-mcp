@@ -10,9 +10,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from ..contract import ConfigError
 from .contract import PROTOCOL_VERSION, Capability, Runtime
@@ -39,9 +39,25 @@ class AgentConfig(BaseModel):
     # as spelling out `0`. Omission is the common way to say "not this one".
     scores: dict[Capability, Score] = Field(default_factory=dict)
     web_search: bool = False
+    # Codex only, and worth spelling out because the adapter passes
+    # `--ignore-user-config`: whatever `~/.codex/config.toml` says about reasoning is
+    # deliberately not inherited, so an unset field here is the model's own default,
+    # not the operator's. A closed set because a typo would otherwise be invisible --
+    # it would run, quietly, at a depth nobody chose.
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
 
     def score_for(self, capability: str) -> int:
         return self.scores.get(capability, 0)  # type: ignore[arg-type]
+
+    @model_validator(mode="after")
+    def _effort_is_codex_only(self) -> AgentConfig:
+        # The Claude adapter has no equivalent knob and never reads this field, so
+        # accepting it there would leave an operator with a config that looks set and
+        # runs at whatever the CLI chose. Silently ignored is the one outcome worth
+        # refusing to boot over.
+        if self.reasoning_effort and self.runtime != "codex":
+            raise ValueError(f"`reasoning_effort` is codex-only; `{self.runtime}` ignores it")
+        return self
 
 
 class DashboardConfig(BaseModel):
