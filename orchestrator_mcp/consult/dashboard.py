@@ -347,13 +347,26 @@ class ConsultDashboard:
         file, so a save has to be visible on the page that follows it -- otherwise you
         save an agent, land on a table that does not list it, and cannot edit or delete
         it until the dashboard is restarted.
+
+        The other half is the boot snapshot filtered by what `config.yaml` still says,
+        because those two can disagree: move an agent out of that file and into this one
+        and the snapshot would go on listing it as "defined in config.yaml" beside the
+        editable copy that now exists -- the same agent, twice, one of the rows a lie. An
+        id *added* to that file since boot goes the other way and is simply not shown:
+        rendering a row needs an `AgentConfig`, and building one means the merge, which
+        raises rather than returns. It still blocks a save, which is the half that matters.
         """
-        written = {aid: a for aid, a in self.config.agents.items() if not a.managed}
+        on_file = self._written_ids()
+        written = {
+            aid: a for aid, a in self.config.agents.items() if not a.managed and aid in on_file
+        }
         try:
             on_disk = read_managed(self.config.managed_agents_path)
             # Reading the file here skips `_label_agents`, which is where a boot refuses
             # a blank id. Without this the page renders a nameless row, offers to edit
-            # it, and the server it is configuring will not start.
+            # it, and the server it is configuring will not start. Only the per-entry
+            # rules: a duplicate is a reason to warn, not a reason to drop the table that
+            # holds the delete button for it.
             unbootable = self._unbootable(on_disk)
             if unbootable:
                 raise ConfigError(unbootable)
@@ -404,8 +417,9 @@ class ConsultDashboard:
             # What is about to be written has to be something the server can boot on.
             # The form cannot produce a bad entry, but it can be asked to save alongside
             # one a hand-edit left there -- and writing that back is this process
-            # putting its name on a file that will refuse the next start.
-            unbootable = self._unbootable(agents)
+            # putting its name on a file that will refuse the next start. Both halves of
+            # the boot rules here, unlike the page, which wants only the first.
+            unbootable = self._unbootable(agents) or self._duplicate_of_written(agents)
             if unbootable:
                 return HTTPStatus.CONFLICT, unbootable
             try:
@@ -435,28 +449,72 @@ class ConsultDashboard:
         A file that has moved, or that is mid-edit and unparseable, falls back to the
         snapshot rather than to nothing -- stale is a worse answer than fresh and a much
         better one than treating `config.yaml` as empty.
+
+        A file with no `consult:` in it falls back for the same reason, and it is the
+        likelier accident: an editor that truncates before it writes leaves exactly that,
+        and reading it as "no agents are written anywhere" is how this check would wave
+        through the duplicate it exists to catch. A `consult:` block with no `agents:`
+        under it is a different thing and is taken at its word -- a config whose agents
+        all live in the managed file is a supported shape, not a truncated read.
+
+        What is left after that is a truncation that happens to parse, with `consult:`
+        present and an agent missing from it. Nothing short of locking the operator's own
+        file closes that, and the boot refusal is what catches it.
         """
         booted = {aid for aid, a in self.config.agents.items() if not a.managed}
         if self.config_path is None:
             return booted
         try:
             document = yaml.safe_load(self.config_path.read_text()) or {}
-            agents = ((document.get("consult") or {}).get("agents")) or {}
+            consult = document.get("consult")
+            if not isinstance(consult, dict):
+                return booted
+            agents = consult.get("agents") or {}
             if not isinstance(agents, dict):
                 return booted
             return {str(agent_id) for agent_id in agents}
         except (OSError, UnicodeDecodeError, AttributeError, yaml.YAMLError):
             return booted
 
-    def _unbootable(self, agents: dict[str, Any]) -> str | None:
-        """Why a server start would refuse this mapping, or None if it would not.
+    @property
+    def _config_name(self) -> str:
+        """What to call the operator's own file in a refusal.
 
-        The rules a boot applies -- a text id that is not blank, no id also in
-        `config.yaml`, and an entry `AgentConfig` accepts -- checked here so that
-        neither a page nor a save has to assume the file only ever held what this form
-        put in it.
+        `config.yaml` is only its name by default -- `ORCHESTRATOR_CONFIG` can point the
+        server at any path, and a refusal that names the wrong file sends someone to edit
+        a file that does not have the problem in it.
+        """
+        return str(self.config_path) if self.config_path else "config.yaml"
+
+    def _duplicate_of_written(self, agents: dict[str, Any]) -> str | None:
+        """An id in this mapping that `config.yaml` also defines, or None.
+
+        Separate from `_unbootable` because the two answer different questions and only
+        one of them belongs on a page. An entry the form cannot fix has to keep a row out
+        of the table -- it would render nameless and offer to edit nothing. A duplicate is
+        a fact about two files, and dropping the table over it hides the delete button for
+        the very copy the operator has to remove.
         """
         written = self._written_ids()
+        # Keyed by `str`, since a file holding both `1:` and `alpha:` has keys that cannot
+        # be compared to each other at all and `sorted` would raise.
+        for agent_id in sorted(agents, key=str):
+            if agent_id in written:
+                return (
+                    f"`{agent_id}` is defined in {self._config_name} as well as in this "
+                    "file, and the server refuses to start with both. Delete one of the two."
+                )
+        return None
+
+    def _unbootable(self, agents: dict[str, Any]) -> str | None:
+        """Why a server start would refuse an entry in this mapping, or None if it would
+        not.
+
+        The per-entry rules a boot applies -- a text id that is not blank, and settings
+        `AgentConfig` accepts -- checked here so that neither a page nor a save has to
+        assume the file only ever held what this form put in it. The one boot rule that is
+        *not* here is the duplicate: see `_duplicate_of_written`.
+        """
         # Sorted by the *string* of the key: a file holding both `1:` and `alpha:` has
         # keys that cannot be compared to each other at all, and a `TypeError` from
         # inside `sorted` would escape every catch below.
@@ -465,11 +523,6 @@ class ConsultDashboard:
                 return (
                     "An agent in this file has a blank or non-text id, which the server "
                     "refuses to start on."
-                )
-            if agent_id in written:
-                return (
-                    f"`{agent_id}` is defined in config.yaml as well as in this file, and "
-                    "the server refuses to start with both. Delete one of the two."
                 )
             if not isinstance(data, dict):
                 return f"`{agent_id}` in this file is not a mapping of settings."
@@ -682,8 +735,8 @@ class ConsultDashboard:
         # one deleted from it.
         if agent_id in self._written_ids():
             return refuse(
-                f"`{agent_id}` is already defined in config.yaml. Delete it there first, "
-                "or pick another id -- the server refuses to boot with both."
+                f"`{agent_id}` is already defined in {self._config_name}. Delete it there "
+                "first, or pick another id -- the server refuses to boot with both."
             )
 
         try:
