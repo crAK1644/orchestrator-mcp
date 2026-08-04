@@ -9,7 +9,7 @@ Use Codex from Claude Code, or Claude Code from Codex, through the subscriptions
 
 If you pay for more than one AI subscription, Orchestrator MCP helps you use each model for what it does best. It runs the installed Codex or Claude Code CLI under your existing login, routes the work automatically, prevents an agent from consulting itself, and keeps a record of every consultation.
 
-**No provider API key is required for this setup.** Authentication stays inside the Codex and Claude Code command-line apps on your computer.
+**No provider API key is required for this setup.** Authentication stays inside the Codex and Claude Code command-line apps on your computer. Orchestrator only checks whether they are signed in — it never reads, stores, or returns a credential. The optional direct routing path described later is the only part that talks to a provider endpoint, and therefore the only part that needs a key.
 
 With Orchestrator MCP, your agent can:
 
@@ -113,33 +113,143 @@ The project is published to PyPI as `orchestrator-mcp-server`. The shorter PyPI 
 
 ## What it does
 
-### Consult another agent
+Orchestrator has two independent paths. They can be used together or one at a time.
+
+| Path | Talks to | Needs an API key | Tools |
+|---|---|---|---|
+| Consultation | The Codex or Claude Code CLI on your computer, under its own login | No | `consult`, `list_consult_agents`, `get_consultation` |
+| Direct routing | A model endpoint through LiteLLM | Yes, unless the endpoint is local and unauthenticated | `ask`, `list_capabilities` |
+
+The consultation path is the reason this project exists. The direct routing path is older and optional. Configure the `consult` section only, and the two `ask` tools are never registered.
+
+## The consultation path
 
 The `consult` tool starts the Codex or Claude Code command-line app already installed and signed in on your computer. Claude Code can ask Codex, and Codex can ask Claude Code, using the subscriptions already connected to those CLIs.
 
 The consulted agent can answer, but it cannot change files, run commands, use MCP tools, or start subagents. Orchestrator also removes agents that use the same runtime as the caller, which prevents consultation loops.
 
-Available tools:
+`ORCHESTRATOR_HOST_RUNTIME` tells Orchestrator which agent is making the request. It must be `claude` or `codex`. The server excludes that runtime from the available targets, so a host can never consult itself. The value comes from the environment only; a calling model cannot set it as a tool argument.
 
-| Tool | Purpose |
+### `consult`
+
+What you send:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `capability` | yes | One of `coding`, `research`, `writing`, `reasoning`, `review`. |
+| `prompt` | yes | The task or question. Up to 100,000 characters. |
+| `context` | no | Source material. Up to 1,000,000 characters. Treated as evidence to read, never as instructions to follow. |
+| `source_mode` | no | `auto`, `document`, `web`, or `model`. Defaults to `auto`. |
+| `consultation_id` | no | Omit on the first call. Send the returned ID back on later calls to continue the same session. |
+| `target_agent` | no | An explicit agent ID, which overrides the scores. The tool advertises the configured IDs as a fixed list, so a calling model cannot name an agent you did not configure. |
+| `conversation_label` | no | A free-text label saved with the consultation. Up to 200 characters. |
+
+Source modes:
+
+| Mode | What the consulted agent gets |
 |---|---|
-| `consult` | Ask a configured Codex or Claude Code agent. |
-| `list_consult_agents` | Show configured agents, scores, and login status. |
-| `get_consultation` | Read a saved consultation, including its turns and routing details. |
+| `auto` | Picks `document` when `context` is set, and `model` otherwise. Resolved before the request is sent; a target never receives `auto`. |
+| `document` | Your `context`, with every tool switched off. The agent is instructed to answer from that material or say it cannot. |
+| `web` | The target CLI's own web search, and nothing else. Bounded by `web_turn_limit`, which defaults to 8 assistant turns. |
+| `model` | Neither. The agent answers from what it already knows. |
 
-`ORCHESTRATOR_HOST_RUNTIME` tells Orchestrator which agent is making the request. It must be `claude` or `codex`. The server excludes that runtime from the available targets, so a host can never consult itself.
+What you get back. Every outcome uses the same envelope:
 
-The first `consult` call returns a `consultation_id`. Send that ID with later calls to continue the same conversation. Without it, every call starts a new conversation.
+| Field | Meaning |
+|---|---|
+| `ok` | False exactly when `error` is set. A failed consultation never carries answer text, so check this before reading `content`. |
+| `consultation_id` | The handle for continuing this conversation. Null only when the call failed before a consultation existed. |
+| `content.answer` | The agent's answer. |
+| `content.assumptions` | What it assumed to answer. |
+| `content.uncertainties` | What it was not sure about. |
+| `content.follow_up_questions` | What it would ask you next. |
+| `content.sources` | Title, locator, and type (`document`, `web`, or `model`) for each source it used. |
+| `route` | Which agent answered: ID, runtime, model, capability score, priority, and whether you chose it explicitly. |
+| `usage` | Token counts, when the CLI reports them. |
+| `latency_ms` | Elapsed time. |
+| `error` | A code, a message, the agent involved, and sometimes a `required_action` command for you to run. |
 
-Consultations support five capabilities: `coding`, `research`, `writing`, `reasoning`, and `review`. Routing is predictable: the highest score wins, then the lowest priority number, then the agent ID. Orchestrator does not silently switch to another agent if the selected one fails.
+All five `content` fields are required of the consulted agent. A list may be empty but never missing: "no uncertainties" is a claim the agent has to make, not something you infer from an absent key.
 
-See [`config.example.yaml`](config.example.yaml) for every consultation option.
+Consultation error codes: `agent_not_installed`, `connection_required`, `configured_model_unavailable`, `agent_unavailable`, `session_not_found`, `session_busy`, `session_target_mismatch`, `protocol_validation_failed`, `web_search_unavailable`, `transport_error`, `timeout`, `invalid_request`, `no_agent_available`.
 
-### Optional direct model routing
+Behaviour worth knowing:
 
-Orchestrator also includes `ask` and `list_capabilities` for routing requests to model deployments through LiteLLM. This is separate from the logged-in Codex and Claude Code consultation flow.
+- Routing is predictable: the highest capability score wins, then the lowest priority number, then the agent ID. A score of 0, or a capability left out of the map, means that agent is not eligible.
+- If the chosen agent fails, that is the answer. Orchestrator does not quietly try the next one.
+- A consultation is pinned to the agent, runtime, and model that started it. Naming a different `target_agent` later returns `session_target_mismatch` rather than switching.
+- If the CLI answers as a different model than the one configured, the consultation fails with `configured_model_unavailable` instead of returning an answer from a model nobody chose.
+- Two processes cannot advance the same consultation at once. The second gets `session_busy`.
+- Nothing is ever run through a shell. Every CLI call is an argument list, and the prompt is written to the process's standard input.
+
+### `list_consult_agents`
+
+Returns the host runtime and one row per configured agent: `agent_id`, `runtime`, `model`, `priority`, `enabled`, `scores`, `web_search`, `excluded_as_host`, plus `installed`, `authenticated`, and a `detail` string from the last status check.
+
+### `get_consultation`
+
+Takes a `consultation_id` and returns the stored consultation: target agent, runtime and model, capability, the source modes used, label, status, whether a native session is still bound, timestamps, every turn, and the routing decision that picked the agent.
+
+### Agent options
+
+Each entry under `consult.agents` accepts:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `runtime` | required | `codex` or `claude`. |
+| `command` | required | Executable name or absolute path. Resolved on `PATH`; an absolute path is safest for GUI-launched clients. |
+| `model` | required | The model to ask for, and the one the answer is checked against. |
+| `priority` | 100 | Lower wins a tie. |
+| `enabled` | true | Set false to keep an agent configured but out of routing. |
+| `scores` | none | 0–100 per capability. Missing means 0, which means not eligible. |
+| `web_search` | false | Allows `source_mode: web` for this agent. Asking for `web` against an agent without it returns `web_search_unavailable` rather than quietly answering without a search. |
+| `reasoning_effort` | unset | `low`, `medium`, `high`, `xhigh`, or `max`. Codex only; setting it on a `claude` agent refuses to start, because that runtime would ignore it silently. |
+
+### Consultation settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `database_path` | `~/.orchestrator-mcp/consultations.sqlite3` | Where consultations are stored. |
+| `managed_agents_path` | `~/.orchestrator-mcp/agents.yaml` | The file the dashboard writes. |
+| `timeout_s` | 180 | Time limit for one consultation turn. Raise it for slow, high-effort reviews. |
+| `web_turn_limit` | 8 | Assistant turns allowed in `web` mode before the child process is stopped. |
+| `store_full_content` | true | Set false to store only metadata and routing information. |
+| `dashboard` | off | See below. |
+
+## The direct routing path
+
+`ask` and `list_capabilities` route a request to a model deployment through LiteLLM. This is separate from the consultation path and, for any hosted provider, it is the part that needs an API key.
 
 The `ask` tool routes a named capability, such as `coding` or `research`, to the deployment assigned to it. LiteLLM handles load balancing, retries, cooldowns, and fallbacks. A deployment can be a local model or another endpoint already configured for LiteLLM.
+
+What you send:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `capability` | yes | One of your configured capability names, advertised as a fixed list. |
+| `prompt` | yes | The task or question. |
+| `context` | no | Source material. When set, the model is told to answer only from it and to say so otherwise. |
+| `system` | no | Extra instructions placed before the conversation. Orchestrator's own instructions are always applied last, so they cannot be turned off from here. |
+| `response_schema` | no | A JSON Schema, as an object or as a JSON string. The reply is validated against it locally. |
+| `temperature` | 0.2 | Forced to 0 whenever `response_schema` is set. |
+| `max_output_tokens` | from `limits` | Per-request override. |
+
+What you get back:
+
+| Field | Meaning |
+|---|---|
+| `ok` | False exactly when `error` is set. A failed call carries neither `content` nor `data`. |
+| `content` | The answer text. Null when `response_schema` was used. |
+| `data` | The validated structured answer, when `response_schema` was used. |
+| `insufficient_context` | True when the model said the provided context did not answer the question. |
+| `model_used` | Which deployment answered. |
+| `fallback_used` | Whether a fallback capability handled it. |
+| `finish_reason`, `usage`, `latency_ms` | Stop reason, tokens, elapsed time. |
+| `error` | A code and a message. |
+
+Routing error codes: `invalid_request`, `no_deployment`, `upstream_error`, `rate_limited`, `context_exceeded`, `schema_validation_failed`, `timeout`, `content_filtered`, `auth_failed`, `output_truncated`.
+
+`list_capabilities` returns each configured capability with its description, the deployments behind it, and the capabilities it falls back to.
 
 You can leave `capabilities` and `model_list` out of `config.yaml` if you only want subscription-based consultations. In that setup, Orchestrator only shows the three consultation tools.
 
@@ -162,11 +272,28 @@ Start it separately:
 ORCHESTRATOR_CONFIG=config.yaml orchestrator-mcp-dashboard
 ```
 
-Open [http://127.0.0.1:8765](http://127.0.0.1:8765). The dashboard only listens on your computer. It shows configured agents, recent consultations, prompts, answers, routing, usage, latency, and errors.
+Open [http://127.0.0.1:8765](http://127.0.0.1:8765). The dashboard only listens on your computer. It shows configured agents, recent consultations, prompts, answers, routing, usage, latency, and errors. `host` accepts only a loopback address, and a request whose `Host` header names anything else is refused.
 
-To add and edit agents from the browser, set `editable: true` and open `/agents`. Browser-managed agents are stored in `~/.orchestrator-mcp/agents.yaml`; the dashboard never rewrites `config.yaml` and never runs login commands. Restart the MCP server after saving an agent.
+The dashboard runs as its own process and reads the configuration once, at startup — the same as the MCP server. Neither one notices a change the other made. It never runs a login command; the connect commands on the page are text for you to copy.
+
+### Editing agents from the browser
+
+Set `editable: true` and open `/agents`. This is a second flag on purpose: turning the dashboard on gets you a window, and editing is a different thing to agree to.
+
+What the form can change: consult agents only — runtime, command, model, priority, enabled, the five capability scores, web search, and reasoning effort. Nothing else is editable from the browser. `capabilities`, `model_list`, `router_settings`, `limits`, `timeout_s`, `web_turn_limit`, `store_full_content`, and the dashboard's own host and port are config-file settings.
+
+Agents you add here are written to `~/.orchestrator-mcp/agents.yaml`, with `0600` permissions in a `0700` directory. The dashboard never writes `config.yaml`. Agents defined there are listed on the page but not editable, and the page says so.
+
+The two files are merged at startup and neither one wins. **An agent ID defined in both files stops the server from starting**, and the error names the ID and both paths. There is no precedence rule, because a precedence rule is how you get an edit that saves and then does nothing. The form refuses a save that would create that state, and it checks `config.yaml` as it is on disk rather than as it was when the dashboard started — so an agent you add to that file by hand is refused here right away, and one you delete from it stops being refused. Only the IDs are re-read, so it works in one direction: an agent added to `config.yaml` while the page is open does not appear in the read-only table until the dashboard restarts, but it is still enough to block a save the next startup would reject.
+
+If `config.yaml` is empty or half-written when the page reads it — the state an editor leaves for a moment while saving — the check falls back to the agents the dashboard started with. Reading that moment as "this file defines no agents" is exactly how a duplicate would slip through.
+
+An agent that exists in both files keeps its row and its delete button, since deleting the copy here is the only fix available from the browser.
+
+Changes take effect when the MCP server next starts. The page says so after every save, and it warns you when the running server is on an older configuration than the one on disk.
 
 By default, consultation prompts and answers are saved in SQLite. Set `store_full_content: false` to save only metadata and routing information.
+
 ## Configuration
 
 `ORCHESTRATOR_CONFIG` points to the configuration file. If it is not set, the server looks for `config.yaml` in its working directory.
@@ -179,23 +306,23 @@ Important sections:
 | `capabilities` | Names and explains the work types available to `ask`. |
 | `model_list` | Connects each capability to one or more LiteLLM models. |
 | `router_settings` | Controls retries, cooldowns, and fallbacks. |
-| `limits` | Sets request size, output, repair, and timeout limits. |
+| `limits` | Sets request size, output, repair, and timeout limits for `ask`. Consultations have their own caps and their own `timeout_s`. |
 
 Several deployments may use the same capability name. LiteLLM will balance requests between them.
 
 You may configure only `ask`, only `consult`, or both. If `consult` is missing, the consultation tools are not shown. If `capabilities` and `model_list` are both missing, the model tools are not shown.
 
-The main default limits are:
+The default `limits` block, which applies to `ask` only:
 
-| Setting | Default |
-|---|---:|
-| Prompt | 100,000 characters |
-| Context | 400,000 characters |
-| System instructions | 10,000 characters |
-| JSON Schema | 20,000 characters |
-| Output | 4,096 tokens |
-| Whole request | 120 seconds |
-| Schema repair attempts | 1 |
+| Setting | Key | Default |
+|---|---|---:|
+| Prompt | `max_prompt_chars` | 100,000 characters |
+| Context | `max_context_chars` | 400,000 characters |
+| System instructions | `max_system_chars` | 10,000 characters |
+| JSON Schema | `max_schema_chars` | 20,000 characters |
+| Output | `max_output_tokens` | 4,096 tokens |
+| Whole request | `request_timeout_s` | 120 seconds |
+| Schema repair attempts | `schema_repair_attempts` | 1 |
 
 Invalid configuration is rejected when the server starts instead of failing during a request.
 
@@ -222,6 +349,7 @@ Important limits:
 
 ## System requirements
 
+- macOS or Linux. Windows is not tested; the Homebrew instructions are macOS only, and the server has only been run on POSIX systems.
 - Python 3.11, 3.12, or 3.13
 - Homebrew or [`uv`](https://docs.astral.sh/uv/)
 - An MCP client that supports stdio, such as Claude Code or Codex
@@ -300,7 +428,16 @@ Keep private configuration, login data, and consultation databases out of commit
 
 ## Not included
 
-The project does not currently provide semantic intent routing, streaming tool results, automatic PII removal, or a shared Redis state by default. LiteLLM can provide some of these features through its own configuration and callbacks.
+Deliberately out of scope for now:
+
+- **Consulted agents cannot act.** No file changes, no commands, no MCP tools, no subagents. Answers only.
+- **No streaming.** A consultation returns one complete envelope.
+- **No consultations from the dashboard.** The page reads history and edits agent configuration; it has never started an agent process, and that is worth keeping until there is a reason to give it up.
+- **No runtime settings in the dashboard.** Timeouts, storage, and the dashboard's own host and port are config-file settings. A page that can change the port it is served on is a footgun that deserves its own design.
+- **No accounts on the dashboard.** Its protection is a loopback bind, a `Host` header check, and a per-process token — enough for one person on one machine, not for a shared host.
+- **No automatic restart.** Both processes read the configuration once, at startup.
+- **No multi-user or shared state.** One SQLite file, local to your computer.
+- **No semantic intent routing**, streaming tool results, automatic PII removal, or shared Redis state on the routing path. LiteLLM can provide some of these through its own configuration and callbacks.
 
 ## License and support
 
