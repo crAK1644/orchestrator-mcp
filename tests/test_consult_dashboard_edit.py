@@ -535,6 +535,64 @@ async def test_an_id_in_both_files_blocks_the_write_before_the_next_boot_refuses
     assert editable.path.read_bytes() == before
 
 
+def source_config(path, agents: dict) -> None:
+    """Write the `config.yaml` the dashboard re-reads, with `agents` in its consult
+    block. Not the same file as `editable.path` -- this is the operator's own, which
+    this page never writes and only ever reads ids out of."""
+    path.write_text(yaml.safe_dump(base_config() | {"consult": consult_block(agents=agents)}))
+
+
+async def test_an_id_added_to_config_yaml_after_boot_still_blocks_the_write(
+    serve, editable, tmp_path  # noqa: F811
+):
+    """The case a boot snapshot cannot see. `codex-luna` is not in `config.yaml` when
+    this dashboard starts, so nothing it loaded makes the save a duplicate -- the file
+    does, and only if it is read again. Saving anyway writes a file the next start
+    refuses, from the check that exists to stop exactly that."""
+    source = tmp_path / "config.yaml"
+    source_config(source, {"codex-sol": agent()})
+    get, _ = serve(editable(), source)
+
+    source_config(source, {"codex-sol": agent(), "codex-luna": agent()})
+    status, body, _ = get.post("/agents", form(_token=get.token))
+
+    assert status == 200 and "config.yaml" in body
+    assert not editable.path.exists(), "and nothing was written on the way to saying so"
+
+
+async def test_an_id_deleted_from_config_yaml_after_boot_stops_blocking_the_write(
+    serve, editable, tmp_path  # noqa: F811
+):
+    """The other half of the same read. A snapshot refuses `codex-sol` for as long as
+    the process lives; the file is what the next boot reads, and it no longer has it."""
+    source = tmp_path / "config.yaml"
+    source_config(source, {"codex-sol": agent()})
+    get, _ = serve(editable(), source)
+
+    source_config(source, {"claude-opus": agent("claude", "opus")})
+    status, _, location = get.post("/agents", form(_token=get.token, id="codex-sol"))
+
+    assert status == 303 and location == "/agents?saved=codex-sol"
+    assert "codex-sol" in written(editable.path)
+
+
+async def test_a_config_yaml_that_cannot_be_read_falls_back_to_what_booted(
+    serve, editable, tmp_path  # noqa: F811
+):
+    """Moved, or half-written by an editor that truncates before it saves. Stale is a
+    worse answer than fresh and a much better one than treating the file as empty,
+    which would let every id in it through."""
+    get, _ = serve(editable(), tmp_path / "not-here.yaml")
+    status, body, _ = get.post("/agents", form(_token=get.token, id="codex-sol"))
+    assert status == 200 and "config.yaml" in body
+
+    source = tmp_path / "config.yaml"
+    source.write_text("consult: {agents: [")
+    get, _ = serve(editable(), source)
+    status, body, _ = get.post("/agents", form(_token=get.token, id="codex-sol"))
+    assert status == 200 and "config.yaml" in body
+
+
 async def test_a_managed_file_that_is_not_text_refuses_the_write(serve, editable):  # noqa: F811
     """Bytes that are not text read fine and fail at decoding, which is not an
     `OSError` and used to escape the only catch that was there."""

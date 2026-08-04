@@ -84,9 +84,9 @@ def serve(config):
     """A running dashboard; returns a client and the config it serves."""
     servers = []
 
-    def start(consult_config=None):
+    def start(consult_config=None, config_path=None):
         consult_config = consult_config or config()
-        httpd = build_httpd(consult_config)
+        httpd = build_httpd(consult_config, config_path)
         servers.append(httpd)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         return _Client(httpd.server_address[1], httpd.RequestHandlerClass.dashboard), consult_config
@@ -267,6 +267,10 @@ async def test_a_foreign_host_header_is_refused(serve):
         pytest.param("[::1]garbage", False, id="v6 with something after the bracket"),
         pytest.param("[::1]:evil", False, id="v6 with a port that is not a number"),
         pytest.param("127.0.0.1:evil", False, id="a port that is not a number"),
+        # `str.isdigit` is true of every numeral in Unicode. Most of them cannot reach
+        # a server -- headers are latin-1 and `http.client` refuses to encode them --
+        # but the superscripts are in latin-1, so this one arrives.
+        pytest.param("127.0.0.1:8765²", False, id="a port in digits that are not ascii"),
     ],
 )
 async def test_the_host_header_is_read_the_way_a_host_header_is_written(serve, host, allowed):
