@@ -339,3 +339,172 @@ async def test_a_non_json_line_is_not_a_failure(tmp_path, monkeypatch, adapter):
     stdout = "Reading prompt from stdin...\n" + transcript()
     agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": stdout}])
     assert (await adapter.start(agent(), prompt(), SourceMode.MODEL)).content.answer == "blue"
+
+
+# --- which model actually answered ------------------------------------------
+
+UUID_THREAD = "019fce6c-0218-7cb0-9e79-3de60901c110"
+
+
+def rollout_path(home, thread_id=UUID_THREAD):
+    """Where codex keeps the session log for a thread: dated directories three deep,
+    the thread id in the filename."""
+    directory = home / ".codex" / "sessions" / "2026" / "08" / "04"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"rollout-2026-08-04T23-16-52-{thread_id}.jsonl"
+
+
+def turn_context(model: str, turn: int = 0) -> str:
+    """One turn's record, the shape codex-cli 0.146 writes."""
+    return json.dumps({"type": "turn_context", "payload": {"model": model, "turn": turn}}) + "\n"
+
+
+def rollout(home, model, thread_id=UUID_THREAD, turns=1) -> None:
+    """Write the session log codex keeps for its own resume support.
+
+    Shaped like the real thing: a `session_meta` header, then one `turn_context` per
+    turn naming the model."""
+    lines = json.dumps({"type": "session_meta", "payload": {"session_id": thread_id}}) + "\n"
+    lines += "".join(turn_context(model, index) for index in range(turns))
+    rollout_path(home, thread_id).write_text(lines)
+
+
+def silent_transcript() -> str:
+    """What codex-cli 0.146 actually prints: no model, anywhere in the stream."""
+    return jsonl(
+        {"type": "thread.started", "thread_id": UUID_THREAD},
+        {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": json.dumps(CONTENT)},
+        },
+        {"type": "turn.completed", "usage": {"input_tokens": 900, "output_tokens": 120}},
+    )
+
+
+async def test_a_substituted_model_is_caught_even_when_the_stream_never_names_one(
+    tmp_path, monkeypatch, adapter
+):
+    """The whole point. `--json` on this build names no model, so the substitution
+    check had nothing to check and waved every answer through -- an agent configured
+    for Sol could be answered by anything and the envelope would still say Sol."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rollout(tmp_path, "gpt-5.6-luna")
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": silent_transcript()}])
+
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert exc.value.code is ConsultErrorCode.CONFIGURED_MODEL_UNAVAILABLE
+    assert "gpt-5.6-luna" in str(exc.value)
+
+
+async def test_the_session_log_confirms_the_configured_model(tmp_path, monkeypatch, adapter):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rollout(tmp_path, "gpt-5.6-sol")
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": silent_transcript()}])
+
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert result.model_used == "gpt-5.6-sol"
+
+
+async def test_the_last_turn_is_the_one_checked(tmp_path, monkeypatch, adapter):
+    """A resumed consultation appends to the same file. The turn that just ran is the
+    last one, so an earlier turn on the configured model must not vouch for it."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    directory = tmp_path / ".codex" / "sessions" / "2026" / "08" / "04"
+    directory.mkdir(parents=True)
+    (directory / f"rollout-2026-08-04T23-16-52-{UUID_THREAD}.jsonl").write_text(
+        json.dumps({"type": "turn_context", "payload": {"model": "gpt-5.6-sol"}})
+        + "\n"
+        + json.dumps({"type": "turn_context", "payload": {"model": "gpt-5.6-luna"}})
+        + "\n"
+    )
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": silent_transcript()}])
+
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert exc.value.code is ConsultErrorCode.CONFIGURED_MODEL_UNAVAILABLE
+
+
+async def test_no_session_log_is_not_a_failure(tmp_path, monkeypatch, adapter):
+    """Absent metadata stays "no evidence", not "evidence of substitution". A codex
+    build that stops writing these files, or a relocated `CODEX_HOME`, must not turn
+    every consultation into an outage."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": silent_transcript()}])
+
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert result.model_used == "gpt-5.6-sol", "the configured name, unverified"
+
+
+async def test_the_stream_is_believed_before_the_file(tmp_path, monkeypatch, adapter):
+    """If a later release does name the model on stdout, that is the live answer and
+    the log is not consulted at all."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rollout(tmp_path, "gpt-5.6-luna")
+    stdout = jsonl(
+        {"type": "thread.started", "thread_id": UUID_THREAD, "model": "gpt-5.6-sol"},
+        {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": json.dumps(CONTENT)},
+        },
+        {"type": "turn.completed", "usage": {"input_tokens": 900, "output_tokens": 120}},
+    )
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": stdout}])
+
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert result.model_used == "gpt-5.6-sol"
+
+
+# --- and that it answered for *this* turn ------------------------------------
+
+
+async def test_an_earlier_turn_does_not_vouch_for_a_later_one(tmp_path, monkeypatch, adapter):
+    """A resume appends to a log that already names a model. If the turn that just ran
+    wrote nothing we recognise -- a renamed record, a moved field, a build that stopped
+    writing these -- the answer is unverified, not whatever the previous turn said."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rollout_path(tmp_path).write_text(turn_context("gpt-5.6-luna"))
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": silent_transcript()}])
+
+    result = await adapter.resume(agent(), UUID_THREAD, prompt(), SourceMode.MODEL)
+    assert result.model_used == "gpt-5.6-sol", "the configured name, unverified"
+
+
+async def test_the_turn_that_just_ran_is_the_one_read(tmp_path, monkeypatch, adapter):
+    """The other direction: an earlier turn on the configured model must not cover for
+    a substitution in the turn being checked."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = rollout_path(tmp_path)
+    path.write_text(turn_context("gpt-5.6-sol"))
+    agent_stub.install(
+        "codex", tmp_path, monkeypatch,
+        runs=[{"stdout": silent_transcript(), "append": {str(path): turn_context("gpt-5.6-luna", 1)}}],
+    )
+
+    with pytest.raises(AdapterError) as exc:
+        await adapter.resume(agent(), UUID_THREAD, prompt(), SourceMode.MODEL)
+    assert exc.value.code is ConsultErrorCode.CONFIGURED_MODEL_UNAVAILABLE
+    assert "gpt-5.6-luna" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(b'["turn_context", {"model": "gpt-5.6-luna"}]\n', id="a JSON array"),
+        pytest.param(b'{"type": "turn_context", "payload": "gpt-5.6-luna"}\n', id="a string payload"),
+        pytest.param(b'{"type": "turn_context", "payload": {"model": 4}}\n', id="a numeric model"),
+        pytest.param(b'{"type": "turn_context", "payload": {"model": "\xff\xfe"}}\n', id="not UTF-8"),
+        pytest.param(b'{"type": "turn_context", "payload": {\n', id="a half-written line"),
+    ],
+)
+async def test_a_session_log_we_do_not_recognise_is_unverified_not_a_crash(
+    tmp_path, monkeypatch, adapter, line
+):
+    """This file belongs to the CLI, and its format is undocumented. Every shape it
+    could take has to land on "no metadata", never on an exception escaping mid-run."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rollout_path(tmp_path).write_bytes(line)
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": silent_transcript()}])
+
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert result.model_used == "gpt-5.6-sol"

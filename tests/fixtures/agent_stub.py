@@ -35,6 +35,13 @@ else:
     runs = SPEC["runs"]
     run = runs[index] if index < len(runs) else runs[-1]
 
+# Files the real CLI writes as a side effect of running -- its session log, which is
+# where the Codex adapter reads back which model actually answered.
+for target, text in run.get("append", {{}}).items():
+    Path(target).parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "a") as handle:
+        handle.write(text)
+
 sys.stdout.write(run.get("stdout", ""))
 sys.stdout.flush()
 sys.stderr.write(run.get("stderr", ""))

@@ -61,6 +61,10 @@ def claude_agent(**overrides) -> AgentConfig:
         ("gpt-5.1", "gpt-5.10"),
         ("claude-sonnet-4", "claude-sonnet-4-5"),
         ("claude-opus-4-1", "claude-opus-4"),
+        # A name with nothing nameable in it. It tokenizes to nothing, and an empty
+        # token list matches every model as if it were an unversioned alias.
+        ("gpt-5.6-sol", "???"),
+        ("gpt-5.6-sol", "-"),
     ],
 )
 def test_a_smaller_sibling_is_not_the_configured_model(configured, reported):
