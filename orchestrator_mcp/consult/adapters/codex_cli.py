@@ -1,10 +1,10 @@
 """Consulting a Codex CLI.
 
-Unlike the Claude adapter, none of this was checked against a binary -- codex is
-not installed on the machine this was written on. The flags and event names come
-from the `codex exec` documentation, the parser is deliberately tolerant about
-where in an event the text lives, and `smoke_consult_live.py` is what actually
-confirms them.
+The flags and event names here were written from documentation and have since been
+run against codex-cli 0.146: every argument below is one the binary accepts on both
+`exec` and `exec resume`, which is not the same set -- see the sandbox comment. The
+parser stays deliberately tolerant about where in an event the text lives, because
+that is the part a release can move without telling anyone.
 
 What is not tolerant is the event *kind*: a command, a file change, an MCP call
 or a subagent means the CLI is doing something a consultation never asked for,
@@ -40,6 +40,12 @@ PREFLIGHT_TIMEOUT_S = 30.0
 # Substrings that mark an event as an action rather than a message. Matched against
 # the event type so a renamed-but-recognisable event still fails closed.
 FORBIDDEN_EVENT_MARKERS = ("command", "exec_command", "patch", "file_change", "mcp", "subagent")
+
+# Reaching the network is an action too, but a legitimate one in web mode -- so these
+# are checked only in the modes that pass `web_search=disabled`. The config key is what
+# prevents the search; this is what notices if it ever stops working, which is the
+# whole reason a deny-list exists behind a setting.
+NETWORK_EVENT_MARKERS = ("web", "search", "fetch", "browse")
 
 # Substrings that mark the run as having failed. Matched the same tolerant way, so
 # `turn.failed`, `error`, and whatever the next release calls it all stop the turn.
@@ -124,16 +130,18 @@ class CodexCliAdapter:
                 "--ignore-user-config",
                 "--ignore-rules",
                 "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
                 "--model",
                 agent.model,
                 "--json",
                 "--output-schema",
                 str(schema),
-                # As a config key and not `--ask-for-approval`, which a 0.146 build
-                # rejects as an unexpected argument on `exec`. Config keys outlive
-                # flags, and this one is what the flag set anyway.
+                # Both as config keys rather than `--sandbox` / `--ask-for-approval`.
+                # `codex exec resume` accepts neither flag -- it takes a much smaller
+                # set than `codex exec` does -- and passing them makes every follow-up
+                # turn die on argument parsing. `-c` it takes, on both forms, so one
+                # argv serves both.
+                "-c",
+                'sandbox_mode="read-only"',
                 "-c",
                 'approval_policy="never"',
                 "-c",
@@ -142,9 +150,13 @@ class CodexCliAdapter:
                 "features.shell_tool=false",
                 "-c",
                 f"web_search={'live' if source_mode is SourceMode.WEB else 'disabled'}",
-                # Read the prompt from stdin: no argv ceiling, and no shell to quote for.
-                "-",
             ]
+            if agent.reasoning_effort:
+                # Not inherited from the user's config.toml, which `--ignore-user-config`
+                # is there to exclude. Unset means the model's own default.
+                argv += ["-c", f'model_reasoning_effort="{agent.reasoning_effort}"']
+            # Read the prompt from stdin: no argv ceiling, and no shell to quote for.
+            argv.append("-")
 
             # Codex has no `--system-prompt`, so the protocol contract travels with the
             # payload. It stays first, which is what keeps a task from reading as one.
@@ -154,7 +166,7 @@ class CodexCliAdapter:
 
         events = _events(result)
         for event in events:
-            _check_event(event)
+            _check_event(event, source_mode)
 
         # Checked before any message is extracted, and both together: a run that
         # reported a failed turn or exited nonzero did not answer, however
@@ -216,10 +228,13 @@ def _kind(event: dict) -> str:
     return f"{event.get('type', '')}.{item_type}".lower()
 
 
-def _check_event(event: dict) -> None:
+def _check_event(event: dict, source_mode: SourceMode) -> None:
+    forbidden = FORBIDDEN_EVENT_MARKERS
+    if source_mode is not SourceMode.WEB:
+        forbidden += NETWORK_EVENT_MARKERS
+
     kind = _kind(event)
-    hit = [marker for marker in FORBIDDEN_EVENT_MARKERS if marker in kind]
-    if hit:
+    if any(marker in kind for marker in forbidden):
         raise AdapterError(
             ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
             f"the agent tried to act rather than answer (event `{event.get('type')}`)",

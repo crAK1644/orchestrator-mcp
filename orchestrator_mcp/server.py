@@ -28,6 +28,7 @@ from pydantic import ValidationError
 
 from .contract import (
     MAX_ERROR_CHARS,
+    AskRequest,
     AskResponse,
     CapabilitiesResponse,
     CapabilityInfo,
@@ -119,6 +120,19 @@ def validate_config(config: dict[str, Any]) -> None:
     capabilities = config.get("capabilities") or {}
     model_list = config.get("model_list") or []
 
+    # Neither block is required any more: `consult:` alone is a complete server, and
+    # one that needs no API key at all, which is the point of running it that way.
+    # What is still required is that the config configure *something*.
+    if not capabilities and not model_list:
+        if not config.get("consult"):
+            raise ConfigError(
+                "nothing is configured: give the server `capabilities:` and `model_list:` "
+                "for `ask`, a `consult:` block for consultations, or both"
+            )
+        return
+
+    # Half of the pair is a mistake rather than a choice, so both original refusals
+    # stand -- an operator who wrote one and forgot the other wants to hear about it.
     if not isinstance(capabilities, dict) or not capabilities:
         raise ConfigError("`capabilities:` must be a non-empty mapping of name -> description")
     if not model_list:
@@ -310,20 +324,29 @@ class Orchestrator:
         # Kept so `build_server` can read the `consult:` block off it rather than
         # loading the file a second time.
         self.config = config
-        self.capabilities: dict[str, str] = config["capabilities"]
+        self.capabilities: dict[str, str] = config.get("capabilities") or {}
         try:
             self.limits = Limits(**(config.get("limits") or {}))
         except ValidationError as exc:
             raise ConfigError(f"invalid `limits:` block: {exc}") from exc
-        self.router = Router(model_list=config["model_list"], **(config.get("router_settings") or {}))
-        self.request_model = build_ask_request(list(self.capabilities), self.limits)
 
-        # model_id -> capability, so a reply from outside the requested group is
-        # reported as a fallback rather than passing as the intended model.
-        self._capability_of: dict[str, str] = {
-            (d.get("model_info") or {}).get("id"): d["model_name"]
-            for d in (self.router.get_model_list() or [])
-        }
+        # No capabilities means no `ask`, so there is no Router to build and nothing
+        # for one to route to. `request_model` is what `build_server` reads to decide
+        # whether to advertise the tool at all, and None is that answer.
+        self.router: Router | None = None
+        self.request_model: type[AskRequest] | None = None
+        self._capability_of: dict[str, str] = {}
+        if self.capabilities:
+            self.router = Router(
+                model_list=config["model_list"], **(config.get("router_settings") or {})
+            )
+            self.request_model = build_ask_request(list(self.capabilities), self.limits)
+            # model_id -> capability, so a reply from outside the requested group is
+            # reported as a fallback rather than passing as the intended model.
+            self._capability_of = {
+                (d.get("model_info") or {}).get("id"): d["model_name"]
+                for d in (self.router.get_model_list() or [])
+            }
 
     def _fallbacks_for(self, capability: str) -> list[str]:
         out: list[str] = []
@@ -577,7 +600,20 @@ def _version() -> str:
 def build_server(config: dict[str, Any] | None = None) -> MCPServer:
     orchestrator = Orchestrator(config if config is not None else load_config())
     server = MCPServer("orchestrator", version=_version())
+    if orchestrator.request_model is not None:
+        _add_ask_tools(server, orchestrator)
 
+    # The whole consultation path hangs off this one branch. A config with no
+    # `consult:` block advertises exactly the two tools above, byte for byte, which
+    # is what the compatibility snapshot asserts.
+    consult_config = load_consult_config(orchestrator.config)
+    if consult_config is not None:
+        _add_consult_tools(server, ConsultService(consult_config, host_runtime()))
+
+    return server
+
+
+def _add_ask_tools(server: MCPServer, orchestrator: Orchestrator) -> None:
     async def ask(**kwargs: Any) -> AskResponse:
         return await orchestrator.ask(**kwargs)
 
@@ -599,15 +635,6 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
         """List configured capabilities: what each is for, the deployments behind it,
         and where it falls back when they are unavailable."""
         return orchestrator.list_capabilities()
-
-    # The whole consultation path hangs off this one branch. A config with no
-    # `consult:` block advertises exactly the two tools above, byte for byte, which
-    # is what the compatibility snapshot asserts.
-    consult_config = load_consult_config(orchestrator.config)
-    if consult_config is not None:
-        _add_consult_tools(server, ConsultService(consult_config, host_runtime()))
-
-    return server
 
 
 def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:

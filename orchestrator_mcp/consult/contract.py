@@ -91,6 +91,11 @@ class ConsultRequest(BaseModel):
 
 
 class ConsultSource(BaseModel):
+    # Not decoration: OpenAI's structured outputs reject a schema unless *every* object
+    # in it, `$defs` included, says `additionalProperties: false`. Without this the
+    # provider 400s before the model is ever asked anything.
+    model_config = ConfigDict(extra="forbid")
+
     title: str
     locator: str
     source_type: Literal["document", "web", "model"]

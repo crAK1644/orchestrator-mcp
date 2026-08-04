@@ -108,14 +108,33 @@ async def test_the_invocation_is_isolated(tmp_path, monkeypatch, adapter):
     assert argv[0] == "exec"
     for flag in ("--strict-config", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check"):
         assert flag in argv
-    assert argv[argv.index("--sandbox") + 1] == "read-only"
-    # As a config key, not `--ask-for-approval`: a 0.146 build rejects that flag on
-    # `exec` outright, which would fail every consultation.
-    assert '--ask-for-approval' not in argv
+    assert 'sandbox_mode="read-only"' in argv
+    # Both as config keys, not `--sandbox` / `--ask-for-approval`: a 0.146 build
+    # rejects the approval flag on `exec` and the sandbox flag on `exec resume`.
+    assert "--sandbox" not in argv and "--ask-for-approval" not in argv
     assert 'approval_policy="never"' in argv
     assert "agents.enabled=false" in argv and "features.shell_tool=false" in argv
     assert "web_search=disabled" in argv
     assert argv[-1] == "-"
+
+
+async def test_the_configured_reasoning_effort_is_passed(tmp_path, monkeypatch, adapter):
+    """`--ignore-user-config` means the user's own `model_reasoning_effort` is not
+    inherited, so an unpassed effort silently runs at the model's default."""
+    record = agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": transcript()}])
+    await adapter.start(agent(reasoning_effort="xhigh"), prompt(), SourceMode.MODEL)
+
+    (call,) = agent_stub.calls(record)
+    assert 'model_reasoning_effort="xhigh"' in call["argv"]
+    assert call["argv"][-1] == "-"  # still last, so the prompt still comes off stdin
+
+
+async def test_no_reasoning_effort_passes_none(tmp_path, monkeypatch, adapter):
+    record = agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": transcript()}])
+    await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    (call,) = agent_stub.calls(record)
+    assert not any("model_reasoning_effort" in arg for arg in call["argv"])
 
 
 async def test_the_prompt_goes_in_over_stdin_with_the_contract_first(tmp_path, monkeypatch, adapter):
@@ -174,6 +193,38 @@ async def test_resume_names_the_thread(tmp_path, monkeypatch, adapter):
     assert call["argv"][:3] == ["exec", "resume", THREAD]
 
 
+# `codex exec resume` takes a strictly smaller flag set than `codex exec`: it has no
+# `--sandbox`, and passing one kills the process during argument parsing, so a
+# consultation would start fine and then fail on every follow-up. Only options both
+# subcommands accept belong in the shared argv.
+RESUME_REJECTS = ("--sandbox", "--ask-for-approval", "--full-auto", "--cd", "--color")
+
+
+async def test_resume_sends_nothing_the_resume_subcommand_rejects(tmp_path, monkeypatch, adapter):
+    record = agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": transcript()}])
+    await adapter.resume(agent(reasoning_effort="xhigh"), THREAD, prompt(), SourceMode.MODEL)
+
+    (call,) = agent_stub.calls(record)
+    assert not [flag for flag in RESUME_REJECTS if flag in call["argv"]]
+
+
+async def test_resume_is_configured_exactly_like_a_fresh_turn(tmp_path, monkeypatch, adapter):
+    """Isolation is not something a follow-up turn gets to relax."""
+    record = agent_stub.install(
+        "codex", tmp_path, monkeypatch, runs=[{"stdout": transcript()}, {"stdout": transcript()}]
+    )
+    await adapter.start(agent(reasoning_effort="xhigh"), prompt(), SourceMode.MODEL)
+    await adapter.resume(agent(reasoning_effort="xhigh"), THREAD, prompt(), SourceMode.MODEL)
+
+    def options(argv: list[str]) -> list[str]:
+        # The schema lives in a fresh scratch directory per turn, so its path differs
+        # by design. Everything else is meant to be identical.
+        return [arg for arg in argv if "consult-schema.json" not in arg]
+
+    start, resumed = (options(call["argv"]) for call in agent_stub.calls(record))
+    assert resumed[3:] == start[1:], "resume differs from start beyond `resume <thread>`"
+
+
 # --- refusals ---------------------------------------------------------------
 
 
@@ -195,6 +246,33 @@ async def test_an_action_event_is_a_protocol_violation(tmp_path, monkeypatch, ad
     with pytest.raises(AdapterError) as exc:
         await adapter.start(agent(), prompt(), SourceMode.MODEL)
     assert exc.value.code is ConsultErrorCode.PROTOCOL_VALIDATION_FAILED
+
+
+SEARCH_EVENT = {"type": "item.completed", "item": {"type": "web_search_call", "query": "x"}}
+
+
+@pytest.mark.parametrize("source_mode", [SourceMode.MODEL, SourceMode.DOCUMENT])
+async def test_reaching_the_network_off_web_mode_is_a_protocol_violation(
+    tmp_path, monkeypatch, adapter, source_mode
+):
+    """`web_search=disabled` is what stops the search; this is what notices when it
+    does not. Without the second layer a document-mode answer could be sourced from
+    the open web with nothing in the envelope saying so."""
+    stdout = jsonl({"type": "thread.started", "thread_id": THREAD}, SEARCH_EVENT) + transcript()
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": stdout}])
+
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), source_mode)
+    assert exc.value.code is ConsultErrorCode.PROTOCOL_VALIDATION_FAILED
+
+
+async def test_web_mode_is_allowed_to_search(tmp_path, monkeypatch, adapter):
+    """The same event, in the one mode that asked for it."""
+    stdout = jsonl({"type": "thread.started", "thread_id": THREAD}, SEARCH_EVENT) + transcript()
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": stdout}])
+
+    result = await adapter.start(agent(web_search=True), prompt(), SourceMode.WEB)
+    assert result.content.answer
 
 
 async def test_a_substituted_model_is_refused(tmp_path, monkeypatch, adapter):
