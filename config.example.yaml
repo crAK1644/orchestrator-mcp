@@ -82,6 +82,10 @@ limits:
 #   # 0600, and nothing from a subprocess environment or a login command has a
 #   # column to land in.
 #   database_path: ~/.orchestrator-mcp/consultations.sqlite3
+#   # Agents added from the dashboard live here, not in this file -- so a save cannot
+#   # reformat your config or drop these comments. The two sets are merged at boot;
+#   # an id in both is a startup error rather than one of them quietly losing.
+#   managed_agents_path: ~/.orchestrator-mcp/agents.yaml
 #   timeout_s: 180            # per consultation turn, subprocess included
 #   store_full_content: true  # false stores metadata and routing only
 #   web_turn_limit: 8         # web mode: assistant turns allowed; the one that spends
@@ -117,10 +121,14 @@ limits:
 #         writing: 95
 #         review: 90
 #
-#   # Read-only page over the stored consultations, loopback only, started
-#   # separately with `orchestrator-mcp-dashboard`. Off unless you turn it on: it
-#   # serves every prompt and answer in the database.
+#   # A local page over the stored consultations, loopback only, started separately
+#   # with `orchestrator-mcp-dashboard`. Off unless you turn it on: it serves every
+#   # prompt and answer in the database.
 #   dashboard:
 #     enabled: false
+#     # A second opt-in, because a viewer and an editor are different things to agree
+#     # to. On, the page can add, change and delete agents in `managed_agents_path`
+#     # above -- and nothing else. It never edits this file and never runs a command.
+#     editable: false
 #     host: 127.0.0.1
 #     port: 8765

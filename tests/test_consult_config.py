@@ -155,12 +155,17 @@ def test_every_content_field_is_required_even_when_empty():
     assert content.sources == []
 
 
-def test_the_commented_consult_block_in_the_example_config_still_loads():
+def test_the_commented_consult_block_in_the_example_config_still_loads(tmp_path):
     """The example is documentation that can rot. Uncomment it and it must validate,
     or the first thing a new user copies is a startup error."""
     text = (Path(__file__).parent.parent / "config.example.yaml").read_text()
     block = "consult:" + text.split("# consult:", 1)[1]
     doc = yaml.safe_load("\n".join(re.sub(r"^# ?", "", line) for line in block.splitlines()))
+    # The example names a real path in `$HOME`, and the autouse isolation fixture can
+    # only replace the *default*. Left alone, this test reads whatever agents the
+    # developer running it has saved from their own dashboard -- and fails on a
+    # duplicate id the moment one of them is called `codex-sol`, as the example's is.
+    doc["consult"]["managed_agents_path"] = str(tmp_path / "agents.yaml")
     config = load_consult_config(doc)
     assert sorted(config.agents) == ["claude-opus", "codex-sol"]
     assert config.dashboard.enabled is False

@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from http.client import HTTPConnection
+from urllib.parse import urlencode
 
 import pytest
 
@@ -37,9 +38,50 @@ def config(tmp_path):
     return build
 
 
+class _Client:
+    """Callable, so `get, config = serve()` keeps reading as a GET function, with
+    `post` and `token` hanging off it for the tests that write."""
+
+    def __init__(self, port: int, dashboard) -> None:
+        self.port = port
+        self.dashboard = dashboard
+
+    def _request(self, method: str, path: str, headers: dict, body: str | None = None):
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=5)
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        text = response.read().decode()
+        location = response.getheader("Location")
+        connection.close()
+        return response.status, text, location
+
+    def __call__(self, path: str, host: str | None = None):
+        status, body, _ = self._request(
+            "GET", path, {"Host": host or f"127.0.0.1:{self.port}"}
+        )
+        return status, body
+
+    @property
+    def token(self) -> str:
+        return self.dashboard.token
+
+    def post(self, path: str, form: dict, host: str | None = None, origin: str | None = None):
+        """Returns (status, body, location) -- a save answers 303 with an empty body,
+        so the redirect target is the only thing that says it worked."""
+        body = urlencode(form)
+        headers = {
+            "Host": host or f"127.0.0.1:{self.port}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Length": str(len(body)),
+        }
+        if origin:
+            headers["Origin"] = origin
+        return self._request("POST", path, headers, body)
+
+
 @pytest.fixture
 def serve(config):
-    """A running dashboard; returns a GET function and the config it serves."""
+    """A running dashboard; returns a client and the config it serves."""
     servers = []
 
     def start(consult_config=None):
@@ -47,17 +89,7 @@ def serve(config):
         httpd = build_httpd(consult_config)
         servers.append(httpd)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        port = httpd.server_address[1]
-
-        def get(path: str, host: str | None = None):
-            connection = HTTPConnection("127.0.0.1", port, timeout=5)
-            connection.request("GET", path, headers={"Host": host or f"127.0.0.1:{port}"})
-            response = connection.getresponse()
-            body = response.read().decode()
-            connection.close()
-            return response.status, body
-
-        return get, consult_config
+        return _Client(httpd.server_address[1], httpd.RequestHandlerClass.dashboard), consult_config
 
     yield start
     for httpd in servers:
@@ -221,11 +253,16 @@ async def test_a_foreign_host_header_is_refused(serve):
     assert "Loopback only" in body
 
 
-async def test_it_serves_get_and_nothing_else(serve):
-    """No handler for any other verb, which is how the stdlib refuses one: 501."""
+async def test_it_serves_get_and_post_and_nothing_else(serve):
+    """No handler for any other verb, which is how the stdlib refuses one: 501. POST
+    exists only for the agents form; PUT and DELETE would be a second write surface to
+    keep safe for no gain."""
     from orchestrator_mcp.consult.dashboard import _Handler
 
-    assert [name for name in vars(_Handler) if name.startswith("do_")] == ["do_GET"]
+    assert sorted(name for name in vars(_Handler) if name.startswith("do_")) == [
+        "do_GET",
+        "do_POST",
+    ]
 
 
 async def test_it_refuses_to_bind_anything_but_loopback(config):

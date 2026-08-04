@@ -56,6 +56,23 @@ def consult_block(**overrides: Any) -> dict[str, Any]:
     }
 
 
+@pytest.fixture(autouse=True)
+def _no_real_managed_file(tmp_path, monkeypatch):
+    """Point the dashboard's agents file somewhere disposable, everywhere.
+
+    Its default is `~/.orchestrator-mcp/agents.yaml`, so without this a developer who
+    has ever used the dashboard runs a different suite from CI -- and the failure would
+    surface as an agent count nobody put there. Autouse, because the file is read by
+    `load_consult_config` rather than passed in, so any test can reach it."""
+    from orchestrator_mcp.consult.config import ConsultConfig
+
+    path = tmp_path / "agents.yaml"
+    monkeypatch.setattr("orchestrator_mcp.consult.managed.DEFAULT_MANAGED_PATH", path)
+    # The pydantic default is bound at class definition, so patching the module name
+    # alone would leave a directly-constructed `ConsultConfig` pointed at the real one.
+    monkeypatch.setattr(ConsultConfig.model_fields["managed_agents_path"], "default", path)
+
+
 @pytest.fixture
 def host_claude(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv(HOST_RUNTIME_ENV, "claude")

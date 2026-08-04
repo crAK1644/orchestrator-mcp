@@ -109,7 +109,8 @@ fast path to a specific answer.
 - [The response envelope](#the-response-envelope) — what every call returns
 - [Error codes](#error-codes) — the closed set callers branch on
 - [Consulting another agent](#consulting-another-agent) — `consult`, and the CLI path
-- [The dashboard](#the-dashboard) — read-only page over stored consultations
+- [The dashboard](#the-dashboard) — local page over stored consultations, and a form for
+  [configuring agents](#configuring-agents-from-the-browser)
 
 **Understanding it**
 - [How It Works](#how-it-works) — why capabilities and not a classifier
@@ -391,11 +392,45 @@ Off by default. `dashboard.enabled: true`, then:
 ORCHESTRATOR_CONFIG=config.yaml orchestrator-mcp-dashboard
 ```
 
-A read-only page over the same SQLite file: agents and their last status check, the last
-200 consultations, and per turn the compiled prompt, the answer, latency, usage, and any
-error. It opens the database `mode=ro`, serves `GET` and nothing else, refuses to bind
-anywhere but loopback, and rejects a request whose `Host` is not one — because what it
-serves is every prompt you have ever sent.
+A page over the same SQLite file: agents and their last status check, the last 200
+consultations, and per turn the compiled prompt, the answer, latency, usage, and any
+error. It opens the database `mode=ro`, refuses to bind anywhere but loopback, and
+rejects a request whose `Host` is not one — because what it serves is every prompt you
+have ever sent.
+
+### Configuring agents from the browser
+
+Writing an agent by hand means knowing that `scores` uses a fixed five-word vocabulary,
+that `reasoning_effort` is codex-only, and that the Codex CLI ships inside ChatGPT.app
+rather than on `PATH`. The form knows all three. Turn it on with a second flag:
+
+```yaml
+consult:
+  dashboard:
+    enabled: true
+    editable: true
+```
+
+Then `http://127.0.0.1:8765/agents` can add, change and delete agents.
+
+**It never edits `config.yaml`.** Agents you add here are written to
+`~/.orchestrator-mcp/agents.yaml` (`managed_agents_path`), so a click cannot reformat
+your config or drop its comments. The two files are merged at boot and everything
+downstream — routing, the config hash, the store — sees one set of agents. An id defined
+in both is a **startup error**, not a merge: a precedence rule is how an edit comes to
+save successfully and do nothing. Agents from `config.yaml` are listed read-only.
+
+The MCP server reads its config once at boot and the dashboard is a separate process, so
+a save takes effect when that server next starts — restart Claude Code. The page says so,
+and it can tell when it matters: every consultation records the config hash that produced
+it, so if the last one ran on a different configuration you get a banner rather than a
+guess.
+
+What a save can do is deliberately small. It validates the agent exactly as boot would,
+checks the command resolves — a `which`, not a subprocess — and writes one file `0600` in
+a `0700` directory, atomically. It never runs a login command, never starts a
+consultation, and never touches anything else in your config. Writes carry a per-process
+token, because loopback is not a boundary a browser respects.
 
 ## System Requirements
 
@@ -598,6 +633,9 @@ Consult path:
 | `session_busy` | Another process holds the lease on that consultation, or one died mid-turn. Leases expire; wait it out or start a new consultation. |
 | `protocol_validation_failed` mentioning a tool or command | The consulted agent tried to act instead of answer. The turn is refused on purpose; the answer it produced alongside is not returned. |
 | Dashboard exits with `dashboard is disabled` | `consult.dashboard.enabled` is `false`. It serves every stored prompt, so it stays off until you say otherwise. |
+| `/agents` answers 403 `Read-only` | `consult.dashboard.editable` is `false`. Viewing and editing are separate opt-ins. |
+| Server refuses to boot: agent defined in both the config and `agents.yaml` | The same id is in `config.yaml` and the dashboard's file. Delete one — the server will not pick, because the copy it ignored would look saved to whoever wrote it. |
+| Saved an agent, `list_consult_agents` does not show it | The MCP server read its config at boot. Restart Claude Code. |
 
 ## Bug Reports
 
