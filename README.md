@@ -1,137 +1,48 @@
 # Orchestrator MCP
 
-Use different AI models and agent subscriptions through one MCP server.
+Use Codex from Claude Code, or Claude Code from Codex, through the subscriptions you already have.
 
 [![PyPI](https://img.shields.io/pypi/v/orchestrator-mcp-server)](https://pypi.org/project/orchestrator-mcp-server/)
 [![Python](https://img.shields.io/pypi/pyversions/orchestrator-mcp-server)](https://pypi.org/project/orchestrator-mcp-server/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Tests](https://github.com/crAK1644/orchestrator-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/crAK1644/orchestrator-mcp/actions/workflows/test.yml)
 
-If you pay for more than one AI service, Orchestrator MCP helps you use each one for what it does best. It routes work automatically, prevents an agent from consulting itself, and keeps a record of every cross-agent consultation.
+If you pay for more than one AI subscription, Orchestrator MCP helps you use each model for what it does best. It runs the installed Codex or Claude Code CLI under your existing login, routes the work automatically, prevents an agent from consulting itself, and keeps a record of every consultation.
 
-It gives your MCP client two equally useful ways to get help:
+**No provider API key is required for this setup.** Authentication stays inside the Codex and Claude Code command-line apps on your computer.
 
-- **Ask a model:** send coding, research, writing, or other work to the model you assigned to that capability.
-- **Consult another agent:** let Claude Code ask Codex, or let Codex ask Claude Code, using the subscriptions already signed in on your computer.
+With Orchestrator MCP, your agent can:
 
-An optional local dashboard lets you review consultations and manage agents.
+- ask another vendor's agent for coding, research, writing, reasoning, or review help;
+- continue a consultation across several turns;
+- choose the best configured agent automatically;
+- review consultation history in a local dashboard.
 
 ## Quick start
 
-### 1. Create a configuration file
-
-Copy [`config.example.yaml`](config.example.yaml) to `config.yaml`, then add your models and API keys.
-
-Here is a small example:
-
-```yaml
-capabilities:
-  coding: "Write, review, and debug code."
-  research: "Research and summarize information."
-
-model_list:
-  - model_name: coding
-    litellm_params:
-      model: anthropic/claude-sonnet-4-5
-      api_key: os.environ/ANTHROPIC_API_KEY
-
-  - model_name: research
-    litellm_params:
-      model: openai/gpt-4o
-      api_key: os.environ/OPENAI_API_KEY
-```
-
-Use environment variable references such as `os.environ/OPENAI_API_KEY`. Do not put real keys in `config.yaml`.
-
-### 2. Install with Homebrew
+### 1. Install with Homebrew
 
 ```bash
 brew tap crAK1644/tap
 brew install orchestrator-mcp-server
 ```
 
-Apple Silicon uses a prebuilt package. Intel macOS and Linux build the dependencies from source, which can take about 15 minutes. On those systems, `uvx` is usually faster.
+Apple Silicon uses a prebuilt package. Intel macOS and Linux build the dependencies from source, which can take about 15 minutes. On those systems, the `uvx` setup shown below is usually faster and does not install the server permanently.
 
-### 3. Add it to your MCP client
+### 2. Sign in to the agent CLIs
 
-For Claude Code:
-
-```bash
-claude mcp add orchestrator \
-  --env ORCHESTRATOR_CONFIG=$PWD/config.yaml \
-  -- orchestrator-mcp-server
-```
-
-For Codex, add this to `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.orchestrator]
-command = "orchestrator-mcp-server"
-env = { ORCHESTRATOR_CONFIG = "/absolute/path/to/config.yaml" }
-```
-
-Restart your MCP client after changing its configuration.
-
-### Install with `uvx` instead
-
-You can run the same server without installing it permanently:
+Sign in to each agent you want Orchestrator to use:
 
 ```bash
-claude mcp add orchestrator \
-  --env ORCHESTRATOR_CONFIG=$PWD/config.yaml \
-  -- uvx orchestrator-mcp-server
+codex login
+claude auth login
 ```
 
-For Codex:
+These commands use the normal Codex and Claude Code account login. Orchestrator only checks whether the CLI is signed in; it does not read or store the login credentials.
 
-```toml
-[mcp_servers.orchestrator]
-command = "uvx"
-args = ["orchestrator-mcp-server"]
-env = { ORCHESTRATOR_CONFIG = "/absolute/path/to/config.yaml" }
-```
+### 3. Create a configuration file
 
-The project is published to PyPI as `orchestrator-mcp-server`. The shorter PyPI name belongs to another project.
-
-## What it does
-
-### Ask the right model
-
-The `ask` tool takes a capability such as `coding` or `research`. Orchestrator MCP sends the request to the model configured for that capability.
-
-The caller chooses the type of work. Orchestrator does not use another model to guess. LiteLLM handles load balancing, retries, cooldowns, and fallbacks between deployments.
-
-Every result uses the same response shape. It includes the answer or error, the model used, whether a fallback was used, token usage, cost when available, and latency.
-
-Available tools:
-
-| Tool | Purpose |
-|---|---|
-| `ask` | Ask a model assigned to a capability. |
-| `list_capabilities` | Show the available capabilities, models, and fallbacks. |
-
-`ask` can also:
-
-- answer only from supplied `context`;
-- return data that matches a JSON Schema;
-- accept extra `system` instructions;
-- limit temperature and output length.
-
-### Consult another agent
-
-The `consult` tool starts the Codex or Claude Code command-line app already installed and signed in on your computer. This lets one agent ask another vendor's agent without needing a second API key.
-
-The consulted agent can answer, but it cannot change files, run commands, use MCP tools, or start subagents. Orchestrator also removes agents that use the same runtime as the caller, which prevents consultation loops.
-
-Available tools:
-
-| Tool | Purpose |
-|---|---|
-| `consult` | Ask a configured Codex or Claude Code agent. |
-| `list_consult_agents` | Show configured agents, scores, and login status. |
-| `get_consultation` | Read a saved consultation, including its turns and routing details. |
-
-To enable these tools, add a `consult` section:
+Create `config.yaml`:
 
 ```yaml
 consult:
@@ -144,13 +55,20 @@ consult:
       model: gpt-5.6-sol
       priority: 10
       web_search: true
-      scores:
-        coding: 95
-        research: 85
-        reasoning: 90
+      scores: { coding: 95, research: 90, reasoning: 95, review: 90 }
+
+    claude:
+      runtime: claude
+      command: claude
+      model: claude-opus-4-6
+      priority: 10
+      web_search: true
+      scores: { coding: 90, research: 95, writing: 95, review: 95 }
 ```
 
-Then tell the server which agent runtime is hosting it.
+The full annotated example is in [`config.example.yaml`](config.example.yaml).
+
+### 4. Add it to your MCP client
 
 For Claude Code:
 
@@ -161,7 +79,7 @@ claude mcp add orchestrator \
   -- orchestrator-mcp-server
 ```
 
-For Codex:
+For Codex, add this to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.orchestrator]
@@ -169,13 +87,61 @@ command = "orchestrator-mcp-server"
 env = { ORCHESTRATOR_CONFIG = "/absolute/path/to/config.yaml", ORCHESTRATOR_HOST_RUNTIME = "codex" }
 ```
 
-`ORCHESTRATOR_HOST_RUNTIME` must be `claude` or `codex`. If you enable `consult` without setting it, the server will not start.
+Restart your MCP client after changing its configuration.
+
+### Install with `uvx` instead
+
+You can run the same server without installing it permanently:
+
+```bash
+claude mcp add orchestrator \
+  --env ORCHESTRATOR_CONFIG=$PWD/config.yaml \
+  --env ORCHESTRATOR_HOST_RUNTIME=claude \
+  -- uvx orchestrator-mcp-server
+```
+
+For Codex:
+
+```toml
+[mcp_servers.orchestrator]
+command = "uvx"
+args = ["orchestrator-mcp-server"]
+env = { ORCHESTRATOR_CONFIG = "/absolute/path/to/config.yaml", ORCHESTRATOR_HOST_RUNTIME = "codex" }
+```
+
+The project is published to PyPI as `orchestrator-mcp-server`. The shorter PyPI name belongs to another project.
+
+## What it does
+
+### Consult another agent
+
+The `consult` tool starts the Codex or Claude Code command-line app already installed and signed in on your computer. Claude Code can ask Codex, and Codex can ask Claude Code, using the subscriptions already connected to those CLIs.
+
+The consulted agent can answer, but it cannot change files, run commands, use MCP tools, or start subagents. Orchestrator also removes agents that use the same runtime as the caller, which prevents consultation loops.
+
+Available tools:
+
+| Tool | Purpose |
+|---|---|
+| `consult` | Ask a configured Codex or Claude Code agent. |
+| `list_consult_agents` | Show configured agents, scores, and login status. |
+| `get_consultation` | Read a saved consultation, including its turns and routing details. |
+
+`ORCHESTRATOR_HOST_RUNTIME` tells Orchestrator which agent is making the request. It must be `claude` or `codex`. The server excludes that runtime from the available targets, so a host can never consult itself.
 
 The first `consult` call returns a `consultation_id`. Send that ID with later calls to continue the same conversation. Without it, every call starts a new conversation.
 
 Consultations support five capabilities: `coding`, `research`, `writing`, `reasoning`, and `review`. Routing is predictable: the highest score wins, then the lowest priority number, then the agent ID. Orchestrator does not silently switch to another agent if the selected one fails.
 
 See [`config.example.yaml`](config.example.yaml) for every consultation option.
+
+### Optional direct model routing
+
+Orchestrator also includes `ask` and `list_capabilities` for routing requests to model deployments through LiteLLM. This is separate from the logged-in Codex and Claude Code consultation flow.
+
+The `ask` tool routes a named capability, such as `coding` or `research`, to the deployment assigned to it. LiteLLM handles load balancing, retries, cooldowns, and fallbacks. A deployment can be a local model or another endpoint already configured for LiteLLM.
+
+You can leave `capabilities` and `model_list` out of `config.yaml` if you only want subscription-based consultations. In that setup, Orchestrator only shows the three consultation tools.
 
 ## Dashboard and consultation history
 
@@ -201,7 +167,6 @@ Open [http://127.0.0.1:8765](http://127.0.0.1:8765). The dashboard only listens 
 To add and edit agents from the browser, set `editable: true` and open `/agents`. Browser-managed agents are stored in `~/.orchestrator-mcp/agents.yaml`; the dashboard never rewrites `config.yaml` and never runs login commands. Restart the MCP server after saving an agent.
 
 By default, consultation prompts and answers are saved in SQLite. Set `store_full_content: false` to save only metadata and routing information.
-
 ## Configuration
 
 `ORCHESTRATOR_CONFIG` points to the configuration file. If it is not set, the server looks for `config.yaml` in its working directory.
@@ -210,11 +175,11 @@ Important sections:
 
 | Section | Purpose |
 |---|---|
+| `consult` | Configures logged-in CLI agents, history, and the dashboard. |
 | `capabilities` | Names and explains the work types available to `ask`. |
 | `model_list` | Connects each capability to one or more LiteLLM models. |
 | `router_settings` | Controls retries, cooldowns, and fallbacks. |
 | `limits` | Sets request size, output, repair, and timeout limits. |
-| `consult` | Configures CLI agents, history, and the dashboard. |
 
 Several deployments may use the same capability name. LiteLLM will balance requests between them.
 
@@ -243,7 +208,7 @@ It does enforce these rules:
 - Unknown capabilities and oversized requests are rejected before contacting a provider.
 - Structured replies are checked locally against your JSON Schema.
 - Truncated, filtered, malformed, and failed answers are returned as errors, not partial answers.
-- Errors use stable codes such as `auth_failed`, `timeout`, and `output_truncated`.
+- Errors use stable codes such as `connection_required`, `timeout`, and `session_busy`.
 - The response always identifies the model and whether a fallback was used.
 - Consulted agents run in answer-only mode and may not act on your computer.
 - A consulted agent cannot route work back to the same agent runtime.
@@ -260,8 +225,8 @@ Important limits:
 - Python 3.11, 3.12, or 3.13
 - Homebrew or [`uv`](https://docs.astral.sh/uv/)
 - An MCP client that supports stdio, such as Claude Code or Codex
-- For `ask`: provider credentials or a local LiteLLM-compatible model endpoint
-- For `consult`: the Codex or Claude Code CLI installed and signed in
+- The Codex or Claude Code CLI installed and signed in
+- For optional direct routing: a model endpoint configured through LiteLLM
 
 ## Testing
 
@@ -272,7 +237,7 @@ uv sync
 uv run pytest -q
 ```
 
-The tests use fake providers and CLI agents. They do not need API keys or spend money.
+The tests use fake providers and CLI agents. They do not need a network connection or spend money.
 
 To test your real model configuration:
 
@@ -286,14 +251,13 @@ To test real Codex and Claude Code consultations:
 ORCHESTRATOR_HOST_RUNTIME=claude uv run python smoke_consult_live.py
 ```
 
-The smoke tests make real requests and may use paid API or subscription capacity. Do not run them in CI unless that is intentional.
+The smoke tests make real requests and may use paid capacity from your configured services. Do not run them in CI unless that is intentional.
 
 ## Troubleshooting
 
 | Problem | What to do |
 |---|---|
 | `config not found: config.yaml` | Set `ORCHESTRATOR_CONFIG` to an absolute path. MCP clients may start the server from a different directory. |
-| `auth_failed` works in a terminal but not in the client | Add the provider key to the MCP client's environment. The client does not always inherit your shell. |
 | Startup names a missing capability | Make sure every capability has a deployment and every fallback names a real capability. |
 | `no_deployment` | All deployments are unavailable or cooling down. Check the provider and `cooldown_time`. |
 | `output_truncated` | Raise `max_output_tokens`. |
@@ -308,7 +272,7 @@ The smoke tests make real requests and may use paid API or subscription capacity
 
 ## Bug reports
 
-[Open an issue](https://github.com/crAK1644/orchestrator-mcp/issues) and include the returned response envelope. Remove API keys and other secrets from your configuration before attaching it.
+[Open an issue](https://github.com/crAK1644/orchestrator-mcp/issues) and include the returned response envelope. Remove paths, credentials, and other private information before attaching your configuration.
 
 For routing or retry problems, a LiteLLM debug log is useful:
 
@@ -325,7 +289,7 @@ Issues and pull requests are welcome.
 3. Run `uv run pytest -q`.
 4. Open a pull request.
 
-Keep `config.yaml`, API keys, and consultation databases out of commits.
+Keep private configuration, login data, and consultation databases out of commits.
 
 ### Releasing
 
