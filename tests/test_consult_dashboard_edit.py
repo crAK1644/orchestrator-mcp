@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from orchestrator_mcp.consult.config import load_consult_config
+from orchestrator_mcp.contract import ConfigError
 
 from .conftest import agent, base_config, consult_block
 from .test_consult_dashboard import config, consult, serve  # noqa: F401 -- fixtures
@@ -496,6 +497,26 @@ async def test_an_entry_that_spells_out_its_own_agent_id_is_not_refused(serve, e
     assert status == 303, "and saving alongside it is not a conflict"
     assert location == "/agents?saved=codex-luna"
     assert sorted(written(editable.path)) == ["alpha", "codex-luna"]
+
+
+async def test_an_agent_id_of_the_wrong_type_is_refused_rather_than_dropped(serve, editable):  # noqa: F811
+    """The entry's own `agent_id` is dropped before validating, because a boot accepts it
+    and overwrites it from the key. A boot does not accept *any* type for it, so dropping
+    it unexamined waved through the one file this check exists to catch."""
+    get, _ = serve(editable())
+    editable.path.parent.mkdir(parents=True)
+    editable.path.write_text(
+        yaml.safe_dump({"agents": {"alpha": agent("codex", "m") | {"agent_id": []}}})
+    )
+    before = editable.path.read_bytes()
+
+    status, body, _ = get.post("/agents", form(_token=get.token))
+    assert status == 409
+    assert "not text" in body
+    assert editable.path.read_bytes() == before
+
+    with pytest.raises(ConfigError):
+        editable()  # the boot this was predicting does refuse it
 
 
 async def test_an_id_in_both_files_blocks_the_write_before_the_next_boot_refuses_it(

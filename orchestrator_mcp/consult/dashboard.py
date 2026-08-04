@@ -354,7 +354,7 @@ class ConsultDashboard:
                 aid: AgentConfig(agent_id=aid, managed=True, **_settings(data))
                 for aid, data in on_disk.items()
             }
-        except (ConfigError, ValidationError, TypeError, OSError, UnicodeDecodeError):
+        except (ConfigError, ValidationError, TypeError, OSError):
             # A hand-edit can put anything in that file. Falling back to what booted
             # keeps the page readable; the file itself is what the next server start
             # refuses on, and it says why in far more detail than a table cell could.
@@ -389,10 +389,7 @@ class ConsultDashboard:
         with self._writing:
             try:
                 agents = read_managed(self.config.managed_agents_path)
-            # A decode error is not an `OSError`: bytes that are not text read fine and
-            # fail at the last step, which is a hand-edit in the wrong encoding and
-            # exactly the case this exists to answer.
-            except (ConfigError, OSError, UnicodeDecodeError) as exc:
+            except (ConfigError, OSError) as exc:
                 return HTTPStatus.CONFLICT, str(exc)
             refusal = change(agents)
             if refusal is not None:
@@ -416,12 +413,19 @@ class ConsultDashboard:
             return None
 
     def _unbootable(self, agents: dict[str, Any]) -> str | None:
-        """Why the next server start would refuse this mapping, or None if it would not.
+        """Why a server start would refuse this mapping, or None if it would not.
 
         The rules a boot applies -- a text id that is not blank, no id also in
         `config.yaml`, and an entry `AgentConfig` accepts -- checked here so that
         neither a page nor a save has to assume the file only ever held what this form
         put in it.
+
+        The `config.yaml` half is the copy this process booted on, which is the only one
+        it has: re-reading that file means re-running the merge, and the merge raises
+        rather than returns. So an operator who edits `config.yaml` underneath a running
+        dashboard gets an answer about the configuration it started with -- which is also
+        the one the running MCP server is on, and the restart banner is what says when
+        those have parted company.
         """
         written = {aid for aid, a in self.config.agents.items() if not a.managed}
         # Sorted by the *string* of the key: a file holding both `1:` and `alpha:` has
@@ -435,11 +439,19 @@ class ConsultDashboard:
                 )
             if agent_id in written:
                 return (
-                    f"`{agent_id}` is defined in config.yaml as well as in this file, and "
-                    "the server refuses to start with both. Delete one of the two."
+                    f"`{agent_id}` was in config.yaml when this dashboard started, and a "
+                    "server refuses to boot with the same agent in both files. Delete one "
+                    "of the two -- and if you already deleted it from config.yaml, restart "
+                    "this dashboard so it can see that."
                 )
             if not isinstance(data, dict):
                 return f"`{agent_id}` in this file is not a mapping of settings."
+            if not isinstance(data.get("agent_id", ""), str):
+                # `_settings` drops this field before validating, because a boot accepts
+                # it and overwrites it from the key. What a boot does *not* do is accept
+                # any type for it, so dropping it without looking would wave through the
+                # one entry this method exists to catch.
+                return f"`{agent_id}` in this file has an `agent_id` that is not text."
             try:
                 AgentConfig(agent_id=agent_id, **_settings(data))
             except ValidationError as exc:
@@ -909,9 +921,19 @@ class _Handler(BaseHTTPRequestHandler):
         if host.startswith("["):
             # `[::1]:8765` -- the brackets are there precisely so the port colon can be
             # told apart from the address's own, and `rsplit` cannot.
-            host = host.partition("]")[0] + "]"
+            address, closed, rest = host.partition("]")
+            if not closed or (rest and not rest.startswith(":")):
+                return False
+            host, port = address + "]", rest[1:]
         elif host.count(":") == 1:
-            host = host.rsplit(":", 1)[0]
+            host, _, port = host.partition(":")
+        else:
+            port = ""
+        # Everything after the address used to be discarded, so `[::1]garbage` and
+        # `[::1]:evil` were both read as `[::1]` and allowed. A port is digits or it is
+        # not a port, and a host that spells itself that way is not one of ours.
+        if port and not port.isdigit():
+            return False
         return host in ALLOWED_HOSTS
 
     def _origin_allowed(self) -> bool:
