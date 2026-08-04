@@ -263,6 +263,10 @@ async def test_a_foreign_host_header_is_refused(serve):
         pytest.param("::1", True, id="v6 unbracketed"),
         pytest.param("evil.example.com:8765", False, id="a name that resolves here"),
         pytest.param("[::ffff:127.0.0.1]", False, id="v6 spelling of a v4 address"),
+        # Everything after the bracket was discarded, so these read as `[::1]`.
+        pytest.param("[::1]garbage", False, id="v6 with something after the bracket"),
+        pytest.param("[::1]:evil", False, id="v6 with a port that is not a number"),
+        pytest.param("127.0.0.1:evil", False, id="a port that is not a number"),
     ],
 )
 async def test_the_host_header_is_read_the_way_a_host_header_is_written(serve, host, allowed):

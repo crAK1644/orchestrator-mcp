@@ -80,6 +80,12 @@ def test_a_malformed_managed_file_refuses_to_boot(tmp_path):
     with pytest.raises(ConfigError, match="valid YAML"):
         load_consult_config(base_config() | {"consult": consult_block(managed_agents_path=str(path))})
 
+    # A decode error is not an `OSError` and not a YAML one: the bytes reach `read_text`
+    # and fail there, which used to end a boot with a raw traceback naming no file.
+    path.write_bytes(b"\xff\xfe agents:")
+    with pytest.raises(ConfigError, match="cannot be read"):
+        load_consult_config(base_config() | {"consult": consult_block(managed_agents_path=str(path))})
+
 
 def test_an_invalid_managed_agent_refuses_to_boot_like_any_other(managed):
     """Merged before validation, so the managed file gets the same scrutiny rather

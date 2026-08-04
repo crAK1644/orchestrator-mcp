@@ -55,9 +55,11 @@ def read_managed(path: Path) -> dict[str, Any]:
 
     try:
         document = yaml.safe_load(path.read_text()) or {}
-    except OSError as exc:
-        # A directory, or a file this user cannot open. Both are configuration
-        # mistakes, and both arrive here as an `OSError` nothing upstream expects.
+    except (OSError, UnicodeDecodeError) as exc:
+        # A directory, a file this user cannot open, or bytes that are not text. All
+        # three are configuration mistakes, and converting them here rather than in each
+        # caller is what makes them one: `load_consult_config` turns a `ConfigError`
+        # into a refusal to boot that names the file, and lets anything else out raw.
         raise ConfigError(f"{path} cannot be read: {exc}") from exc
     except yaml.YAMLError as exc:
         raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
