@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..config import AgentConfig, ConsultConfig
+from .antigravity_cli import AntigravityCliAdapter
 from .base import AdapterError, AdapterResult, AgentStatus, ConsultAdapter
 from .claude_cli import ClaudeCliAdapter
 from .codex_cli import CodexCliAdapter
@@ -12,6 +13,7 @@ __all__ = [
     "AdapterError",
     "AdapterResult",
     "AgentStatus",
+    "AntigravityCliAdapter",
     "ClaudeCliAdapter",
     "CodexCliAdapter",
     "ConsultAdapter",
@@ -27,6 +29,8 @@ def adapter_for(agent: AgentConfig, config: ConsultConfig) -> ConsultAdapter:
         return ClaudeCliAdapter(config.timeout_s, config.web_turn_limit)
     if agent.runtime == "codex":
         return CodexCliAdapter(config.timeout_s)
+    if agent.runtime == "antigravity":
+        return AntigravityCliAdapter(config.timeout_s)
     raise AdapterError(
         ConsultErrorCode.AGENT_UNAVAILABLE,
         f"no adapter is implemented for runtime `{agent.runtime}`",

@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 STUB = '''#!/usr/bin/env python3
-import json, sys, time
+import json, os, sys, time
 from pathlib import Path
 
 SPEC = json.loads({spec!r})
@@ -26,7 +26,9 @@ index = len([c for c in previous if not json.loads(c.read_text())["auth"]])
 
 stdin = "" if sys.stdin.isatty() else sys.stdin.read()
 (RECORD / ("call-%03d.json" % len(previous))).write_text(
-    json.dumps({{"argv": args, "stdin": stdin, "auth": auth}})
+    # The environment as the child actually received it, so a test can assert what
+    # did *not* travel -- which is not observable from this process.
+    json.dumps({{"argv": args, "stdin": stdin, "auth": auth, "env": dict(os.environ)}})
 )
 
 if auth:
