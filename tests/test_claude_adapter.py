@@ -321,6 +321,23 @@ def test_a_runtime_picks_its_own_adapter():
         assert adapter_for(agent_config, config).runtime == agent_config.runtime
 
 
+def test_a_runtime_with_no_adapter_is_refused_rather_than_routed_to_codex():
+    """`adapter_for` used to end in `return CodexCliAdapter(...)`, so a runtime added to
+    the contract before its adapter exists would be consulted through the wrong CLI --
+    wrong model, wrong flags, and an answer plausible enough to be believed."""
+    from orchestrator_mcp.consult.adapters import adapter_for
+    from orchestrator_mcp.consult.config import AgentConfig, ConsultConfig
+
+    from .conftest import consult_block
+
+    config = ConsultConfig(**consult_block())
+    agent_config = AgentConfig(runtime="antigravity", command="agy", model="gemini-3.1-pro-high")
+    with pytest.raises(AdapterError) as exc:
+        adapter_for(agent_config, config)
+    assert exc.value.code is ConsultErrorCode.AGENT_UNAVAILABLE
+    assert "antigravity" in str(exc.value)
+
+
 async def test_a_web_run_that_never_answers_is_a_transport_error(tmp_path, monkeypatch, adapter):
     agent_stub.install(
         "claude", tmp_path, monkeypatch,

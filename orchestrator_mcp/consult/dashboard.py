@@ -46,7 +46,7 @@ from .adapters import adapter_for
 from .adapters.base import AdapterError, resolve_command
 from .adapters.codex_cli import rate_limit as codex_rate_limit
 from .config import AgentConfig, ConsultConfig, load_consult_config
-from .contract import Capability
+from .contract import Capability, Runtime
 from .managed import read_managed, write_managed
 
 CAPABILITIES = get_args(Capability)
@@ -689,10 +689,12 @@ class ConsultDashboard:
             f"{' selected' if v.get('reasoning_effort') == level else ''}>{_e(level)}</option>"
             for level in EFFORTS
         )
+        # Derived from the type rather than retyped here, so a new runtime cannot be
+        # added to the contract and silently stay unofferable in the form.
         runtimes = "".join(
             f"<option value='{_e(runtime)}'"
             f"{' selected' if v.get('runtime') == runtime else ''}>{_e(runtime)}</option>"
-            for runtime in ("codex", "claude")
+            for runtime in get_args(Runtime)
         )
 
         return _document(
@@ -715,7 +717,8 @@ class ConsultDashboard:
             f"<label><span>model</span><input type=text name=model required "
             f"value='{_e(v.get('model', ''))}'></label>"
             "<label><span>reasoning effort &mdash; codex only; unset means the model's "
-            "own default, which is not what your ~/.codex/config.toml says</span>"
+            "own default, which is not what your ~/.codex/config.toml says. Antigravity "
+            "carries the level in the model slug instead</span>"
             f"<select name=reasoning_effort><option value=''>unset</option>{efforts}</select></label>"
             f"<label><span>priority &mdash; lower wins a tie</span>"
             f"<input type=number name=priority min=0 value='{_e(v.get('priority', '100'))}'></label>"
