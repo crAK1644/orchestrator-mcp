@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from orchestrator_mcp.consult.adapters import antigravity_cli
 from orchestrator_mcp.consult.adapters.antigravity_cli import (
     MAX_ARG_BYTES,
     AntigravityCliAdapter,
@@ -437,6 +438,160 @@ async def test_an_authentication_failure_is_reported_without_quoting_it(
     assert "ya29.A0eXAMPLE" not in str(exc.value)
     assert exc.value.required_action is not None
     assert exc.value.required_action.command == "agy"
+
+
+async def test_a_transcript_that_carries_a_credential_is_not_the_part_that_is_kept(
+    tmp_path, monkeypatch, adapter
+):
+    """`raw_output` is stored and rendered in the dashboard, and the paths that drop this
+    runtime's text are the failing ones -- so a *successful* run that printed a
+    credential would file one. The answer survives; the transcript does not."""
+    agent_stub.install(
+        "agy", tmp_path, monkeypatch,
+        runs=[{"stdout": transcript() + jsonl(
+            {"event": "notice", "text": "refreshed ya29.A0eXAMPLEtokenvalue1234"})}],
+    )
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert result.content.answer == "blue"
+    assert "ya29" not in result.raw_output
+
+
+async def test_a_consultation_about_authentication_keeps_its_transcript(
+    tmp_path, monkeypatch, adapter
+):
+    """Matched on the shape of a credential, not on the vocabulary of one. Withholding
+    every transcript that says `oauth` would lose them for exactly the consultations
+    most worth reading back."""
+    agent_stub.install(
+        "agy", tmp_path, monkeypatch,
+        runs=[{"stdout": transcript(response="Your OAuth credential is unauthorized "
+                                             "because the refresh grant expired.")}],
+    )
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert "OAuth credential" in result.raw_output
+
+
+async def test_a_fragment_answered_instead_of_acknowledged_stops_the_consultation(
+    tmp_path, monkeypatch, adapter
+):
+    """The fragment asks for exactly `ACK n`. A model that replies with anything else
+    did not do what the part told it to, and the reassembly the final turn performs
+    would be built on a message with a hole in it."""
+    agent_stub.install(
+        "agy", tmp_path, monkeypatch,
+        runs=[{"stdout": jsonl(init(), result_event(
+            response="Sure, I'll wait for the rest.", structured_output=None))}],
+    )
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), big_prompt(), SourceMode.MODEL)
+    assert exc.value.code is ConsultErrorCode.PROTOCOL_VALIDATION_FAILED
+    assert "part 1" in str(exc.value)
+
+
+async def test_a_chunked_run_stops_the_moment_it_has_no_conversation_to_continue(
+    tmp_path, monkeypatch, adapter
+):
+    """Checked after every turn rather than once at the end. Without an id the next
+    fragment starts a *new* conversation, and a later turn finally naming one would
+    satisfy an end-of-run check with a conversation the first fragments never reached."""
+    orphan = jsonl(
+        {"event": "init", "init": {"model": MODEL}},
+        {"event": "result", "result": {"status": "SUCCESS", "response": "ACK 1"}},
+    )
+    record = agent_stub.install(
+        "agy", tmp_path, monkeypatch, runs=[{"stdout": orphan}, {"stdout": ack(2)}]
+    )
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), big_prompt(), SourceMode.MODEL)
+
+    assert exc.value.code is ConsultErrorCode.TRANSPORT_ERROR
+    # And it stopped there, rather than delivering the rest somewhere else first.
+    assert len(agent_stub.calls(record)) == 1
+
+
+async def test_a_failure_whose_text_merely_contains_401_keeps_its_diagnostic(
+    tmp_path, monkeypatch, adapter
+):
+    """The digits appear in byte counts and job numbers. Reading those as a login
+    failure would swap a real diagnostic for a sign-in prompt that fixes nothing."""
+    agent_stub.install(
+        "agy", tmp_path, monkeypatch,
+        runs=[{"stdout": jsonl(result_event(
+            status="ERROR", response="", structured_output=None,
+            error="run 4012 exceeded the context window",
+        )), "returncode": 1}],
+    )
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert exc.value.code is ConsultErrorCode.AGENT_UNAVAILABLE
+    assert "context window" in str(exc.value)
+
+
+async def test_a_credential_further_in_than_the_quoted_excerpt_is_still_redacted(
+    tmp_path, monkeypatch, adapter
+):
+    """The word that identifies the failure and the credential need not be near each
+    other, so the scan runs on the whole of both streams and the truncation happens
+    only for the message that is allowed to be recorded."""
+    agent_stub.install(
+        "agy", tmp_path, monkeypatch,
+        runs=[{"stderr": "starting\n" + "trace line\n" * 60
+                         + "unauthorized: ya29.A0eXAMPLE was rejected", "returncode": 1}],
+    )
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert exc.value.code is ConsultErrorCode.CONNECTION_REQUIRED
+    assert "ya29.A0eXAMPLE" not in str(exc.value)
+
+
+async def test_token_counts_that_are_not_numbers_do_not_lose_the_answer(
+    tmp_path, monkeypatch, adapter
+):
+    """Usage is reporting. An answer that arrived and validated must not be thrown away
+    because the runtime wrote `N/A` where a count belonged."""
+    agent_stub.install(
+        "agy", tmp_path, monkeypatch,
+        runs=[{"stdout": transcript(usage={"input_tokens": "N/A", "output_tokens": None,
+                                           "total_tokens": ["?"]})}],
+    )
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert result.content.answer == "blue"
+    assert result.usage.total_tokens == 0
+
+
+async def test_a_login_failure_before_any_protocol_event_is_also_not_quoted(
+    tmp_path, monkeypatch, adapter
+):
+    """The other path to the same rule. A CLI that cannot authenticate at all never gets
+    as far as emitting a `result`, so it complains on stderr and exits -- and that text
+    would otherwise be recorded verbatim as a transport error."""
+    agent_stub.install(
+        "agy", tmp_path, monkeypatch,
+        runs=[{"stderr": "Error: not logged in (cached credential ya29.A0eXAMPLE is "
+                         "expired). Run `agy` to sign in.", "returncode": 1}],
+    )
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert exc.value.code is ConsultErrorCode.CONNECTION_REQUIRED
+    assert "ya29.A0eXAMPLE" not in str(exc.value)
+    assert exc.value.required_action is not None
+    assert exc.value.required_action.command == "agy"
+
+
+async def test_the_raw_transcript_of_a_chunked_run_is_bounded(tmp_path, monkeypatch, adapter):
+    """`base.MAX_OUTPUT_BYTES` bounds one child, which is the whole run everywhere else
+    here. This one spawns a child per fragment, so their sum needs a ceiling of its own
+    or the transcript held and then stored is that cap times the fragment count."""
+    monkeypatch.setattr(antigravity_cli, "MAX_RAW_CHARS", 200)
+    agent_stub.install(
+        "agy", tmp_path, monkeypatch,
+        runs=[{"stdout": ack(1)}, {"stdout": ack(2)}, {"stdout": ack(3)},
+              {"stdout": transcript()}],
+    )
+    result = await adapter.start(agent(), big_prompt(), SourceMode.MODEL)
+    assert len(result.raw_output) == 200
 
 
 async def test_a_substituted_model_is_refused(tmp_path, monkeypatch, adapter):

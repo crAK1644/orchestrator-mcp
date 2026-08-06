@@ -29,6 +29,8 @@ stderr -- so nothing here reads `stderr` to decide an outcome.
 from __future__ import annotations
 
 import json
+import math
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -90,8 +92,28 @@ AUTH_MARKERS = (
     "reauthenticate",
     "credential",
     "oauth",
-    "401",
+    "invalid_grant",
+    "invalid_token",
 )
+
+# The HTTP status, bounded so an unrelated number containing those digits -- `job 4012`,
+# a byte count -- does not turn an ordinary failure into a login prompt and take its
+# diagnostic away.
+AUTH_STATUS = re.compile(r"\b401\b")
+
+# The shapes a Google credential actually takes: an access token, a refresh token, and a
+# JWT. The raw transcript is stored and shown in the dashboard, and the paths that drop
+# this runtime's text are the failing ones -- so a successful run that happened to print
+# a credential would file one. Matched on shape rather than on `AUTH_MARKERS`, which
+# would withhold the transcript of any consultation whose *subject* was authentication.
+CREDENTIAL_SHAPES = re.compile(r"ya29\.[\w-]{10,}|\b1//[\w-]{20,}|\beyJ[\w-]{8,}\.[\w-]{8,}")
+WITHHELD = "<transcript withheld: it contains something shaped like a credential>"
+
+# `MAX_OUTPUT_BYTES` in `base` bounds one child, which is the whole run for every other
+# adapter here. A chunked consultation runs up to a dozen, so without a ceiling of its
+# own the raw transcript held in memory -- and then stored -- is that cap times the
+# number of fragments.
+MAX_RAW_CHARS = 4_000_000
 
 
 class AntigravityCliAdapter:
@@ -184,7 +206,7 @@ class AntigravityCliAdapter:
             raw: list[str] = []
             envelope: dict = {}
 
-            for text, answering in _turns(prompt.full_text):
+            for index, (text, answering) in enumerate(_turns(prompt.full_text), start=1):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise AdapterError(
@@ -202,10 +224,11 @@ class AntigravityCliAdapter:
                     # Stops slash and skill expansion, so nothing in a task or a
                     # document can invoke one by starting a line with `/`.
                     "--disable-slash-commands",
-                    # The CLI's own bound, kept under ours so it cannot outlive the
-                    # deadline. `asyncio.timeout` stays authoritative.
+                    # The CLI's own bound. Rounded up, not down: truncating 1.9s to 1s
+                    # would have the child give up on work still inside our deadline.
+                    # `asyncio.timeout` stays the authoritative one either way.
                     "--print-timeout",
-                    f"{max(1, int(remaining))}s",
+                    f"{max(1, math.ceil(remaining))}s",
                 ]
                 # Never `--effort`: every model slug this runtime offers already carries
                 # its reasoning level, and passing both is a hard error from the CLI.
@@ -218,9 +241,10 @@ class AntigravityCliAdapter:
                 argv += ["-p", text]
 
                 events, result = await self._turn(argv, remaining, scratch)
-                raw.append(result.stdout)
+                if (spent := sum(map(len, raw))) < MAX_RAW_CHARS:
+                    raw.append(result.stdout[: MAX_RAW_CHARS - spent])
 
-                envelope = _result_event(events, result)
+                envelope = _result_event(agent, events, result)
                 _check_status(agent, envelope, result)
 
                 reported = _reported_model(events) or reported
@@ -230,15 +254,25 @@ class AntigravityCliAdapter:
                 check_model(agent, reported)
 
                 conversation = _conversation_id(events, envelope) or conversation
+                if not conversation:
+                    # After every turn, not once at the end: without an id the next
+                    # fragment starts a *new* conversation, and a later turn finally
+                    # naming one would leave the end-of-run check satisfied by a
+                    # conversation the earlier fragments were never delivered to.
+                    raise AdapterError(
+                        ConsultErrorCode.TRANSPORT_ERROR,
+                        "the agent returned no conversation id to resume",
+                    )
                 usage = _add(usage, _usage(envelope))
 
-                if not answering and not str(envelope.get("response") or "").strip():
-                    # A fragment turn is supposed to acknowledge. Silence here is what
-                    # an auto-denied tool call looks like -- exit 0, SUCCESS, empty --
-                    # and continuing would build an answer on a part that never landed.
+                if not answering and f"ACK {index}" not in str(envelope.get("response") or ""):
+                    # The fragment asked for exactly `ACK {index}`. Anything else -- an
+                    # empty response, which is what an auto-denied tool call looks like,
+                    # or an answer arriving early -- means this part was not stored, and
+                    # the reassembly would be built on a message with a hole in it.
                     raise AdapterError(
                         ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
-                        "the agent acknowledged none of a fragment of the prompt, so the "
+                        f"the agent did not acknowledge part {index} of the prompt, so the "
                         "consultation it would answer is incomplete",
                     )
 
@@ -252,11 +286,7 @@ class AntigravityCliAdapter:
                 f"the agent returned no structured output (status "
                 f"{str(envelope.get('status'))[:40]!r}), so there is no answer to record",
             )
-        if not conversation:
-            raise AdapterError(
-                ConsultErrorCode.TRANSPORT_ERROR, "the agent returned no conversation id to resume"
-            )
-
+        transcript = "".join(raw)
         return AdapterResult(
             content=parse_content(
                 structured if isinstance(structured, str) else json.dumps(structured)
@@ -264,7 +294,9 @@ class AntigravityCliAdapter:
             native_session_id=conversation,
             model_used=check_model(agent, reported),
             model_verified=reported is not None,
-            raw_output="".join(raw),
+            # The answer is kept and the transcript is not: the transcript exists to
+            # explain a run afterwards, which is not worth filing a credential for.
+            raw_output=WITHHELD if CREDENTIAL_SHAPES.search(transcript) else transcript,
             usage=usage,
         )
 
@@ -357,21 +389,50 @@ def _check_event(event: dict) -> None:
         return
     if str(step.get("step_type", "")).lower() == "tool":
         name = step.get("tool_name")
+        # Bounded: it is named by the runtime, not chosen from a vocabulary we control.
+        named = name.strip()[:60] if isinstance(name, str) and name.strip() else "<unnamed>"
         raise AdapterError(
             ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
-            "the agent tried to act rather than answer (tool "
-            f"`{name if isinstance(name, str) and name else '<unnamed>'}`)",
+            f"the agent tried to act rather than answer (tool `{named}`)",
         )
 
 
-def _result_event(events: list[dict], result: ProcessResult) -> dict:
+def _result_event(agent: AgentConfig, events: list[dict], result: ProcessResult) -> dict:
     for event in reversed(events):
         if event.get("event") == "result" and isinstance(event.get("result"), dict):
             return event["result"]
-    detail = (result.stdout or result.stderr).strip()[:400]
+    # The same rule `_check_status` applies, applied on the path that never reaches it:
+    # a CLI that cannot authenticate before it emits any protocol event writes its
+    # complaint here instead, and that complaint is exactly where a credential would
+    # appear. Both streams and neither truncated, because the marker and the credential
+    # need not be in the same one or within the first 400 characters of it.
+    if _is_auth(result.stdout, result.stderr):
+        raise _not_authenticated(agent)
     raise AdapterError(
         ConsultErrorCode.TRANSPORT_ERROR,
-        f"the agent produced no result event (exit {result.returncode}): {detail}",
+        f"the agent produced no result event (exit {result.returncode}): "
+        f"{(result.stdout or result.stderr).strip()[:400]}",
+    )
+
+
+def _is_auth(*messages: str) -> bool:
+    """Whether any of this text is the runtime complaining about a login.
+
+    Given every candidate string in full and before any truncation: a message trimmed
+    to its first 400 characters can drop the word that identifies it as a credential
+    error while keeping the credential.
+    """
+    lowered = "\n".join(messages).lower()
+    return bool(AUTH_STATUS.search(lowered)) or any(marker in lowered for marker in AUTH_MARKERS)
+
+
+def _not_authenticated(agent: AgentConfig) -> AdapterError:
+    return AdapterError(
+        ConsultErrorCode.CONNECTION_REQUIRED,
+        f"agent `{agent.agent_id}` is not authenticated. The runtime's own message is "
+        "not recorded, because a credential error is the one place a credential can "
+        "appear in it",
+        RequiredAction(command=agent.command),
     )
 
 
@@ -383,23 +444,20 @@ def _check_status(agent: AgentConfig, envelope: dict, result: ProcessResult) -> 
     text that came from a failed login is the one place a fragment of one could arrive
     and be stored verbatim alongside every other consultation.
     """
-    status = str(envelope.get("status") or "").upper()
-    if status == "SUCCESS" and result.returncode == 0:
+    status = str(envelope.get("status") or "")
+    if status.upper() == "SUCCESS" and result.returncode == 0:
         return
 
     message = str(envelope.get("error") or envelope.get("response") or "")
-    if any(marker in message.lower() for marker in AUTH_MARKERS):
-        raise AdapterError(
-            ConsultErrorCode.CONNECTION_REQUIRED,
-            f"agent `{agent.agent_id}` is not authenticated. The runtime's own message is "
-            "not recorded, because a credential error is the one place a credential can "
-            "appear in it",
-            RequiredAction(command=f"{agent.command}"),
-        )
+    # `status` is scanned and bounded like the message is. It is a field this runtime
+    # fills, not one we chose the vocabulary of, so it can carry a sentence -- and a
+    # sentence about a failed login can carry what failed to authenticate.
+    if _is_auth(status, message):
+        raise _not_authenticated(agent)
     raise AdapterError(
         ConsultErrorCode.AGENT_UNAVAILABLE,
-        f"the agent reported {status or 'no status'} (exit {result.returncode}): "
-        f"{message.strip()[:400]}",
+        f"the agent reported {status.strip()[:40].upper() or 'no status'} "
+        f"(exit {result.returncode}): {message.strip()[:400]}",
     )
 
 
@@ -425,17 +483,29 @@ def _reported_model(events: list[dict]) -> str | None:
     return None
 
 
+def _count(value: Any) -> int:
+    """A token count from a field this runtime fills, or nothing.
+
+    Never an exception: usage is reporting, and a `"N/A"` where a number was expected
+    must not be what loses an answer that already arrived and validated.
+    """
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _usage(envelope: dict) -> Usage:
     raw: Any = envelope.get("usage")
     raw = raw if isinstance(raw, dict) else {}
-    prompt_tokens = int(raw.get("input_tokens") or 0)
+    prompt_tokens = _count(raw.get("input_tokens"))
     # Thinking is generated and billed, so it belongs on the completion side rather
     # than in a field this envelope does not have.
-    completion_tokens = int(raw.get("output_tokens") or 0) + int(raw.get("thinking_tokens") or 0)
+    completion_tokens = _count(raw.get("output_tokens")) + _count(raw.get("thinking_tokens"))
     return Usage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        total_tokens=int(raw.get("total_tokens") or 0) or prompt_tokens + completion_tokens,
+        total_tokens=_count(raw.get("total_tokens")) or prompt_tokens + completion_tokens,
         # No cost anywhere in this runtime's output, and no quota surface either.
     )
 
