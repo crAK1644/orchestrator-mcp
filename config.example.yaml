@@ -65,17 +65,18 @@ limits:
 # --- consult: the second path, optional ------------------------------------
 #
 # Everything above routes to a *model* over HTTP. This block routes to an *agent
-# runtime* -- a Codex or Claude Code CLI installed on this machine, running under
-# its own account -- so Claude Code can consult GPT and Codex can consult Claude
-# without either one holding the other's API key.
+# runtime* -- a Codex, Claude Code, or Antigravity CLI installed on this machine,
+# running under its own account -- so Claude Code can consult GPT and Codex can
+# consult Claude without either one holding the other's API key.
 #
 # Delete the whole block and the server is exactly what it was: `ask` and
 # `list_capabilities`, nothing else advertised.
 #
 # One environment variable is required alongside it: ORCHESTRATOR_HOST_RUNTIME,
-# set to `codex` or `claude` to say which runtime this installation *is*. It is
-# never a tool argument, because an agent that could name the host runtime could
-# route the work straight back to itself. Missing it is a startup error.
+# set to `codex`, `claude`, or `antigravity` to say which runtime this installation
+# *is*. It is never a tool argument, because an agent that could name the host
+# runtime could route the work straight back to itself. Missing it is a startup
+# error.
 #
 # consult:
 #   # Every prompt and every answer is stored here verbatim. Directory 0700, file
@@ -120,6 +121,20 @@ limits:
 #       scores:
 #         writing: 95
 #         review: 90
+#
+#     gemini-reviewer:        # experimental; see docs/antigravity-spike.md
+#       runtime: antigravity
+#       command: agy          # installs to ~/.local/bin/agy, which is often not on
+#                             # PATH for a server started by a desktop app -- an
+#                             # absolute path is the safe answer
+#       model: gemini-3.1-pro-high  # a slug from `agy models`; the reasoning level is
+#                             # part of the name, so `reasoning_effort` is refused here
+#                             # -- passing both is an error from the CLI itself
+#       priority: 30
+#       web_search: false     # web mode is not offered by this runtime yet
+#       scores:
+#         reasoning: 90
+#         review: 85
 #
 #   # A local page over the stored consultations, loopback only, started separately
 #   # with `orchestrator-mcp-dashboard`. Off unless you turn it on: it serves every

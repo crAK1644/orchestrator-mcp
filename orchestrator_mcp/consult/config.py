@@ -10,7 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -62,8 +62,19 @@ class AgentConfig(BaseModel):
         # accepting it there would leave an operator with a config that looks set and
         # runs at whatever the CLI chose. Silently ignored is the one outcome worth
         # refusing to boot over.
+        #
+        # Antigravity is excluded for the opposite reason: it has an `--effort` flag,
+        # but every model slug `agy models` returns already carries the level
+        # (`gemini-3.6-flash-low`), and passing both is a hard error from the CLI --
+        # `--model gemini-3.6-flash-low conflicts with --effort=high`. The slug is the
+        # knob there, so this field would have nothing left to say.
         if self.reasoning_effort and self.runtime != "codex":
-            raise ValueError(f"`reasoning_effort` is codex-only; `{self.runtime}` ignores it")
+            reason = (
+                "antigravity encodes it in the model slug"
+                if self.runtime == "antigravity"
+                else f"`{self.runtime}` ignores it"
+            )
+            raise ValueError(f"`reasoning_effort` is codex-only; {reason}")
         return self
 
 
@@ -219,9 +230,10 @@ def host_runtime() -> Runtime:
     back to itself.
     """
     value = (os.environ.get(HOST_RUNTIME_ENV) or "").strip().lower()
-    if value not in ("codex", "claude"):
+    if value not in get_args(Runtime):
+        known = ", ".join(f"`{name}`" for name in get_args(Runtime))
         raise ConfigError(
-            f"{HOST_RUNTIME_ENV} must be set to `codex` or `claude` when `consult:` is "
+            f"{HOST_RUNTIME_ENV} must be set to one of {known} when `consult:` is "
             f"configured (got {value!r}); without it the server cannot exclude itself "
             "from its own routing"
         )

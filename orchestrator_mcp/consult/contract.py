@@ -27,7 +27,7 @@ from .errors import ConsultErrorCode
 CONSULT_CAPABILITIES = ("coding", "research", "writing", "reasoning", "review")
 
 Capability = Literal["coding", "research", "writing", "reasoning", "review"]
-Runtime = Literal["codex", "claude"]
+Runtime = Literal["codex", "claude", "antigravity"]
 
 PROTOCOL_VERSION = "consult-v1"
 
