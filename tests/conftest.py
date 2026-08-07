@@ -70,7 +70,19 @@ def _no_real_managed_file(tmp_path, monkeypatch):
     monkeypatch.setattr("orchestrator_mcp.consult.managed.DEFAULT_MANAGED_PATH", path)
     # The pydantic default is bound at class definition, so patching the module name
     # alone would leave a directly-constructed `ConsultConfig` pointed at the real one.
+    # `model_fields` is not enough either: pydantic compiles the default into the
+    # validator, so the FieldInfo has to be patched *and* the validator rebuilt.
+    # Without the rebuild this fixture ran green for months while the suite wrote the
+    # developer's own `~/.orchestrator-mcp/agents.yaml`.
     monkeypatch.setattr(ConsultConfig.model_fields["managed_agents_path"], "default", path)
+    ConsultConfig.model_rebuild(force=True)
+    # Not decoration: the two lines above are the only thing standing between a test
+    # run and a real config file, and both of them are pydantic internals that a
+    # version bump can quietly turn into no-ops.
+    assert ConsultConfig(agents={"probe": agent()}).managed_agents_path == path
+    yield
+    monkeypatch.undo()
+    ConsultConfig.model_rebuild(force=True)
 
 
 @pytest.fixture
