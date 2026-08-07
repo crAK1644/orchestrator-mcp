@@ -18,7 +18,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID, uuid4
 
-from ..contract import MAX_ERROR_CHARS, Usage, redact
+from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json
 from .adapters import AdapterError, adapter_for
 from .adapters.base import GRACE_S, AgentStatus, ConsultAdapter
 from .adapters.claude_cli import PREFLIGHT_TIMEOUT_S
@@ -170,7 +170,13 @@ class ConsultService:
             # wearing an old name, and resuming into it would continue someone
             # else's conversation -- including, if the new runtime is ours, straight
             # back into the host.
-            if agent.runtime != consultation.target_runtime or agent.model != consultation.target_model:
+            # `target_model` is stored scrubbed, so the live model is scrubbed the
+            # same way to compare. Raw against redacted would make a credential-shaped
+            # model name look reassigned on every resume.
+            if (
+                agent.runtime != consultation.target_runtime
+                or scrub_json(agent.model) != consultation.target_model
+            ):
                 raise StoreError(
                     ConsultErrorCode.SESSION_TARGET_MISMATCH,
                     f"consultation `{consultation.id}` was bound to "
@@ -189,7 +195,12 @@ class ConsultService:
             route = ConsultRoute(
                 agent_id=agent.agent_id,
                 runtime=agent.runtime,
-                model=consultation.target_model,
+                # The live model, not the stored one: the check above proved they are
+                # the same agent, and the stored copy is redacted. Nothing routes on
+                # this -- the adapter reads `agent.model` and a successful turn
+                # overwrites it with what actually answered -- but a route reporting
+                # `[redacted]` as its model would be a lie on the way out.
+                model=agent.model,
                 capability_score=agent.score_for(consultation.capability),
                 priority=agent.priority,
                 explicitly_selected=request.target_agent is not None,

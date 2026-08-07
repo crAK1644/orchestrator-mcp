@@ -382,10 +382,13 @@ class ConsultStore:
                     origin_runtime,
                     route.agent_id,
                     route.runtime,
-                    route.model,
+                    # Free-form strings from configuration and from the host. Scrubbed
+                    # at the insert like every other text column; the resume check in
+                    # `ConsultService` compares against the scrubbed copy.
+                    scrub_json(route.model),
                     capability,
                     None,
-                    conversation_label,
+                    scrub_json(conversation_label),
                     protocol_version,
                     config_hash,
                     "open",

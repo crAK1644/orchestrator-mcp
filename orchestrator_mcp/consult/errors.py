@@ -24,6 +24,9 @@ class ConsultErrorCode(str, Enum):
     PROTOCOL_VALIDATION_FAILED = "protocol_validation_failed"
     WEB_SEARCH_UNAVAILABLE = "web_search_unavailable"
     TRANSPORT_ERROR = "transport_error"
+    # No attempt was made. A reviewer reserved before its batch and never launched
+    # has this rather than `TRANSPORT_ERROR`, which claims a transport failed.
+    NOT_STARTED = "not_started"
     TIMEOUT = "timeout"
     INVALID_REQUEST = "invalid_request"
     NO_AGENT_AVAILABLE = "no_agent_available"

@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json, secret_lines
 from ..consult.config import ConsultConfig
 from ..consult.contract import (
@@ -333,6 +335,16 @@ class ReviewService:
         An agent id is a label, and between plan and run a config edit or a dashboard
         save can point it at another runtime or model. The consultation-level check
         only engages once a consultation exists, which is already too late.
+
+        The stored snapshot is scrubbed, so the live one is scrubbed the same way
+        before comparing. Comparing raw against redacted made a credential-shaped
+        model name look like it had moved on every run, and the review could never
+        be run at all.
+
+        ponytail: two *different* credential-shaped model names redact to the same
+        string, so a repoint between two of them reads as unchanged. Storing a
+        digest of the raw snapshot beside the redacted one closes it, if a config
+        ever has a model name that looks like a key for a reason.
         """
         approved = [ReviewerSnapshot(**s) for s in json.loads(review.reviewer_snapshot_json)]
         for snapshot in approved:
@@ -343,10 +355,14 @@ class ReviewService:
                     "configured; plan the review again"
                 )
             live = ReviewerSnapshot(
-                agent_id=agent.agent_id,
-                runtime=agent.runtime,
-                model=agent.model,
-                web_search=agent.web_search,
+                **scrub_json(
+                    ReviewerSnapshot(
+                        agent_id=agent.agent_id,
+                        runtime=agent.runtime,
+                        model=agent.model,
+                        web_search=agent.web_search,
+                    ).model_dump(mode="json")
+                )
             )
             if live != snapshot:
                 moved = [
@@ -442,9 +458,16 @@ class ReviewService:
         agent_ids: list[str] | None,
         raw: dict[str, Any] | None,
     ) -> ReviewResponse:
-        self._verify_snapshot(review)
+        approved = self._verify_snapshot(review)
         rows = {row.agent_id: row for row in await self.store.reviewer_rows(review.id)}
-        failed = [aid for aid, row in rows.items() if row.status != "ok"]
+        # Over the approved reviewers, not over the rows: a review planned before
+        # `reserve_reviewers` existed can have a reviewer with no row at all, and
+        # reading only the rows is what made that reviewer stop having been asked.
+        failed = [
+            s.agent_id
+            for s in approved
+            if s.agent_id not in rows or rows[s.agent_id].status != "ok"
+        ]
         wanted = failed if agent_ids is None else [a for a in agent_ids if a in failed]
         if not wanted:
             raise ValueError(
@@ -553,6 +576,14 @@ class ReviewService:
                 # Before a single task starts: a reviewer whose task dies before it can
                 # record anything must read back as `failed`, not as never asked.
                 await self.store.reserve_reviewers(review.id, agent_ids)
+                # Read again, because the reservation above is an await and `cancel`
+                # does not take this lease. Between the check and `create_task` there
+                # must be no suspension point at all, or a cancel landing inside one
+                # sends the material anyway.
+                if (await self.store.get_review(review.id)).status != "running":
+                    raise ValueError(
+                        f"review `{review.id}` was cancelled before its reviewers started"
+                    )
                 tasks = [asyncio.create_task(one(agent_id)) for agent_id in agent_ids]
                 self._tasks[review_key] = tasks
                 try:
@@ -625,10 +656,16 @@ class ReviewService:
         The persisted half is reconstructed from the row, which under
         `store_full_content: false` has no answer and no findings -- the shape
         survives, the bodies do not, which is what that setting means.
+
+        A reviewer that was approved and has no row at all is emitted as failed
+        rather than omitted. `reserve_reviewers` stops that happening to reviews
+        planned from now on; reviews already in the database predate it.
         """
         fresh = fresh or {}
         out = []
+        seen = set()
         for row in await self.store.reviewer_rows(review_id):
+            seen.add(row.agent_id)
             if row.agent_id in fresh:
                 out.append(fresh[row.agent_id])
                 continue
@@ -640,7 +677,7 @@ class ReviewService:
                     ok=row.status == "ok",
                     consultation_id=UUID(row.consultation_id) if row.consultation_id else None,
                     findings=[Finding(**f) for f in findings],
-                    sources=[ConsultSource(**s) for s in sources],
+                    sources=_sources(sources),
                     findings_parsed=bool(row.findings_parsed or row.findings_json),
                     findings_truncated=row.findings_truncated,
                     answer=row.answer,
@@ -652,6 +689,22 @@ class ReviewService:
                         )
                         if row.status != "ok" and row.error_code
                         else None
+                    ),
+                )
+            )
+        review = await self.store.get_review(review_id)
+        for approved in json.loads(review.reviewer_snapshot_json):
+            agent_id = approved["agent_id"]
+            if agent_id in seen or agent_id in fresh:
+                continue
+            out.append(
+                ReviewerResult(
+                    agent_id=agent_id,
+                    ok=False,
+                    error=ConsultError(
+                        code=ConsultErrorCode.NOT_STARTED,
+                        message="approved for this review, but no attempt was recorded",
+                        agent_id=agent_id,
                     ),
                 )
             )
@@ -1201,6 +1254,22 @@ def _candidates(answer: str):
             if depth == 0:
                 yield answer[start : index + 1]
                 return
+
+
+def _sources(stored: list[Any]) -> list[ConsultSource]:
+    """Citations read back from a row, skipping any this build cannot parse.
+
+    Reconstruction happens inside every read of a review. A stored source written
+    under a contract this build no longer recognises should cost that one citation,
+    not make the whole review unreadable and unfinalizable.
+    """
+    out = []
+    for item in stored:
+        try:
+            out.append(ConsultSource(**item))
+        except (ValidationError, TypeError):
+            continue
+    return out
 
 
 def _total(results: list[ReviewerResult]) -> Usage:

@@ -429,6 +429,10 @@ class ReviewStore:
 
         `DO NOTHING`, so a retry keeps the earlier attempt's `consultation_id`: that
         column is how a delete finds the consultation to remove with it.
+
+        `NOT_STARTED` rather than a transport failure: nothing has been attempted at
+        the moment this row is written, and a row that outlives the batch is a
+        reviewer that never ran, not one whose transport broke.
         """
 
         def work() -> None:
@@ -438,7 +442,7 @@ class ReviewStore:
                     "INSERT INTO review_consultations (review_id, agent_id, status, error_code, "
                     "created_at) VALUES (?,?,'failed',?,?) "
                     "ON CONFLICT (review_id, agent_id) DO NOTHING",
-                    (str(review_id), agent_id, ConsultErrorCode.TRANSPORT_ERROR.value, now),
+                    (str(review_id), agent_id, ConsultErrorCode.NOT_STARTED.value, now),
                 )
 
         await self._run(work)

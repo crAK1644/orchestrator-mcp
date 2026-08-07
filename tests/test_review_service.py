@@ -9,6 +9,7 @@ that a cancel cannot be overwritten by a batch finishing a moment later.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 
 import pytest
@@ -123,6 +124,12 @@ async def planned(service, **overrides):
     response = await service.plan(goal="review the parser", **overrides)
     assert response.error is None, response.error
     return response
+
+
+async def sql(service, statement: str, *params):
+    """Edit the database behind the service's back, to build a state the code cannot
+    reach on purpose: a legacy row, or one written by a contract this build predates."""
+    return await service.store._run(lambda: service.store._db.execute(statement, params))
 
 
 # --- planning sends nothing -------------------------------------------------
@@ -538,6 +545,61 @@ async def test_retrying_a_review_where_everyone_answered_is_refused(build):
     plan = await planned(service)
     await service.run(plan.review_id, plan.plan.confirm_token)
     assert "nothing to retry" in (await service.retry(plan.review_id)).error.message
+
+
+async def test_a_reviewer_with_no_row_at_all_is_still_asked_again(build):
+    """A review planned before reviewers were reserved can have a reviewer with no
+    row. Reading only the rows is what made that reviewer stop having been asked."""
+    service = await build()
+    plan = await planned(service, mode="deep")
+    await service.run(plan.review_id, plan.plan.confirm_token, host_findings=["mine"])
+    await sql(service, "DELETE FROM review_consultations WHERE agent_id = 'gemini-x'")
+
+    # Failed rather than omitted, so the review does not read as full coverage.
+    got = await service.get(plan.review_id)
+    missing = {r.agent_id: r for r in got.results}["gemini-x"]
+    assert missing.ok is False and missing.error.code is ConsultErrorCode.NOT_STARTED
+
+    again = await service.retry(plan.review_id)
+    assert again.error is None, again.error
+    assert {r.agent_id: r.ok for r in again.results} == {"codex-sol": True, "gemini-x": True}
+
+
+async def test_a_cancel_during_the_reservation_still_sends_nothing(build, monkeypatch):
+    """`cancel` does not take the execution lease, so every await between the status
+    check and `create_task` is a window where a cancelled review still sends."""
+    service = await build()
+    reserve = service.store.reserve_reviewers
+
+    async def cancel_midway(review_id, agent_ids):
+        await reserve(review_id, agent_ids)
+        await service.store.transition(review_id, "cancelled", ("running",))
+
+    monkeypatch.setattr(service.store, "reserve_reviewers", cancel_midway)
+
+    plan = await planned(service)
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+
+    assert run.error is not None
+    assert all(a.prompts == [] for a in service.adapters.values())
+    assert (await service.store.get_review(plan.review_id)).status == "cancelled"
+
+
+async def test_a_stored_citation_this_build_cannot_read_costs_one_citation(build):
+    """Reconstruction runs inside every read of a review. One unreadable source must
+    not make the whole review unreadable and unfinalizable."""
+    kept = ConsultSource(title="CVE-1", locator="https://example.test/1", source_type="web")
+    service = await build({aid: StubAdapter(sources=[kept]) for aid in REVIEWERS})
+    plan = await planned(service)
+    await service.run(plan.review_id, plan.plan.confirm_token)
+    await sql(
+        service,
+        "UPDATE review_consultations SET sources_json = ?",
+        json.dumps([{"from": "a contract this build does not have"}, kept.model_dump(mode="json")]),
+    )
+
+    got = await service.get(plan.review_id)
+    assert [s.locator for r in got.results for s in r.sources] == ["https://example.test/1"]
 
 
 async def test_a_reviewer_that_dies_before_recording_still_counts_against_the_review(

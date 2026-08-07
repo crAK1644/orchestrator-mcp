@@ -165,7 +165,7 @@ async def test_nothing_a_review_touched_is_stored_raw(build):
     assert_absent(build.path, SECRET, OTHER)
 
 
-async def test_a_credential_shaped_model_name_is_not_stored_by_the_plan(tmp_path, host_claude):
+async def test_a_credential_shaped_model_name_is_not_stored_and_still_runs(tmp_path, host_claude):
     """The reviewer snapshot is the one column written from configuration rather than
     from a model, and a model name is a free-form string like any other."""
     path = tmp_path / "consultations.sqlite3"
@@ -177,6 +177,23 @@ async def test_a_credential_shaped_model_name_is_not_stored_by_the_plan(tmp_path
     service = await StubService(config, "claude").open()
     plan = await service.plan(goal="review the parser", context="def parse(): ...")
     assert plan.error is None, plan.error
+    # Run it too: the snapshot is stored redacted and checked again at run, and the
+    # consultation underneath stores the model in `target_model` and compares *that*
+    # on resume. A plan-only test would pass while the review could never be run.
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+    assert run.error is None, run.error
+    # And again, through the retry path, which resumes the same consultation: the
+    # resume compares the live model against the stored one to prove the agent id
+    # was not reassigned, and the stored one is redacted. Comparing raw against
+    # redacted reads as a reassignment, and every retry is refused.
+    await service.store._run(
+        lambda: service.store._db.execute(
+            "UPDATE review_consultations SET status = 'failed', error_code = 'transport_error'"
+        )
+    )
+    again = await service.retry(plan.review_id)
+    assert again.error is None, again.error
+    assert again.results[0].ok is True
     await service.close()
 
     assert_absent(path, OTHER)
