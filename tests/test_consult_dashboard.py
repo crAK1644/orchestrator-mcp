@@ -140,6 +140,29 @@ async def test_the_index_reports_the_last_status_check_not_a_fresh_probe(serve):
     assert "not connected" in body and "not logged in" in body
 
 
+async def test_the_monitor_strip_counts_turns_and_never_calls_a_stored_row_active(serve):
+    """A consultation is `open` for as long as its row exists, so a tile counting the
+    ones that had not closed counted every consultation ever made and labelled the
+    total Active -- an idle server reading as fully busy. Turns are the work."""
+    get, config = serve()
+    first = await consult(config, capability="coding", prompt="q")
+    await consult(
+        config, capability="coding", prompt="again", consultation_id=first.consultation_id
+    )
+
+    _, body = get("/")
+    assert "<dt>Consultations</dt><dd>1</dd>" in body
+    assert "<dt>Turns / failed</dt><dd>2 / 0</dd>" in body
+    assert "<dt>Active</dt>" not in body
+    # No `review:` block and no review table: a permanent zero is the same lie small.
+    assert "Reviews open" not in body
+    # And no row says it either. `open` is every consultation there has ever been, so
+    # a State column reading it is width rather than data -- and in the signal colour
+    # it was the table telling the same untruth as the tile, once per row.
+    assert ">open</span>" not in body
+    assert "<th>State" not in body
+
+
 async def test_a_consultation_appears_in_the_index_with_its_agent_and_model(serve):
     get, config = serve()
     response = await consult(config, capability="coding", prompt="q")

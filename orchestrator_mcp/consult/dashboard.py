@@ -451,26 +451,57 @@ class ConsultDashboard:
             editable=self.config.dashboard.editable,
         )
 
+    def _open_reviews(self) -> int | None:
+        """How many reviews are still mid-flight, or None where the tile does not belong.
+
+        Reviews are the only thing on this page with a real lifecycle: `finalize`
+        writes a terminal status, so this number goes up and comes back down. The
+        tables exist in every migrated database though, so an install that has never
+        configured a reviewer would get a tile that is permanently zero -- hidden on
+        the same rule the reviews section uses.
+        """
+        if not self._reviews_ready():
+            return None
+        rows = self._query(
+            "SELECT COUNT(*) AS total, SUM(CASE WHEN status "
+            "NOT IN ('complete', 'failed', 'cancelled') THEN 1 ELSE 0 END) AS open FROM reviews"
+        )
+        if not rows or (not rows[0]["total"] and self.config.review is None):
+            return None
+        return int(rows[0]["open"] or 0)
+
     def _monitor_strip(self) -> str:
+        """Counts that can change. A tile that reads the same number every time it is
+        looked at is not being monitored, and one that reads the *total* while calling
+        itself Active is worse than absent -- it says the server is busy when it is
+        idle. Consultations never leave `open`: they stay resumable for as long as the
+        row exists, so there is no consultation status worth counting here. Turns are
+        the work that actually happened, and reviews are the thing that can be running
+        right now."""
         rows = self._query(
             "SELECT COUNT(*) AS total, "
-            "SUM(CASE WHEN status NOT IN ('complete', 'failed', 'cancelled') THEN 1 ELSE 0 END) "
-            "AS active, "
-            "SUM(CASE WHEN status IN ('failed', 'cancelled') THEN 1 ELSE 0 END) AS stopped, "
+            "(SELECT COUNT(*) FROM consultation_turns) AS turns, "
             "(SELECT COUNT(*) FROM consultation_turns WHERE error_code IS NOT NULL) AS failures "
             "FROM consultations"
         )
         stats = rows[0] if rows else None
         total = int(stats["total"] or 0) if stats else 0
-        active = int(stats["active"] or 0) if stats else 0
-        stopped = int(stats["stopped"] or 0) if stats else 0
+        turns = int(stats["turns"] or 0) if stats else 0
         failures = int(stats["failures"] or 0) if stats else 0
         enabled = sum(agent.enabled for agent in self.config.agents.values())
+        open_reviews = self._open_reviews()
+        # Omitted where reviews are unused: on such an install a permanent `0` is the
+        # same lie in a smaller font.
+        reviews = (
+            f"<div><dt>Reviews open</dt><dd>{open_reviews}</dd></div>"
+            if open_reviews is not None
+            else ""
+        )
         return (
             "<dl class=monitor-strip aria-label='Current operating state'>"
             f"<div><dt>Consultations</dt><dd>{total}</dd></div>"
-            f"<div><dt>Active</dt><dd>{active}</dd></div>"
-            f"<div><dt>Stopped / failed turns</dt><dd>{stopped} / {failures}</dd></div>"
+            f"<div><dt>Turns / failed</dt><dd>{turns} / {failures}</dd></div>"
+            f"{reviews}"
             f"<div><dt>Agents enabled</dt><dd>{enabled} / {len(self.config.agents)}</dd></div>"
             "</dl>"
         )
@@ -562,11 +593,12 @@ class ConsultDashboard:
             f"<td data-label=Activity>{row['turns']} turn{'s' if row['turns'] != 1 else ''}"
             f"<span class={'bad' if row['failures'] else 'meta'}> &middot; "
             f"{row['failures']} failed</span></td>"
-            f"<td data-label=State>{_status_word(row['status'])}</td>"
             "</tr>"
             for row in rows
         )
-        head = "<thead><tr><th>Consultation<th>Route<th>Started<th>Activity<th>State</tr></thead>"
+        # No State column. `status` is 'open' in every row of this table and always
+        # will be, and a column that reads the same in every row is width, not data.
+        head = "<thead><tr><th>Consultation<th>Route<th>Started<th>Activity</tr></thead>"
         return (
             "<div class='table-shell table-shell--cards'>"
             f"<table class=data-table>{head}<tbody>{body}</tbody></table></div>"
@@ -585,8 +617,7 @@ class ConsultDashboard:
             "<header class=detail-header><p class=eyebrow>Consultation trace</p>"
             "<div class=detail-title>"
             f"<h1>{_e(consultation['capability'])} &rarr; "
-            f"<code>{_e(consultation['target_agent_id'])}</code></h1>"
-            f"{_status_word(consultation['status'])}</div>"
+            f"<code>{_e(consultation['target_agent_id'])}</code></h1></div>"
             f"<p class=context-line><span><code>{_e(consultation['id'])}</code></span>"
             f"<span>{_e(consultation['created_at'])}</span></p></header>"
             "<div class=detail-grid><div>"
@@ -1721,13 +1752,18 @@ def _status_word(status: object) -> str:
     `complete` is the only finished-well state; `failed` and `cancelled` are the two
     a reader should not skim past. Everything between them is in progress and gets no
     colour, because "running" is not news.
+
+    `open` is deliberately absent: it belongs to consultations, which this page no
+    longer badges at all, because every consultation that has ever been recorded is
+    open and stays that way. Should anything render it again, muted is the honest
+    colour for it.
     """
     text = _e(status)
     if status == "complete":
         return f"<span class='status status--good'>{text}</span>"
     if status in ("failed", "cancelled"):
         return f"<span class='status status--bad'>{text}</span>"
-    if status in ("open", "running", "active", "awaiting_synthesis"):
+    if status in ("running", "active", "awaiting_synthesis"):
         return f"<span class='status status--active'>{text}</span>"
     return f"<span class='status status--muted'>{text}</span>"
 
