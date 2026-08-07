@@ -2,16 +2,18 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
 .env
 dist/
-.firecrawl/
 
 # Real config carries endpoints and key references; only the example is tracked.
 config.yaml
 
-# Working notes -- spikes, feasibility write-ups, whatever a question needed at the
-# time. `docs/antigravity-spike.md` is tracked from before this line and stays that
-# way: ignoring a directory does not untrack what is already in it, and that one
-# records why the adapter chunks prompts and refuses `--effort`. Anything worth
-# keeping goes the same way, with `git add -f`.
+# Nothing below this line is needed to install or run this server. It is the local
+# working surface: editor and agent settings, scraper output, and working notes --
+# spikes, feasibility write-ups, whatever a question needed at the time. Keep them
+# on your own disk. Something here that turns out to belong in the repo goes in with
+# `git add -f`.
+.claude/
+.firecrawl/
 docs/

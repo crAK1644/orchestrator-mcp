@@ -1,7 +1,8 @@
 """Consulting an Antigravity (`agy`) CLI.
 
-Written against `agy` 1.1.10 and the spike in `docs/antigravity-spike.md`, which is
-where the reasons for the three unusual things in this module are recorded in full.
+Written against `agy` 1.1.10 and a spike whose write-up is kept outside this repo.
+The reasons for the three unusual things in this module are therefore below rather
+than behind a link.
 
 **The prompt travels in argv, not on stdin.** That breaks the transport invariant
 every other adapter here relies on: `agy` does not read stdin (`-p ""` is an "empty
