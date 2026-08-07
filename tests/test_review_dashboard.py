@@ -51,7 +51,7 @@ def review_config(config, host_claude):  # noqa: F811 -- the imported fixture
 
 
 async def make_review(consult_config, *, goal="review the parser", context="def parse(): ...",
-                      answer=FINDINGS, finalize=True):
+                      answer=FINDINGS, finalize=True, fix_round=None):
     """One real review in the store the dashboard reads. Returns its id."""
     adapters = {agent_id: StubAdapter(answer) for agent_id in consult_config.agents}
     service = await StubService(consult_config, "claude", adapters=adapters).open()
@@ -88,6 +88,12 @@ async def make_review(consult_config, *, goal="review the parser", context="def 
                 },
             )
             assert done.error is None, done.error
+        if fix_round is not None:
+            first = ran.results[0].findings[0].finding_id
+            recorded = await service.record_fix_round(
+                planned.review_id, [first], "applied", notes=fix_round
+            )
+            assert recorded.error is None, recorded.error
         return planned.review_id
     finally:
         await service.close()
@@ -232,6 +238,25 @@ async def test_a_reviewer_that_answered_prose_still_renders(serve, review_config
 # --- the credential ---------------------------------------------------------
 
 
+async def test_the_detail_page_shows_the_fix_rounds_as_claims(serve, review_config):  # noqa: F811
+    """Nothing in this server edits a file, so a table of outcomes must not read
+    like a record of work this machine watched happen."""
+    get, consult_config = serve(review_config())
+    review_id = await make_review(consult_config, fix_round="streamed the read")
+
+    _, body = get(f"/reviews/{review_id}")
+
+    assert "Fix rounds" in body and "streamed the read" in body and "applied" in body
+    assert "claims about work done elsewhere" in body
+
+
+async def test_a_review_with_no_fix_rounds_has_no_fix_section(serve, review_config):  # noqa: F811
+    get, consult_config = serve(review_config())
+    review_id = await make_review(consult_config)
+
+    assert "Fix rounds" not in get(f"/reviews/{review_id}")[1]
+
+
 async def test_a_planted_credential_reaches_no_review_page(serve, review_config):  # noqa: F811
     """What the store holds is the redacted copy, and the page can only show that."""
     get, consult_config = serve(review_config())
@@ -240,6 +265,7 @@ async def test_a_planted_credential_reaches_no_review_page(serve, review_config)
         goal=f"review this, the key is {SECRET}",
         context=f"TOKEN = '{SECRET}'",
         answer=f"the key {SECRET} is hardcoded\n\n{FINDINGS}",
+        fix_round=f"rotated {SECRET}",
     )
 
     pages = [get("/")[1], get("/reviews")[1], get(f"/reviews/{review_id}")[1]]

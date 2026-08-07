@@ -154,6 +154,24 @@ async def main() -> int:
                   f"combined={len(done.summary.combined_findings)} "
                   f"citations={len(done.summary.citations)}")
 
+        print("\n=== apply_fixes ===")
+        selected = [f.finding_id for f in criticals[:1]]
+        fixes = await service.fix_plan(planned.review_id, selected)
+        if fixes.error:
+            failures += 1
+            print(f"  [FAIL] {fixes.error.code.value}: {fixes.error.message}")
+        else:
+            print(f"  [ok] {len(fixes.fix_plan.findings)} finding(s) to fix, "
+                  f"{len(fixes.fix_plan.criticals_omitted)} Critical(s) left out, "
+                  f"{len(fixes.fix_plan.steps)} steps -- nothing was edited")
+            logged = await service.record_fix_round(
+                planned.review_id, selected, "skipped", notes="smoke test; no edits made"
+            )
+            ok = logged.error is None and len(logged.fix_rounds) == 1
+            failures += not ok
+            print(f"  [{'ok' if ok else 'FAIL'}] the round was recorded "
+                  f"({logged.error.message if logged.error else logged.fix_rounds[0].outcome})")
+
         if not keep:
             print(f"\ndeleted {await service.delete(planned.review_id)} review(s); "
                   "pass --keep to look at it in the dashboard")

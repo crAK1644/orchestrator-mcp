@@ -147,6 +147,9 @@ async def test_nothing_a_review_touched_is_stored_raw(build):
             "not_checked": [],
         },
     )
+    # And the round recorded afterwards, which is another host-written column on the
+    # same row: a field added later is how a redaction rule quietly stops being true.
+    await service.record_fix_round(plan.review_id, [], "applied", notes=f"rotated {SECRET}")
     await service.close()
     assert_absent(build.path, SECRET, OTHER)
 

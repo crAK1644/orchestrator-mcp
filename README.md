@@ -259,10 +259,22 @@ It stops at `awaiting_synthesis`. External models replying is not a finished rev
 | `retry_review` | Re-runs only the reviewers that failed. Answers already given are kept. |
 | `finalize_review` | Records the synthesis. The only path to `complete`. |
 | `cancel_review` | Stops a review. Reviewers that already answered keep their answers. |
+| `apply_fixes` | Pulls up the findings you selected, with the steps around them. Changes nothing. |
+| `record_fix_round` | Logs what a round of fixing did, after you did it. |
 | `test_reviewers` | Checks the reviewers are installed and logged in. No project material leaves the machine. |
 | `get_review` / `list_reviews` | Read one review, or recent ones newest first. |
 | `delete_review` | Deletes a review, its rechecks, and every consultation under either. |
 | `request_delete_all` / `delete_all_reviews` | Counts what deleting all history would remove, then deletes exactly that snapshot. |
+
+### Fixing what a review found
+
+`apply_fixes` is bookkeeping around work your own AI does. It returns the findings you selected and the steps that go with them — make a safety point first, apply the changes, run the tests, keep or undo — and it changes nothing itself. **This server never edits a file and never runs a command**, and a reviewer never sees your repository at all.
+
+Two things it does enforce. A finding id no reviewer raised is refused rather than recorded against nobody, and `criticals_omitted` names every Critical your selection leaves out — the same rule as the synthesis check, one stage later.
+
+`record_fix_round` then logs what happened (`applied`, `partial`, `reverted`, `skipped`) beside the findings it names. It is your AI's account of the round; nothing here can verify it, which is why the dashboard labels the rounds as claims.
+
+To re-review, plan a new review with `parent_review_id` set to the original and the diff as `context`. A recheck is an ordinary review: same preview, same secret scan, same approval. The parent's page links to it.
 
 ### What a review does not do
 
@@ -354,6 +366,8 @@ The agent table's status column is the newest recorded preflight, labelled **las
 ### Reviews in the dashboard
 
 `/reviews` lists reviews newest first, and `/reviews/<id>` shows one: its status and outcome, every reviewer with the consultation it ran under, all findings sorted worst-first across reviewers, the synthesis in the problem / seriousness / who-agreed / proposed-action shape, and each reviewer's original answer folded into a `<details>`. Rechecks link back to the review they came from.
+
+Recorded fix rounds appear at the bottom, labelled as claims: nothing in this server edits a file or runs a command, so a round is an account of work done elsewhere.
 
 What you see is what was stored, which is the redacted copy — a credential-shaped value was replaced before the insert, and the page reports only that one was found and on which line.
 

@@ -48,6 +48,7 @@ from .review.contract import (
     CombinedFinding,
     DeleteApproval,
     DeletionResult,
+    FixOutcome,
     MaterialItem,
     RawReviewMaterial,
     ReviewListing,
@@ -840,6 +841,43 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
                 "not_checked": not_checked,
             },
         )
+
+    @server.tool(name="apply_fixes")
+    async def apply_fixes(review_id: UUID, finding_ids: list[str]) -> ReviewResponse:
+        """Pull up the findings you are about to fix, with the steps around them.
+        **Changes nothing** -- no file is edited and no command is run here.
+
+        Fixing is yours to do: make a safety point first, apply the changes, run the
+        tests, and keep or undo. Then record what happened with `record_fix_round`.
+
+        `fix_plan.criticals_omitted` lists Critical findings your selection leaves
+        out. Show them to the user rather than skipping past them -- a Critical
+        dropped here is one the recheck will simply find again.
+
+        To re-review, plan a new review with `parent_review_id` set to this one and
+        the diff as `context`. A recheck gets the same preview and the same approval
+        as any other review; it is not exempt from either.
+        """
+        return await service.fix_plan(review_id, finding_ids)
+
+    @server.tool(name="record_fix_round")
+    async def record_fix_round(
+        review_id: UUID,
+        finding_ids: list[str],
+        outcome: FixOutcome,
+        notes: str = "",
+    ) -> ReviewResponse:
+        """Record what a round of fixing did, after you did it.
+
+        A log entry, not an action: this server takes your account of the round and
+        stores it beside the findings it names. It cannot check the claim, because it
+        never sees your repository.
+
+        `outcome` is `applied`, `partial`, `reverted` (the fix was undone), or
+        `skipped`. `finding_ids` come from `results[].findings[].finding_id`; an id
+        no reviewer raised is refused rather than recorded against nobody.
+        """
+        return await service.record_fix_round(review_id, finding_ids, outcome, notes)
 
     @server.tool(name="cancel_review")
     async def cancel_review(review_id: UUID) -> ReviewResponse:

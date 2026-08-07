@@ -36,6 +36,10 @@ ReviewStatus = Literal[
 ]
 Outcome = Literal["all", "some", "none"]
 Severity = Literal["critical", "important", "minor", "uncertain"]
+# What became of the findings a round took on. `reverted` is named rather than
+# folded into `skipped` because undoing a fix that made things worse is a real
+# result worth reading back, and one a later round should not repeat.
+FixOutcome = Literal["applied", "partial", "reverted", "skipped"]
 
 # Ordered worst-first, so truncation is severity-ordered and the cap can never be
 # what drops a Critical.
@@ -50,6 +54,10 @@ MAX_FINDINGS = 200
 MAX_LIST_ITEMS = 100
 MAX_SECRET_HITS = 500
 MAX_REVIEWERS = 5
+# Fix rounds live in one JSON column on the review row, so the column grows with
+# every round recorded against it. Fifty is far past any real fix-and-recheck
+# cycle and still small enough that the row stays a row.
+MAX_FIX_ROUNDS = 50
 
 Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
@@ -232,6 +240,53 @@ class ReviewSummary(BaseModel):
     citations: list[ConsultSource] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
 
 
+class FixRound(BaseModel):
+    """One pass of fixing, after the fact. A log entry, not an instruction.
+
+    The server records what the host says it did; it does not edit a file, run a
+    command, or check the claim. That is the whole of `apply_fixes` by design --
+    a reviewer's finding is advice, and acting on it stays with the host AI and
+    the user watching it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    finding_ids: list[str] = Field(default_factory=list, max_length=MAX_FINDINGS)
+    outcome: FixOutcome
+    notes: str = Field(default="", max_length=MAX_TEXT_CHARS)
+    recorded_at: str = ""
+
+
+class FixPlan(BaseModel):
+    """What `apply_fixes` hands back: the selected findings, and the steps around
+    editing them.
+
+    `criticals_omitted` is the field that earns this a tool of its own. A
+    selection that quietly leaves out a Critical is the same failure the synthesis
+    check exists to prevent, one stage later -- so it is named here rather than
+    discovered when the recheck finds it again.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    findings: list[Finding] = Field(default_factory=list, max_length=MAX_FINDINGS)
+    criticals_omitted: list[str] = Field(default_factory=list, max_length=MAX_FINDINGS)
+    steps: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
+
+
+FIX_STEPS = [
+    "Make a safety point first -- a commit or a stash -- so every change below can "
+    "be undone in one move.",
+    "Apply the fixes yourself. This server never edits a file and never runs a "
+    "command; a reviewer never sees your repository at all.",
+    "Run the project's tests, and say what they did.",
+    "Keep or undo, and record which with `record_fix_round`.",
+    "To re-review, plan a new review with `parent_review_id` set to this one and "
+    "the diff as `context`. It gets the same preview and the same approval as any "
+    "other review -- a recheck is not exempt from them.",
+]
+
+
 class ReviewResponse(BaseModel):
     """One envelope for every outcome, the same as `ConsultResponse`.
 
@@ -252,6 +307,12 @@ class ReviewResponse(BaseModel):
     results: list[ReviewerResult] = Field(default_factory=list, max_length=MAX_REVIEWERS)
     host_findings: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
     summary: ReviewSummary | None = None
+    fix_plan: FixPlan | None = None
+    fix_rounds: list[FixRound] = Field(default_factory=list, max_length=MAX_FIX_ROUNDS)
+    # Child reviews planned against this one, oldest first. The link lives on the
+    # child's `parent_review_id`, so this is a read of the chain rather than a
+    # second record of it that could disagree.
+    rechecks: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
     usage: Usage | None = None
     latency_ms: int = 0
     error: ConsultError | None = None
@@ -271,6 +332,8 @@ class ReviewResponse(BaseModel):
             raise AssertionError("a complete review carries the synthesis that completed it")
         if self.plan is not None and self.status != "pending":
             raise AssertionError("a plan describes what has not been sent yet")
+        if (self.fix_plan is not None or self.fix_rounds) and self.status == "pending":
+            raise AssertionError("a pending review has no findings, so nothing to fix")
         return self
 
 

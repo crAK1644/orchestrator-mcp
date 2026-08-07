@@ -263,6 +263,55 @@ class ReviewStore:
             )
         )
 
+    @property
+    def keeps_content(self) -> bool:
+        return self.store.store_full_content
+
+    async def append_fix_round(self, review_id: UUID | str, round_: dict[str, Any]) -> None:
+        """Add one round to the review's log.
+
+        Read and write in a single unit of work, because `_run` serializes on one
+        worker: two rounds recorded at once would otherwise both read the same list
+        and the second would write the first one out of existence.
+
+        Not `_keep`: dropping the whole log under `store_full_content: false` would
+        lose the shape too, and the shape here -- which findings a round took on and
+        how it went -- is metadata. Only `notes` is prose, and the caller drops that.
+        """
+
+        def work() -> None:
+            row = self._db.execute(
+                "SELECT fix_rounds_json FROM reviews WHERE id = ?", (str(review_id),)
+            ).fetchone()
+            if row is None:
+                raise StoreError(
+                    ConsultErrorCode.SESSION_NOT_FOUND,
+                    f"no review `{review_id}` in this store",
+                )
+            rounds = json.loads(row[0]) if row[0] else []
+            rounds.append(scrub_json(round_))
+            self._db.execute(
+                "UPDATE reviews SET fix_rounds_json = ?, updated_at = ? WHERE id = ?",
+                (canonical(rounds), _now(), str(review_id)),
+            )
+
+        await self._run(work)
+
+    async def recheck_ids(self, review_id: UUID | str) -> list[str]:
+        """The reviews planned against this one, oldest first."""
+
+        def work() -> list[str]:
+            return [
+                row[0]
+                for row in self._db.execute(
+                    "SELECT id FROM reviews WHERE parent_review_id = ? "
+                    "ORDER BY created_at, id",
+                    (str(review_id),),
+                )
+            ]
+
+        return await self._run(work)
+
     async def save_summary(self, review_id: UUID | str, summary: Any) -> None:
         await self._run(
             lambda: self._db.execute(

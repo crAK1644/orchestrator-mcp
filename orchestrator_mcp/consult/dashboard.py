@@ -550,6 +550,7 @@ class ConsultDashboard:
             f"<h2>Findings</h2>{_findings_table(findings)}"
             f"<h2>Synthesis</h2>{_synthesis(review['summary_json'])}"
             f"<h2>Answers</h2>{_answers(reviewers)}"
+            f"{_fix_rounds(review['fix_rounds_json'])}"
             f"{self._rechecks(review_id)}",
         )
 
@@ -1450,6 +1451,33 @@ def _host_findings(host_findings_json: object) -> str:
         "<h2>The host's own reading</h2>"
         "<p class=meta>Formed before any reviewer was asked, and shown to none of "
         f"them.</p><ul>{listed}</ul>"
+    )
+
+
+def _fix_rounds(fix_rounds_json: object) -> str:
+    """What the host says it did about the findings, in the order it said so.
+
+    Reported, not verified: nothing in this server edits a file or runs a command,
+    so a round is an account of one. The heading says so rather than letting a
+    table of outcomes read like a record of work this machine watched happen.
+    """
+    rounds = _loads(fix_rounds_json, [])
+    if not isinstance(rounds, list) or not rounds:
+        return ""
+    rows = "".join(
+        f"<tr><td>{_e(item.get('recorded_at', ''))}</td>"
+        f"<td>{_e(item.get('outcome', ''))}</td>"
+        f"<td><code>{_e(', '.join(str(f) for f in item.get('finding_ids', [])))}</code></td>"
+        f"<td>{_e(item.get('notes', ''))}</td></tr>"
+        for item in rounds
+        if isinstance(item, dict)
+    )
+    return (
+        "<h2>Fix rounds</h2>"
+        "<p class=meta>As reported by the host AI. Nothing here edits files or runs "
+        "commands, so these are claims about work done elsewhere.</p>"
+        "<table><tr><th>Recorded</th><th>Outcome</th><th>Findings</th><th>Notes</th></tr>"
+        f"{rows}</table>"
     )
 
 

@@ -38,12 +38,16 @@ from ..consult.errors import ConsultErrorCode
 from ..consult.service import ConsultService
 from ..consult.store import ConsultStore, StoreError
 from .contract import (
+    FIX_STEPS,
     MAX_FINDINGS,
+    MAX_FIX_ROUNDS,
     MAX_LIST_ITEMS,
     MAX_SECRET_HITS,
     REVIEWER_INSTRUCTIONS,
     SEVERITY_ORDER,
     Finding,
+    FixPlan,
+    FixRound,
     MaterialItem,
     Outcome,
     RawReviewMaterial,
@@ -58,12 +62,15 @@ from .contract import (
     SecretHit,
     missing_criticals,
 )
-from .store import REVIEW_LEASE_SLACK_S, ReviewStore, canonical, sha256
+from .store import REVIEW_LEASE_SLACK_S, ReviewStore, _now, canonical, sha256
 
 # Statuses a review may be retried from. `failed` is here on purpose: a review
 # where every reviewer was offline is exactly the one worth running again.
 RETRYABLE = ("failed", "awaiting_synthesis")
 CANCELLABLE = ("pending", "running", "awaiting_synthesis", "failed")
+# Statuses a fix round can be recorded against: the ones that have findings to fix.
+# A `failed` review has none by invariant, and a `pending` one has sent nothing.
+FIXABLE = ("awaiting_synthesis", "complete")
 
 _FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
 
@@ -609,6 +616,121 @@ class ReviewService:
             latency_ms=_ms(started),
         ).check_invariants()
 
+    # --- fixing -------------------------------------------------------------
+
+    async def fix_plan(
+        self, review_id: UUID | str, finding_ids: list[str] | None = None
+    ) -> ReviewResponse:
+        """The selected findings and the steps around editing them. Changes nothing.
+
+        Two calls rather than one that switches on its arguments, for the same
+        reason `review` and `review_run` are two: "what am I about to do" and "here
+        is what I did" are different moments, and one schema covering both reads to
+        a calling model as everything being optional.
+        """
+        started = time.perf_counter()
+        return await self._guard(
+            review_id, started, lambda review: self._fix_plan(started, review, finding_ids or [])
+        )
+
+    async def _fix_plan(
+        self, started: float, review, finding_ids: list[str]
+    ) -> ReviewResponse:
+        self._fixable(review)
+        # Built on the ordinary read rather than assembled here: most fixing happens
+        # after the synthesis, and an envelope stamped `complete` that omits the
+        # summary is one the invariants refuse -- rightly.
+        response = await self._get(started, review)
+        chosen = self._selected(response.results, finding_ids)
+        picked = {f.finding_id for f in chosen}
+        return response.model_copy(
+            update={
+                "fix_plan": FixPlan(
+                    findings=chosen,
+                    # Named here rather than found again by the recheck: a selection
+                    # that leaves out a Critical is the synthesis failure one stage
+                    # later, and the host should be told before it starts editing.
+                    criticals_omitted=[
+                        f.finding_id
+                        for r in response.results
+                        for f in r.findings
+                        if f.severity == "critical" and f.finding_id not in picked
+                    ][:MAX_FINDINGS],
+                    steps=FIX_STEPS,
+                )
+            }
+        ).check_invariants()
+
+    async def record_fix_round(
+        self,
+        review_id: UUID | str,
+        finding_ids: list[str],
+        outcome: str,
+        notes: str = "",
+    ) -> ReviewResponse:
+        """Log what a round of fixing did. Records a claim; verifies nothing.
+
+        This server does not edit files or run commands, so it cannot know whether
+        the fixes landed -- the round is the host AI's own account, kept beside the
+        findings it refers to so a later recheck can be read against it.
+        """
+        started = time.perf_counter()
+        return await self._guard(
+            review_id,
+            started,
+            lambda review: self._record_fix_round(
+                started, review, finding_ids, outcome, notes
+            ),
+        )
+
+    async def _record_fix_round(
+        self, started: float, review, finding_ids: list[str], outcome: str, notes: str
+    ) -> ReviewResponse:
+        self._fixable(review)
+        self._selected(await self._results(review.id), finding_ids)
+        if len(json.loads(review.fix_rounds_json or "[]")) >= MAX_FIX_ROUNDS:
+            raise ValueError(
+                f"review `{review.id}` already has {MAX_FIX_ROUNDS} fix rounds; plan a "
+                "recheck as a new review with `parent_review_id` rather than fixing the "
+                "same one again"
+            )
+        round_ = FixRound(
+            finding_ids=finding_ids[:MAX_FINDINGS],
+            outcome=outcome,  # type: ignore[arg-type]
+            # The one part of a round that is prose. `store_full_content: false` means
+            # prose does not go on disk; the ids and the outcome are shape and stay.
+            notes=notes if self.store.keeps_content else "",
+            recorded_at=_now(),
+        )
+        await self.store.append_fix_round(review.id, round_.model_dump(mode="json"))
+        return await self._get(started, await self.store.get_review(review.id))
+
+    def _fixable(self, review) -> None:
+        if review.status not in FIXABLE:
+            raise ValueError(
+                f"review `{review.id}` is `{review.status}`; fixes are recorded against a "
+                "review that has findings, so run it and read the results first"
+            )
+
+    def _selected(self, results: list[ReviewerResult], finding_ids: list[str]) -> list[Finding]:
+        """Resolve ids to findings, refusing ones no reviewer raised.
+
+        An id that matches nothing is a fix round pointing at nobody's finding, which
+        is worse than no record at all. The exception is an operator who does not keep
+        content: the findings were never written down, so there is nothing to resolve
+        against and nothing to refuse on.
+        """
+        by_id = {f.finding_id: f for r in results for f in r.findings}
+        if not by_id and not self.store.keeps_content:
+            return []
+        unknown = [fid for fid in finding_ids if fid not in by_id]
+        if unknown:
+            raise ValueError(
+                f"no reviewer raised {', '.join(unknown)} on this review; the ids come "
+                "from `results[].findings[].finding_id`"
+            )
+        return [by_id[fid] for fid in finding_ids]
+
     async def cancel(self, review_id: UUID | str) -> ReviewResponse:
         """Stop a review, and wait for this process's reviewers to finish.
 
@@ -657,6 +779,8 @@ class ReviewService:
             summary=(
                 ReviewSummary(**json.loads(review.summary_json)) if review.summary_json else None
             ),
+            fix_rounds=_fix_rounds(review),
+            rechecks=await self.store.recheck_ids(review.id),
             latency_ms=_ms(started),
         )
 
@@ -736,6 +860,10 @@ class ReviewService:
             return (await self.store.get_review(review_id)).status  # type: ignore[return-value]
         except Exception:
             return "failed"
+
+
+def _fix_rounds(review) -> list[FixRound]:
+    return [FixRound(**r) for r in json.loads(review.fix_rounds_json or "[]")][:MAX_FIX_ROUNDS]
 
 
 def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, int]:
