@@ -265,15 +265,22 @@ class AntigravityCliAdapter:
                     )
                 usage = _add(usage, _usage(envelope))
 
-                if not answering and f"ACK {index}" not in str(envelope.get("response") or ""):
+                if not answering and f"ACK {index}" not in (
+                    said := str(envelope.get("response") or "")
+                ):
                     # The fragment asked for exactly `ACK {index}`. Anything else -- an
                     # empty response, which is what an auto-denied tool call looks like,
                     # or an answer arriving early -- means this part was not stored, and
                     # the reassembly would be built on a message with a hole in it.
+                    #
+                    # What it said instead is quoted, because the refusals seen live are
+                    # not interchangeable: a model that reads the chunked framing as a
+                    # prompt injection and one whose tool call was denied both fail here,
+                    # and only the reply tells them apart.
                     raise AdapterError(
                         ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
                         f"the agent did not acknowledge part {index} of the prompt, so the "
-                        "consultation it would answer is incomplete",
+                        f"consultation it would answer is incomplete. It said: {_excerpt(said)}",
                     )
 
         structured = envelope.get("structured_output")
@@ -395,6 +402,18 @@ def _check_event(event: dict) -> None:
             ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
             f"the agent tried to act rather than answer (tool `{named}`)",
         )
+
+
+def _excerpt(text: str, limit: int = 300) -> str:
+    """A bounded, credential-free quote of something the runtime said.
+
+    Scrubbed before it is cut, not after: a truncated credential is still a credential,
+    and the shape that matches it need not fall inside the first `limit` characters.
+    """
+    scrubbed = CREDENTIAL_SHAPES.sub("<redacted>", text).strip()
+    if not scrubbed:
+        return "nothing at all"
+    return repr(scrubbed[:limit] + ("..." if len(scrubbed) > limit else ""))
 
 
 def _result_event(agent: AgentConfig, events: list[dict], result: ProcessResult) -> dict:
