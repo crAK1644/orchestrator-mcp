@@ -280,9 +280,17 @@ def _merged_review(block: dict[str, Any], document: dict[str, Any]) -> Any:
     both is the same startup error, for the same reason -- the copy that lost would
     look edited and saved to whoever wrote it.
     """
-    written_here = "review" in block
-    written = block.get("review")
-    managed = document["review"]
+    # An empty block is the absent block. `ReviewConfig` requires a reviewer, so
+    # keeping `review: {}` would make an older managed file -- or a `review:` key
+    # left behind with nothing under it -- refuse the boot, and refuse it in the one
+    # process that can edit the file back. Absent already has a meaning and it is
+    # this one: the review tools are not advertised.
+    # `review: null` still disables the managed block -- that is an operator saying
+    # so. `review: {}` is not a decision, it is what a file that never had reviewers
+    # holds, so it defers like an absent key.
+    written_here = "review" in block and block["review"] != {}
+    written = block.get("review") or None
+    managed = document["review"] or None
     if written is not None and managed is not None:
         raise ConfigError(
             f"`review:` is defined in both the config and {managed_path(block)}. Delete "

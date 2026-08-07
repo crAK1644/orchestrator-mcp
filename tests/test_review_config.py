@@ -213,16 +213,26 @@ def test_an_explicit_null_review_disables_the_managed_block(tmp_path, host_claud
     assert loaded.review is None
 
 
-def test_an_explicit_empty_managed_review_is_preserved_for_validation(tmp_path):
+@pytest.mark.parametrize("where", ["managed", "config"])
+def test_an_empty_review_block_is_the_absent_block(tmp_path, host_claude, where):
+    """`review: {}` must not refuse the boot.
+
+    `ReviewConfig` requires a reviewer, so a `review:` key left behind with nothing
+    under it -- which is what older managed files hold -- would otherwise stop the
+    server, and stop it in the one process that can edit the file back. Absent
+    already means "the review tools are not advertised", and empty means that too.
+    """
     managed = tmp_path / "agents.yaml"
-    write_managed(managed, {}, {})
-    assert "review" in yaml.safe_load(managed.read_text())
-    with pytest.raises(Exception):
-        load_consult_config(
-            {
-                "consult": consult_block(
-                    database_path=str(tmp_path / "c.sqlite3"),
-                    managed_agents_path=str(managed),
-                )
-            }
-        )
+    write_managed(managed, {}, {} if where == "managed" else None)
+    assert "review" in yaml.safe_load(managed.read_text()) or where == "config"
+
+    loaded = load_consult_config(
+        {
+            "consult": consult_block(
+                database_path=str(tmp_path / "c.sqlite3"),
+                managed_agents_path=str(managed),
+                **({"review": {}} if where == "config" else {}),
+            )
+        }
+    )
+    assert loaded.review is None

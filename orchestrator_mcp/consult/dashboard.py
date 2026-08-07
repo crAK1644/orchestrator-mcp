@@ -942,7 +942,8 @@ class ConsultDashboard:
 
     def _unbootable_review(self, review: Any, agents: dict[str, Any]) -> str | None:
         """Why the managed review block would stop the next server boot."""
-        if review is None:
+        # Empty is absent, the same way `_merged_review` reads it.
+        if not review:
             return None
         try:
             block = ReviewConfig(**review)

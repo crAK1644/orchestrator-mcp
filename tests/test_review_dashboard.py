@@ -358,7 +358,9 @@ async def test_an_agent_save_refuses_a_hand_edited_invalid_review_block(
     serve, editable  # noqa: F811
 ):
     get, consult_config = serve(editable())
-    write_managed(consult_config.managed_agents_path, {}, {})
+    # Two standard reviewers: something only a hand-edit produces, and something the
+    # next boot refuses. An empty block is not this -- that one means "no reviewers".
+    write_managed(consult_config.managed_agents_path, {}, {"reviewers": ["a", "b"]})
 
     status, body, location = get.post(
         "/agents",
