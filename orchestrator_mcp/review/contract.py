@@ -448,6 +448,10 @@ machine, so it must be valid JSON: escape every `"` inside a string as `\\"`, an
 newline as `\\n`. Quoting code is the usual way this breaks -- if a snippet is awkward \
 to escape, describe it instead of quoting it.
 
+Every finding you state in prose must also appear in the block. The block is the review: \
+a Critical argued in prose and left out of the block is not counted anywhere, and a \
+synthesis that drops it will be accepted.
+
 Prose without the block loses every finding you made: nothing downstream can rank them, \
 group them, or check that your Critical survived. If you are asked again for the block, \
 send only the block.

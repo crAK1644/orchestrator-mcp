@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import UUID
 
+from ..contract import scrub_json
 from .contract import ConsultRoute, SourceMode
 from .errors import ConsultErrorCode
 from .routing import RoutingDecision
@@ -568,8 +569,12 @@ class ConsultStore:
         authenticated: bool | None,
         detail: str | None = None,
     ) -> None:
-        # `detail` is ours to write -- a short explanation like "not on PATH". The
-        # output of a login command never reaches this argument.
+        # `detail` is ours to write -- a short explanation like "not on PATH". But it
+        # is built from an `AdapterError`, and what an adapter puts in one is the
+        # adapter's decision: one that starts quoting a failing argv or a stderr line
+        # would carry a credential here without this call changing at all. Scrubbed at
+        # the insert, so the guarantee belongs to the column rather than to whichever
+        # adapter wrote the message.
         await self._run(
             lambda: self._db.execute(
                 "INSERT INTO agent_status_checks (agent_id, installed, authenticated, detail, "
@@ -578,7 +583,7 @@ class ConsultStore:
                     agent_id,
                     None if installed is None else int(installed),
                     None if authenticated is None else int(authenticated),
-                    detail,
+                    scrub_json(detail),
                     _now(),
                 ),
             )

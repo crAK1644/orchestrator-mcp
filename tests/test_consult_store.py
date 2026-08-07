@@ -283,6 +283,18 @@ async def test_a_status_check_stores_a_verdict_not_an_auth_transcript(store):
     assert not columns & {"env", "environment", "token", "credentials", "output"}
 
 
+async def test_a_status_detail_that_quotes_a_credential_is_scrubbed_at_the_insert(store):
+    """No adapter quotes stderr into an `AdapterError` today. One that starts to
+    should not be the thing standing between a credential and this column."""
+    secret = "sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH"
+    await store.record_status_check(
+        "codex-sol", installed=False, authenticated=False,
+        detail=f"could not start `codex --key {secret}`",
+    )
+    detail = store._db.execute("SELECT detail FROM agent_status_checks").fetchone()["detail"]
+    assert secret not in detail and "[redacted]" in detail
+
+
 # --- leases -----------------------------------------------------------------
 
 

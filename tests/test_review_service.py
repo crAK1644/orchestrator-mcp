@@ -19,6 +19,7 @@ from orchestrator_mcp.consult.contract import ConsultationContent, ConsultSource
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.store import ConsultStore
 from orchestrator_mcp.contract import Usage
+from orchestrator_mcp.review.contract import MAX_GOAL_CHARS, MAX_REVIEWERS
 from orchestrator_mcp.review.service import ReviewService
 
 from .conftest import agent
@@ -188,6 +189,39 @@ async def test_context_and_context_paths_together_are_refused(build, tmp_path):
     )
     assert response.error.code is ConsultErrorCode.INVALID_REQUEST
     assert "not both" in response.error.message
+
+
+@pytest.mark.parametrize("over", ["goal", "reviewers"])
+async def test_a_refused_plan_leaves_no_row_behind(build, over):
+    """A `pending` row for a plan the caller was told was refused is unreachable:
+    nothing returns its id, and it holds material nobody accepted.
+
+    Two bounds because they fail in different places: the goal is checked here, and
+    the reviewer count only by `ReviewPlan` -- which used to run after the insert."""
+    many = {f"codex-{n}": agent("codex", f"gpt-5.6-{n}", 10) for n in range(MAX_REVIEWERS + 1)}
+    service = await build(
+        {aid: StubAdapter() for aid in many},
+        agents=many,
+        review={"reviewers": [next(iter(many))], "deep_reviewers": [next(iter(many))]},
+    )
+
+    if over == "goal":
+        response = await service.plan(goal="x" * (MAX_GOAL_CHARS + 1))
+    else:
+        response = await service.plan(goal="review the parser", reviewers=list(many))
+
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert await service.list() == []
+
+
+async def test_the_same_reviewer_named_twice_is_refused(build):
+    """One row per `(review_id, agent_id)`, so the second task overwrites the first
+    rather than adding an opinion -- and both were paid for."""
+    service = await build()
+
+    response = await service.plan(goal="review the parser", reviewers=["codex-sol", "codex-sol"])
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert "more than once" in response.error.message
 
 
 async def test_a_deep_review_plans_every_configured_reviewer(build):

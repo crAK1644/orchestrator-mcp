@@ -250,7 +250,9 @@ Reviews are two calls, not one:
 1. **`orchestrator_review`** returns a plan and sends nothing: which reviewers, how much material, whether web access was requested, how many requests it will cost, and the lines where something credential-shaped was found — positions only, never values. Show it to the user.
 2. **`orchestrator_review_run`** spends the one-time `confirm_token` from that plan and asks every reviewer in parallel.
 
-It stops at `awaiting_synthesis`. External models replying is not a finished review; **`orchestrator_finalize_review`** records your AI's combined conclusion and is the only path to `complete`. Every Critical finding any reviewer raised must be referenced there, **including one only a single reviewer raised while the others disagree** — that is checked, and the call is refused otherwise.
+It stops at `awaiting_synthesis`. External models replying is not a finished review; **`orchestrator_finalize_review`** records your AI's combined conclusion and is the only path to `complete`. Every Critical finding in a reviewer's **findings block** must be referenced there, **including one only a single reviewer raised while the others disagree** — that is checked, and the call is refused otherwise.
+
+The findings block is the review, and the check can only be over the block. Prose around it is not parsed and not certified: a reviewer that argues a Critical in prose and then sends `{"findings": []}` will finalize cleanly, because nothing machine-readable said otherwise. `REVIEWER_INSTRUCTIONS` tells every reviewer this, so it is a contract rather than a gap — but a human reading a review still reads the prose.
 
 By default, `orchestrator_review_run` uses `secrets="mask"` and sends the redacted
 copy. `secrets="send_as_is"` is an explicit escape hatch for a credential-shaped

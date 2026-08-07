@@ -44,6 +44,7 @@ from .contract import (
     FIX_STEPS,
     MAX_FINDINGS,
     MAX_FIX_ROUNDS,
+    MAX_GOAL_CHARS,
     MAX_LABEL_CHARS,
     MAX_LIST_ITEMS,
     MAX_MATERIAL_ITEMS,
@@ -190,6 +191,17 @@ class ReviewService:
                 manifest = read_manifest
                 material_verified = True
 
+        # Bounded here rather than left to `ReviewPlan`: a plan that fails validation
+        # after the insert leaves a `pending` row nobody can reach, holding material
+        # the caller was told was never accepted. `_read_paths` checks the same limit
+        # for the path route; a `context` passed as a string arrives unchecked.
+        if len(goal) > MAX_GOAL_CHARS:
+            raise ValueError(f"the goal is over the {MAX_GOAL_CHARS} character limit")
+        if len(context or "") > MAX_CONTEXT_CHARS:
+            raise ValueError(f"the context is over the {MAX_CONTEXT_CHARS} character limit")
+        if len(manifest) > MAX_MATERIAL_ITEMS:
+            raise ValueError(f"at most {MAX_MATERIAL_ITEMS} material items, got {len(manifest)}")
+
         hits = [SecretHit(field="goal", line=n) for n in secret_lines(goal)]
         hits += [SecretHit(field="context", line=n) for n in secret_lines(context or "")]
 
@@ -213,6 +225,30 @@ class ReviewService:
         raw_sha = sha256(canonical({"goal": goal, "context": context}))
         token = secrets_mod.token_urlsafe(32)
 
+        seen: dict[str, int] = {}
+        for snapshot in snapshots:
+            seen[snapshot.model] = seen.get(snapshot.model, 0) + 1
+
+        # Built before the insert for the same reason as the checks above: whatever
+        # `ReviewPlan` refuses must be refused while there is still nothing on disk.
+        plan = ReviewPlan(
+            mode=mode,
+            reviewers=snapshots,
+            material=manifest,
+            material_verified=material_verified,
+            goal_chars=len(goal),
+            context_chars=len(context or ""),
+            material_sha256=material_sha,
+            web_requested=web,
+            expected_requests=len(snapshots),
+            secret_hits=hits[:MAX_SECRET_HITS],
+            duplicate_models=sorted(m for m, n in seen.items() if n > 1),
+            host_model_conflict=next(
+                (s.model for s in snapshots if host_model and s.model == host_model), None
+            ),
+            confirm_token=token,
+        )
+
         await self.store.create_review(
             review_id=review_id,
             mode=mode,
@@ -228,31 +264,11 @@ class ReviewService:
             parent_review_id=parent_review_id,
         )
 
-        seen: dict[str, int] = {}
-        for snapshot in snapshots:
-            seen[snapshot.model] = seen.get(snapshot.model, 0) + 1
-
         return ReviewResponse(
             review_id=review_id,
             mode=mode,
             status="pending",
-            plan=ReviewPlan(
-                mode=mode,
-                reviewers=snapshots,
-                material=manifest,
-                material_verified=material_verified,
-                goal_chars=len(goal),
-                context_chars=len(context or ""),
-                material_sha256=material_sha,
-                web_requested=web,
-                expected_requests=len(snapshots),
-                secret_hits=hits[:MAX_SECRET_HITS],
-                duplicate_models=sorted(m for m, n in seen.items() if n > 1),
-                host_model_conflict=next(
-                    (s.model for s in snapshots if host_model and s.model == host_model), None
-                ),
-                confirm_token=token,
-            ),
+            plan=plan,
             latency_ms=_ms(started),
         ).check_invariants()
 
@@ -283,6 +299,12 @@ class ReviewService:
             chosen = reviewers
         if not chosen:
             raise ValueError(f"`{mode}` review has no reviewers configured")
+        # A reviewer is one row keyed by `(review_id, agent_id)`, so a repeated id is
+        # not a second opinion -- it is two tasks racing to overwrite one row, and the
+        # loser's answer is paid for and thrown away.
+        repeated = sorted({a for a in chosen if chosen.count(a) > 1})
+        if repeated:
+            raise ValueError(f"named more than once: {', '.join(repeated)}")
 
         snapshots = []
         for agent_id in chosen:
