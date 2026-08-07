@@ -165,6 +165,23 @@ async def test_nothing_a_review_touched_is_stored_raw(build):
     assert_absent(build.path, SECRET, OTHER)
 
 
+async def test_a_credential_shaped_model_name_is_not_stored_by_the_plan(tmp_path, host_claude):
+    """The reviewer snapshot is the one column written from configuration rather than
+    from a model, and a model name is a free-form string like any other."""
+    path = tmp_path / "consultations.sqlite3"
+    config = ConsultConfig(
+        database_path=str(path),
+        agents={"codex-sol": agent("codex", OTHER, 10)},
+        review={"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol"]},
+    )
+    service = await StubService(config, "claude").open()
+    plan = await service.plan(goal="review the parser", context="def parse(): ...")
+    assert plan.error is None, plan.error
+    await service.close()
+
+    assert_absent(path, OTHER)
+
+
 async def test_a_crash_immediately_after_the_turn_leaves_nothing_raw(build, monkeypatch):
     """The promise is that the raw value never lands, not that a later pass cleans
     it up. A cleanup pass is only needed by a design that writes the secret first --

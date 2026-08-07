@@ -1634,7 +1634,7 @@ def _citations(sources: object) -> str:
         return ""
     listed = "".join(
         f"<li>{_e(source.get('title') or '')} "
-        f"<code>{_e(source.get('url') or '')}</code></li>"
+        f"<code>{_e(source.get('locator') or '')}</code></li>"
         for source in sources
         if isinstance(source, dict)
     )

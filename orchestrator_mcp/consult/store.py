@@ -166,6 +166,9 @@ MIGRATIONS: list[str] = [
     CREATE INDEX review_consultations_consultation_id_idx
         ON review_consultations(consultation_id);
     """,
+    """
+    ALTER TABLE review_consultations ADD COLUMN sources_json TEXT;
+    """,
 ]
 
 DEFAULT_PROFILE = "default"

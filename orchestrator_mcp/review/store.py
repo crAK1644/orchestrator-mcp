@@ -76,6 +76,7 @@ class ReviewerRow:
     answer: str | None
     error_code: str | None
     created_at: str
+    sources_json: str | None = None
 
 
 def _now() -> str:
@@ -167,7 +168,7 @@ class ReviewStore:
                     canonical(scrub_json(material)),
                     material_sha256,
                     raw_sha256,
-                    canonical(reviewer_snapshot),
+                    canonical(scrub_json(reviewer_snapshot)),
                     sha256(confirm_token),
                     canonical(secret_hits),
                     int(bool(web_requested)),
@@ -372,25 +373,31 @@ class ReviewStore:
         findings_truncated: int = 0,
         answer: str | None = None,
         error_code: str | None = None,
+        sources: Any = None,
     ) -> None:
         """Upsert one reviewer's outcome.
 
         Upsert rather than insert: a retry is another attempt by the same reviewer on
         the same review, and `(review_id, agent_id)` stays one row so no consultation
         is left dangling where deletion cannot find it.
+
+        `sources` is stored rather than left in the response because finalization is a
+        separate call: it rebuilds every result from these rows, so a citation that
+        lives only in memory is a citation the synthesis can never carry through.
         """
 
         def work() -> None:
             self._db.execute(
                 "INSERT INTO review_consultations (review_id, agent_id, consultation_id, status, "
                 "findings_json, findings_parsed, findings_truncated, answer, error_code, "
-                "created_at) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "sources_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT (review_id, agent_id) DO UPDATE SET "
                 "consultation_id = excluded.consultation_id, status = excluded.status, "
                 "findings_json = excluded.findings_json, "
                 "findings_parsed = excluded.findings_parsed, "
                 "findings_truncated = excluded.findings_truncated, answer = excluded.answer, "
-                "error_code = excluded.error_code, created_at = excluded.created_at",
+                "error_code = excluded.error_code, sources_json = excluded.sources_json, "
+                "created_at = excluded.created_at",
                 (
                     str(review_id),
                     agent_id,
@@ -401,12 +408,38 @@ class ReviewStore:
                     findings_truncated,
                     self._keep(answer),
                     error_code,
+                    _json_or_none(self._keep(sources)),
                     _now(),
                 ),
             )
             self._db.execute(
                 "UPDATE reviews SET updated_at = ? WHERE id = ?", (_now(), str(review_id))
             )
+
+        await self._run(work)
+
+    async def reserve_reviewers(self, review_id: UUID | str, agent_ids: list[str]) -> None:
+        """One row per reviewer before any of them runs, so none can vanish.
+
+        Every outcome is read back from these rows, and a reviewer whose task raised
+        before it could record anything has no row at all -- so it is not counted as
+        failed, it stops having been asked, and a review missing half its reviewers
+        settles as `all`. Reserving first makes the absence of an answer a `failed`
+        row rather than a gap.
+
+        `DO NOTHING`, so a retry keeps the earlier attempt's `consultation_id`: that
+        column is how a delete finds the consultation to remove with it.
+        """
+
+        def work() -> None:
+            now = _now()
+            for agent_id in agent_ids:
+                self._db.execute(
+                    "INSERT INTO review_consultations (review_id, agent_id, status, error_code, "
+                    "created_at) VALUES (?,?,'failed',?,?) "
+                    "ON CONFLICT (review_id, agent_id) DO NOTHING",
+                    (str(review_id), agent_id, ConsultErrorCode.TRANSPORT_ERROR.value, now),
+                )
 
         await self._run(work)
 

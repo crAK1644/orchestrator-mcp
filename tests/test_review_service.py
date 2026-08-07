@@ -15,7 +15,7 @@ import pytest
 
 from orchestrator_mcp.consult.adapters.base import AdapterError, AdapterResult, AgentStatus
 from orchestrator_mcp.consult.config import ConsultConfig
-from orchestrator_mcp.consult.contract import ConsultationContent, SourceMode
+from orchestrator_mcp.consult.contract import ConsultationContent, ConsultSource, SourceMode
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.store import ConsultStore
 from orchestrator_mcp.contract import Usage
@@ -45,8 +45,10 @@ class StubAdapter:
         delay: float = 0.0,
         entered: asyncio.Event | None = None,
         release: asyncio.Event | None = None,
+        sources: list[ConsultSource] | None = None,
     ) -> None:
         self.answer = answer
+        self._sources = sources or []
         self._error = error
         self._status = status
         self._delay = delay
@@ -81,7 +83,7 @@ class StubAdapter:
         return AdapterResult(
             content=ConsultationContent(
                 answer=self.answer, assumptions=[], uncertainties=[],
-                follow_up_questions=[], sources=[],
+                follow_up_questions=[], sources=list(self._sources),
             ),
             native_session_id="native-1",
             model_used="gpt-5.6-sol",
@@ -504,6 +506,31 @@ async def test_retrying_a_review_where_everyone_answered_is_refused(build):
     assert "nothing to retry" in (await service.retry(plan.review_id)).error.message
 
 
+async def test_a_reviewer_that_dies_before_recording_still_counts_against_the_review(
+    build, monkeypatch
+):
+    """A reviewer is read back from its row, so one that never wrote a row used to
+    vanish -- and a review missing a reviewer settled `all` and could be certified."""
+    service = await build()
+    original = service.store.record_reviewer_result
+
+    async def die_for_one(review_id, agent_id, *args, **kwargs):
+        if agent_id == "gemini-x":
+            raise RuntimeError("the write died")
+        return await original(review_id, agent_id, *args, **kwargs)
+
+    monkeypatch.setattr(service.store, "record_reviewer_result", die_for_one)
+
+    plan = await planned(service, mode="deep")
+    run = await service.run(
+        plan.review_id, plan.plan.confirm_token, host_findings=["the read is unbounded"]
+    )
+
+    assert run.error is None, run.error
+    assert run.outcome == "some"
+    assert {r.agent_id: r.ok for r in run.results} == {"codex-sol": True, "gemini-x": False}
+
+
 # --- cancellation -----------------------------------------------------------
 
 
@@ -721,6 +748,21 @@ async def test_a_web_reviewers_citations_reach_the_summary(build):
         ),
     )
     assert done.summary.citations[0].title == "CVE-1"
+
+
+async def test_a_reviewers_own_citations_survive_a_later_finalize(build):
+    """Finalization rebuilds every result from the rows, so a summary written in a
+    separate call carries the reviewer's sources only if the row kept them."""
+    cited = ConsultSource(title="CVE-1", locator="https://example.test/1", source_type="web")
+    service = await build({"codex-sol": StubAdapter(sources=[cited]), "gemini-x": StubAdapter()})
+    plan = await planned(service)
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+    assert run.results[0].sources == [cited]
+
+    done = await service.finalize(plan.review_id, _synthesis(run))
+    assert [(s.title, s.locator) for s in done.summary.citations] == [
+        ("CVE-1", "https://example.test/1")
+    ]
 
 
 # --- reading back -----------------------------------------------------------

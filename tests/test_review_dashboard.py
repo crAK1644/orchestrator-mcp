@@ -13,6 +13,8 @@ import sqlite3
 import pytest
 import yaml
 
+from orchestrator_mcp.consult.contract import ConsultSource
+from orchestrator_mcp.consult.dashboard import _citations
 from orchestrator_mcp.consult.managed import read_managed_document, write_managed
 from orchestrator_mcp.consult.store import MIGRATIONS
 
@@ -255,6 +257,17 @@ async def test_a_review_with_no_fix_rounds_has_no_fix_section(serve, review_conf
     review_id = await make_review(consult_config)
 
     assert "Fix rounds" not in get(f"/reviews/{review_id}")[1]
+
+
+def test_a_citation_is_rendered_by_the_name_the_contract_gives_it():
+    """The stored citation is a dumped `ConsultSource`, so the page reads its keys or
+    it renders an empty one -- which is what a guessed key name looks like."""
+    source = ConsultSource(
+        title="CVE-1", locator="https://example.test/1", source_type="web"
+    ).model_dump(mode="json")
+
+    rendered = _citations([source])
+    assert "CVE-1" in rendered and "https://example.test/1" in rendered
 
 
 async def test_a_planted_credential_reaches_no_review_page(serve, review_config):  # noqa: F811

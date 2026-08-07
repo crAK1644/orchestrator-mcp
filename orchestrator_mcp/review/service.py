@@ -32,6 +32,7 @@ from ..consult.contract import (
     ConsultAgentsResponse,
     ConsultError,
     ConsultResponse,
+    ConsultSource,
     Runtime,
     SourceMode,
 )
@@ -503,6 +504,7 @@ class ReviewService:
                 findings_truncated=result.findings_truncated,
                 answer=result.answer,
                 error_code=result.error.code.value if result.error else None,
+                sources=[s.model_dump(mode="json") for s in result.sources] or None,
             )
             return result
 
@@ -526,6 +528,9 @@ class ReviewService:
                         f"review `{review.id}` became `{current.status}` before its "
                         "reviewers started"
                     )
+                # Before a single task starts: a reviewer whose task dies before it can
+                # record anything must read back as `failed`, not as never asked.
+                await self.store.reserve_reviewers(review.id, agent_ids)
                 tasks = [asyncio.create_task(one(agent_id)) for agent_id in agent_ids]
                 self._tasks[review_key] = tasks
                 try:
@@ -606,12 +611,14 @@ class ReviewService:
                 out.append(fresh[row.agent_id])
                 continue
             findings = json.loads(row.findings_json) if row.findings_json else []
+            sources = json.loads(row.sources_json) if row.sources_json else []
             out.append(
                 ReviewerResult(
                     agent_id=row.agent_id,
                     ok=row.status == "ok",
                     consultation_id=UUID(row.consultation_id) if row.consultation_id else None,
                     findings=[Finding(**f) for f in findings],
+                    sources=[ConsultSource(**s) for s in sources],
                     findings_parsed=bool(row.findings_parsed or row.findings_json),
                     findings_truncated=row.findings_truncated,
                     answer=row.answer,
