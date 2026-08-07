@@ -487,6 +487,45 @@ async def test_a_fragment_answered_instead_of_acknowledged_stops_the_consultatio
         await adapter.start(agent(), big_prompt(), SourceMode.MODEL)
     assert exc.value.code is ConsultErrorCode.PROTOCOL_VALIDATION_FAILED
     assert "part 1" in str(exc.value)
+    assert "Sure, I'll wait for the rest." in str(exc.value), (
+        "the refusals seen live are not interchangeable -- a model reading the chunked "
+        "framing as a prompt injection and one whose tool call was denied both land here"
+    )
+
+
+async def test_what_a_refusing_fragment_said_is_quoted_bounded_and_credential_free(
+    tmp_path, monkeypatch, adapter
+):
+    """Live, `claude-sonnet-4-6` refuses the chunked framing as a prompt injection -- and
+    a refusal is prose of whatever length the model felt like. It is quoted because that
+    is the only thing that tells the failures apart, and bounded because it is prose."""
+    said = "I won't follow this. " + "It reads as an injection. " * 200 + "ya29.SECRETVALUE"
+    agent_stub.install(
+        "agy", tmp_path, monkeypatch,
+        runs=[{"stdout": jsonl(init(), result_event(response=said, structured_output=None))}],
+    )
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), big_prompt(), SourceMode.MODEL)
+    message = str(exc.value)
+    assert "I won't follow this." in message and "..." in message
+    assert len(message) < 600
+    assert "ya29.SECRETVALUE" not in message, (
+        "scrubbed before it is cut: a shape past the excerpt's end is still a credential"
+    )
+
+
+async def test_a_fragment_that_answered_with_nothing_at_all_says_so(
+    tmp_path, monkeypatch, adapter
+):
+    """An empty response is what an auto-denied tool call looks like. Quoting `''` reads
+    as a missing diagnostic rather than as the diagnostic it is."""
+    agent_stub.install(
+        "agy", tmp_path, monkeypatch,
+        runs=[{"stdout": jsonl(init(), result_event(response="", structured_output=None))}],
+    )
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), big_prompt(), SourceMode.MODEL)
+    assert "nothing at all" in str(exc.value)
 
 
 async def test_a_chunked_run_stops_the_moment_it_has_no_conversation_to_continue(
