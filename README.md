@@ -294,7 +294,9 @@ The dashboard runs as its own process and reads the configuration once, at start
 
 Set `editable: true` and open `/agents`. This is a second flag on purpose: turning the dashboard on gets you a window, and editing is a different thing to agree to.
 
-What the form can change: consult agents only — runtime, command, model, priority, enabled, the five capability scores, web search, and reasoning effort. Nothing else is editable from the browser. `capabilities`, `model_list`, `router_settings`, `limits`, `timeout_s`, `web_turn_limit`, `store_full_content`, and the dashboard's own host and port are config-file settings.
+What the form can change: consult agents only — runtime, command, model, priority, enabled, the five capabilities, web search, and reasoning effort. Nothing else is editable from the browser. `capabilities`, `model_list`, `router_settings`, `limits`, `timeout_s`, `web_turn_limit`, `store_full_content`, and the dashboard's own host and port are config-file settings.
+
+Capabilities are ticks on the form, not the 0–100 numbers the config file holds: the question is which work an agent should be offered, and among agents ticked for the same capability `priority` already decides the order. A newly ticked box saves 100. A score you wrote by hand to break a tie is preserved — the form carries it back out and saves it unchanged, so editing an unrelated field does not flatten it.
 
 Agents you add here are written to `~/.orchestrator-mcp/agents.yaml`, with `0600` permissions in a `0700` directory. The dashboard never writes `config.yaml`. Agents defined there are listed on the page but not editable, and the page says so.
 
