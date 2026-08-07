@@ -344,7 +344,7 @@ Credential-shaped values are masked before storage. `secrets="send_as_is"` is an
 | **Review approval** | Plans bind the scope to a one-time token before reviewer requests are made. |
 
 > [!WARNING]
-> Redaction is best-effort pattern matching, not a secret scanner with perfect recall. Full prompts and answers may be stored locally and may also remain in vendor CLI history. Keep the database private, or set `store_full_content: false`.
+> **Redaction covers this database only.** Credential-shaped values are replaced before every insert, and detection is best-effort pattern matching rather than a scanner with perfect recall — a secret with no recognizable shape survives it. Material sent to a reviewer also lands in that reviewer's own CLI history (Codex writes `~/.codex/sessions/`, and the others keep their own logs). Nothing here can reach those files. Keep the database private, or set `store_full_content: false`.
 
 Orchestrator checks structure, routing, permissions, and model identity where observable. It cannot prove that a model's factual claims are true.
 
