@@ -44,7 +44,7 @@ def test_no_review_block_leaves_the_review_surface_off():
             {"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol", "codex-sol"]},
             "more than once",
         ),
-        ({"reviewers": ["nobody"]}, "not a configured agent"),
+        ({"reviewers": ["nobody"], "deep_reviewers": ["codex-sol"]}, "not a configured agent"),
     ],
 )
 def test_a_malformed_reviewer_list_refuses_and_names_the_fix(review, expected):
@@ -71,6 +71,7 @@ def test_a_disabled_reviewer_is_refused():
         ConsultConfig(
             **consult_block(
                 agents={"off": agent("codex", enabled=False)}, review={"reviewers": ["off"]}
+                | {"deep_reviewers": ["off"]}
             )
         )
 
@@ -82,7 +83,7 @@ def test_a_reviewer_that_scores_zero_for_review_is_refused():
         ConsultConfig(
             **consult_block(
                 agents={"weak": agent("codex", scores={"coding": 90})},
-                review={"reviewers": ["weak"]},
+                review={"reviewers": ["weak"], "deep_reviewers": ["weak"]},
             )
         )
 
@@ -108,7 +109,9 @@ def test_a_review_block_in_the_managed_file_reaches_the_config(tmp_path, host_cl
 def test_a_review_block_in_both_files_refuses_to_boot(tmp_path, host_claude):
     """A precedence rule is how an edit comes to save successfully and do nothing."""
     managed = tmp_path / "agents.yaml"
-    write_managed(managed, {}, {"reviewers": ["codex-sol"]})
+    write_managed(
+        managed, {}, {"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol"]}
+    )
 
     with pytest.raises(ConfigError, match="defined in both"):
         load_consult_config(
@@ -159,7 +162,9 @@ def test_the_managed_file_is_read_once_per_load(tmp_path, host_claude, monkeypat
     with the reviewers from after -- a combination nobody saved and no validator
     downstream could spot."""
     managed = tmp_path / "agents.yaml"
-    write_managed(managed, {}, {"reviewers": ["codex-sol"]})
+    write_managed(
+        managed, {}, {"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol"]}
+    )
 
     reads = []
     original = read_managed_document
@@ -175,3 +180,49 @@ def test_the_managed_file_is_read_once_per_load(tmp_path, host_claude, monkeypat
         )}
     )
     assert len(reads) == 1
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        {},
+        {"reviewers": ["codex-sol"]},
+        {"deep_reviewers": ["codex-sol"]},
+    ],
+)
+def test_review_defaults_are_validated_instead_of_booting_an_empty_surface(review):
+    with pytest.raises(Exception):
+        ConsultConfig(**consult_block(review=review))
+
+
+def test_an_explicit_null_review_disables_the_managed_block(tmp_path, host_claude):
+    managed = tmp_path / "agents.yaml"
+    write_managed(
+        managed, {}, {"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol"]}
+    )
+
+    loaded = load_consult_config(
+        {
+            "consult": consult_block(
+                database_path=str(tmp_path / "c.sqlite3"),
+                managed_agents_path=str(managed),
+                review=None,
+            )
+        }
+    )
+    assert loaded.review is None
+
+
+def test_an_explicit_empty_managed_review_is_preserved_for_validation(tmp_path):
+    managed = tmp_path / "agents.yaml"
+    write_managed(managed, {}, {})
+    assert "review" in yaml.safe_load(managed.read_text())
+    with pytest.raises(Exception):
+        load_consult_config(
+            {
+                "consult": consult_block(
+                    database_path=str(tmp_path / "c.sqlite3"),
+                    managed_agents_path=str(managed),
+                )
+            }
+        )

@@ -54,6 +54,7 @@ class Review:
     raw_sha256: str
     reviewer_snapshot_json: str
     confirm_token_sha: str | None
+    secrets_mode: str | None
     secret_hits_json: str
     web_requested: int
     host_findings_json: str | None
@@ -70,6 +71,8 @@ class ReviewerRow:
     consultation_id: str | None
     status: str
     findings_json: str | None
+    findings_parsed: int
+    findings_truncated: int
     answer: str | None
     error_code: str | None
     created_at: str
@@ -157,7 +160,7 @@ class ReviewStore:
                 "VALUES (?,?,?,'pending',NULL,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(review_id),
-                    str(parent_review_id) if parent_review_id else None,
+                    str(parent_review_id) if parent_review_id is not None else None,
                     mode,
                     scrub_json(goal),
                     scrub_json(context),
@@ -198,8 +201,15 @@ class ReviewStore:
 
         return await self._run(work)
 
-    async def consume_confirm_token(self, review_id: UUID | str, token: str) -> None:
-        """Spend the one-time token and start the review, in one statement.
+    async def consume_confirm_token(
+        self,
+        review_id: UUID | str,
+        token: str,
+        *,
+        host_findings: list[str] | None = None,
+        secrets_mode: str = "mask",
+    ) -> None:
+        """Spend the token, record run metadata, and start, in one statement.
 
         The status predicate is what makes two simultaneous `orchestrator_review_run` calls launch
         one review instead of two paid ones; nulling the hash is what stops a third
@@ -212,8 +222,15 @@ class ReviewStore:
             try:
                 cursor = db.execute(
                     "UPDATE reviews SET status = 'running', confirm_token_sha = NULL, "
+                    "host_findings_json = COALESCE(?, host_findings_json), secrets_mode = ?, "
                     "updated_at = ? WHERE id = ? AND status = 'pending' AND confirm_token_sha = ?",
-                    (_now(), str(review_id), sha256(token)),
+                    (
+                        _json_or_none(self._keep(host_findings)) if host_findings else None,
+                        secrets_mode,
+                        _now(),
+                        str(review_id),
+                        sha256(token),
+                    ),
                 )
                 taken = cursor.rowcount == 1
             except Exception:
@@ -242,6 +259,9 @@ class ReviewStore:
         False means somebody got there first -- a cancel that landed while the
         reviewers were finishing, or a second retry. The caller decides what that
         means; what it must not do is overwrite the state that won.
+
+        `outcome` uses `COALESCE` deliberately: transitions that do not recompute an
+        outcome preserve the value derived from the persisted reviewer rows.
         """
         placeholders = ",".join("?" * len(allowed_from))
 
@@ -270,9 +290,8 @@ class ReviewStore:
     async def append_fix_round(self, review_id: UUID | str, round_: dict[str, Any]) -> None:
         """Add one round to the review's log.
 
-        Read and write in a single unit of work, because `_run` serializes on one
-        worker: two rounds recorded at once would otherwise both read the same list
-        and the second would write the first one out of existence.
+        Read and write under `BEGIN IMMEDIATE`, so two server processes cannot both
+        read the same list and let the second write the first round out of existence.
 
         Not `_keep`: dropping the whole log under `store_full_content: false` would
         lose the shape too, and the shape here -- which findings a round took on and
@@ -280,20 +299,27 @@ class ReviewStore:
         """
 
         def work() -> None:
-            row = self._db.execute(
-                "SELECT fix_rounds_json FROM reviews WHERE id = ?", (str(review_id),)
-            ).fetchone()
-            if row is None:
-                raise StoreError(
-                    ConsultErrorCode.SESSION_NOT_FOUND,
-                    f"no review `{review_id}` in this store",
+            db = self._db
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                row = db.execute(
+                    "SELECT fix_rounds_json FROM reviews WHERE id = ?", (str(review_id),)
+                ).fetchone()
+                if row is None:
+                    raise StoreError(
+                        ConsultErrorCode.SESSION_NOT_FOUND,
+                        f"no review `{review_id}` in this store",
+                    )
+                rounds = json.loads(row[0]) if row[0] else []
+                rounds.append(scrub_json(round_))
+                db.execute(
+                    "UPDATE reviews SET fix_rounds_json = ?, updated_at = ? WHERE id = ?",
+                    (canonical(rounds), _now(), str(review_id)),
                 )
-            rounds = json.loads(row[0]) if row[0] else []
-            rounds.append(scrub_json(round_))
-            self._db.execute(
-                "UPDATE reviews SET fix_rounds_json = ?, updated_at = ? WHERE id = ?",
-                (canonical(rounds), _now(), str(review_id)),
-            )
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+            db.execute("COMMIT")
 
         await self._run(work)
 
@@ -320,6 +346,19 @@ class ReviewStore:
             )
         )
 
+    async def complete_review(self, review_id: UUID | str, summary: Any) -> bool:
+        """Store the synthesis only if it atomically wins the completion transition."""
+
+        def work() -> bool:
+            cursor = self._db.execute(
+                "UPDATE reviews SET summary_json = ?, status = 'complete', updated_at = ? "
+                "WHERE id = ? AND status = 'awaiting_synthesis'",
+                (_json_or_none(self._keep(summary)), _now(), str(review_id)),
+            )
+            return cursor.rowcount == 1
+
+        return await self._run(work)
+
     # --- reviewer rows ------------------------------------------------------
 
     async def record_reviewer_result(
@@ -329,6 +368,8 @@ class ReviewStore:
         status: str,
         consultation_id: UUID | str | None = None,
         findings: Any = None,
+        findings_parsed: bool = False,
+        findings_truncated: int = 0,
         answer: str | None = None,
         error_code: str | None = None,
     ) -> None:
@@ -342,17 +383,22 @@ class ReviewStore:
         def work() -> None:
             self._db.execute(
                 "INSERT INTO review_consultations (review_id, agent_id, consultation_id, status, "
-                "findings_json, answer, error_code, created_at) VALUES (?,?,?,?,?,?,?,?) "
+                "findings_json, findings_parsed, findings_truncated, answer, error_code, "
+                "created_at) VALUES (?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT (review_id, agent_id) DO UPDATE SET "
                 "consultation_id = excluded.consultation_id, status = excluded.status, "
-                "findings_json = excluded.findings_json, answer = excluded.answer, "
+                "findings_json = excluded.findings_json, "
+                "findings_parsed = excluded.findings_parsed, "
+                "findings_truncated = excluded.findings_truncated, answer = excluded.answer, "
                 "error_code = excluded.error_code, created_at = excluded.created_at",
                 (
                     str(review_id),
                     agent_id,
-                    str(consultation_id) if consultation_id else None,
+                    str(consultation_id) if consultation_id is not None else None,
                     status,
                     _json_or_none(self._keep(findings)),
+                    int(findings_parsed),
+                    findings_truncated,
                     self._keep(answer),
                     error_code,
                     _now(),
@@ -443,6 +489,9 @@ class ReviewStore:
         """
 
         def work() -> tuple[str, int]:
+            self._db.execute(
+                "DELETE FROM review_delete_confirmations WHERE expires_at <= ?", (time.time(),)
+            )
             ids = [row[0] for row in self._db.execute("SELECT id FROM reviews ORDER BY id")]
             token = secrets.token_urlsafe(32)
             self._db.execute(
@@ -458,33 +507,17 @@ class ReviewStore:
         """Delete the approved snapshot, and nothing that arrived after it."""
 
         def work() -> int:
-            db = self._db
-            row = db.execute(
-                "SELECT review_ids_json, expires_at FROM review_delete_confirmations "
-                "WHERE token_sha = ?",
-                (sha256(token),),
-            ).fetchone()
-            if row is None:
-                raise StoreError(
-                    ConsultErrorCode.INVALID_REQUEST,
-                    "that confirmation is not outstanding; call `orchestrator_request_delete_all` and "
-                    "confirm the count it reports",
-                )
-            db.execute(
-                "DELETE FROM review_delete_confirmations WHERE token_sha = ?", (sha256(token),)
-            )
-            if row["expires_at"] <= time.time():
-                raise StoreError(
-                    ConsultErrorCode.INVALID_REQUEST,
-                    "that confirmation has expired; request it again so the count you "
-                    "approve is the count that gets deleted",
-                )
-            approved = json.loads(row["review_ids_json"])
-            return self._delete(approved) if approved else 0
+            return self._delete([], expand=False, confirmation_sha=sha256(token))
 
         return await self._run(work)
 
-    def _delete(self, roots: list[str]) -> int:
+    def _delete(
+        self,
+        roots: list[str],
+        *,
+        expand: bool = True,
+        confirmation_sha: str | None = None,
+    ) -> int:
         """Collect the tree, refuse if any of it is busy, then remove it in order.
 
         Order matters because `PRAGMA foreign_keys=ON`: `routing_decisions` and
@@ -497,7 +530,47 @@ class ReviewStore:
         try:
             db.execute("DELETE FROM review_leases WHERE expires_at <= ?", (time.time(),))
 
-            tree = self._descendants(roots)
+            if confirmation_sha is not None:
+                row = db.execute(
+                    "SELECT review_ids_json, expires_at FROM review_delete_confirmations "
+                    "WHERE token_sha = ?",
+                    (confirmation_sha,),
+                ).fetchone()
+                if row is None:
+                    raise StoreError(
+                        ConsultErrorCode.INVALID_REQUEST,
+                        "that confirmation is not outstanding; call "
+                        "`orchestrator_request_delete_all` and confirm the count it reports",
+                    )
+                if row["expires_at"] <= time.time():
+                    raise StoreError(
+                        ConsultErrorCode.INVALID_REQUEST,
+                        "that confirmation has expired; request it again so the count you "
+                        "approve is the count that gets deleted",
+                    )
+                roots = json.loads(row["review_ids_json"])
+                consumed = db.execute(
+                    "DELETE FROM review_delete_confirmations WHERE token_sha = ?",
+                    (confirmation_sha,),
+                )
+                if consumed.rowcount != 1:
+                    raise StoreError(
+                        ConsultErrorCode.INVALID_REQUEST,
+                        "that confirmation was already spent; request a new count",
+                    )
+
+            if expand:
+                tree = self._descendants(roots)
+            elif roots:
+                approved_marks = ",".join("?" * len(roots))
+                tree = [
+                    row[0]
+                    for row in db.execute(
+                        f"SELECT id FROM reviews WHERE id IN ({approved_marks})", roots
+                    )
+                ]
+            else:
+                tree = []
             if not tree:
                 db.execute("COMMIT")
                 return 0
@@ -546,6 +619,15 @@ class ReviewStore:
                     column = "consultation_id"
                     db.execute(f"DELETE FROM {table} WHERE {column} IN ({held})", consultations)
                 db.execute(f"DELETE FROM consultations WHERE id IN ({held})", consultations)
+            if not expand:
+                # A recheck created after the snapshot is not approved for deletion.
+                # Detach it before removing its snapshotted parent so the deferred
+                # foreign key can commit while the new review survives as a root.
+                db.execute(
+                    f"UPDATE reviews SET parent_review_id = NULL WHERE parent_review_id "
+                    f"IN ({marks}) AND id NOT IN ({marks})",
+                    [*tree, *tree],
+                )
             db.execute(f"DELETE FROM reviews WHERE id IN ({marks})", tree)
         except Exception:
             db.execute("ROLLBACK")

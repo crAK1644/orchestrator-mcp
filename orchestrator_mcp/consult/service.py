@@ -324,6 +324,9 @@ class ConsultService:
         # row costs a subprocess, so narrowing after the fact would preflight agents
         # nobody asked about. None means all of them, as it always did.
         wanted = None if agent_ids is None else set(agent_ids)
+        unknown = sorted((wanted or set()) - set(self.config.agents))
+        if unknown:
+            raise ValueError(f"unknown agent id{'s' if len(unknown) != 1 else ''}: {', '.join(unknown)}")
         agents = []
         for agent_id, agent in sorted(self.config.agents.items()):
             if wanted is not None and agent_id not in wanted:

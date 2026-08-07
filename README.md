@@ -252,13 +252,26 @@ Reviews are two calls, not one:
 
 It stops at `awaiting_synthesis`. External models replying is not a finished review; **`orchestrator_finalize_review`** records your AI's combined conclusion and is the only path to `complete`. Every Critical finding any reviewer raised must be referenced there, **including one only a single reviewer raised while the others disagree** — that is checked, and the call is refused otherwise.
 
+By default, `orchestrator_review_run` uses `secrets="mask"` and sends the redacted
+copy. `secrets="send_as_is"` is an explicit escape hatch for a credential-shaped
+fixture or false positive: it requires the exact original goal and context in `raw`,
+sends those originals to every reviewer, and still stores only the redacted copy.
+Those originals can remain in each reviewer's own CLI history, which this project
+cannot erase. A retry of such a review requires the same `raw` material again and
+hash-checks it against the original plan.
+
+Finalization is refused when a reviewer answered only in unparseable prose, when
+findings were truncated, or when `store_full_content: false` discarded them. In
+those states the server cannot prove that every Critical survived, so it does not
+treat an empty stored finding set as evidence that there were none.
+
 | Tool | What it does |
 |---|---|
 | `orchestrator_review` | Plans a review and shows what would be sent. Sends nothing. |
 | `orchestrator_review_run` | Spends the token and asks every reviewer. |
-| `orchestrator_retry_review` | Re-runs only the reviewers that failed. Answers already given are kept. |
+| `orchestrator_retry_review` | Re-runs only failed reviewers. A `send_as_is` review requires its original `raw` material again. |
 | `orchestrator_finalize_review` | Records the synthesis. The only path to `complete`. |
-| `orchestrator_cancel_review` | Stops a review. Reviewers that already answered keep their answers. |
+| `orchestrator_cancel_review` | Marks a review cancelled and keeps answers already given. It waits for work launched by this server process; another process's subprocesses cannot be signalled and deletion waits for their lease. |
 | `orchestrator_apply_fixes` | Pulls up the findings you selected, with the steps around them. Changes nothing. |
 | `orchestrator_record_fix_round` | Logs what a round of fixing did, after you did it. |
 | `orchestrator_test_reviewers` | Checks the reviewers are installed and logged in. No project material leaves the machine. |
@@ -282,6 +295,9 @@ To re-review, plan a new review with `parent_review_id` set to the original and 
 - **Reviewers cannot act.** Same answer-only mode as `orchestrator_consult`: no file changes, no commands, no requests for more material.
 - **No automatic fixes.** Findings are returned; editing is your AI's job, with your approval.
 - **Credential-shaped values are replaced before every insert**, in the goal, the context, the manifest, and every reviewer's answer. Detection is best-effort pattern matching — see [Not included](#not-included) for what it cannot cover.
+- **`send_as_is` changes what leaves the machine, not what is stored.** It sends the
+  hash-verified original goal and context to reviewers and their CLI histories while
+  the database continues to receive only the redacted copy.
 
 ## The direct routing path
 
@@ -365,7 +381,7 @@ The agent table's status column is the newest recorded preflight, labelled **las
 
 ### Reviews in the dashboard
 
-`/reviews` lists reviews newest first, and `/reviews/<id>` shows one: its status and outcome, every reviewer with the consultation it ran under, all findings sorted worst-first across reviewers, the synthesis in the problem / seriousness / who-agreed / proposed-action shape, and each reviewer's original answer folded into a `<details>`. Rechecks link back to the review they came from.
+`/reviews` lists reviews newest first, and `/reviews/<id>` shows one: its status and outcome, every reviewer with the consultation it ran under, all stored findings sorted worst-first across reviewers, the synthesis in the problem / seriousness / who-agreed / proposed-action shape, and each stored reviewer answer folded into a `<details>`. Findings and answers are present only with `store_full_content: true`. Rechecks link back to the review they came from.
 
 Recorded fix rounds appear at the bottom, labelled as claims: nothing in this server edits a file or runs a command, so a round is an account of work done elsewhere.
 

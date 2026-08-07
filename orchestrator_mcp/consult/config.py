@@ -110,7 +110,7 @@ class ReviewConfig(BaseModel):
     to be there -- see `check_reviewer` -- it just does not do the choosing.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_default=True)
 
     reviewers: list[str] = Field(default_factory=list)
     deep_reviewers: list[str] = Field(default_factory=list)
@@ -280,6 +280,7 @@ def _merged_review(block: dict[str, Any], document: dict[str, Any]) -> Any:
     both is the same startup error, for the same reason -- the copy that lost would
     look edited and saved to whoever wrote it.
     """
+    written_here = "review" in block
     written = block.get("review")
     managed = document["review"]
     if written is not None and managed is not None:
@@ -288,7 +289,7 @@ def _merged_review(block: dict[str, Any], document: dict[str, Any]) -> Any:
             "one: the server will not guess which was meant, because the copy it ignored "
             "would look edited and saved to whoever wrote it."
         )
-    return written if written is not None else managed
+    return written if written_here else managed
 
 
 def _merged_agents(block: dict[str, Any], document: dict[str, Any]) -> dict[str, Any]:

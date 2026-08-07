@@ -24,6 +24,7 @@ import asyncio
 import sys
 
 from orchestrator_mcp.consult.config import host_runtime, load_consult_config
+from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.review.service import ReviewService
 from orchestrator_mcp.server import load_config
 
@@ -116,7 +117,7 @@ async def main() -> int:
             planned.review_id, token,
             host_findings=["the path from the query string reaches `open` unchecked"],
         )
-        ok = replayed.error is not None and "token" in (replayed.error.message or "")
+        ok = replayed.error is not None and replayed.error.code == ConsultErrorCode.INVALID_REQUEST
         failures += not ok
         print(f"\n  [{'ok' if ok else 'FAIL'}] the token cannot be spent twice"
               f"\n        {replayed.error and replayed.error.message}")
@@ -127,10 +128,18 @@ async def main() -> int:
               f"(status={ran.status})")
 
         parsed = sum(1 for r in ran.results if r.findings_parsed)
-        print(f"  [--] {parsed}/{len(ran.results)} reviewers emitted a readable findings block")
+        ok = all(r.ok and r.findings_parsed for r in ran.results)
+        failures += not ok
+        print(f"  [{'ok' if ok else 'FAIL'}] {parsed}/{len(ran.results)} reviewers emitted "
+              "a readable findings block")
 
         print("\n=== finalize ===")
-        criticals = [f for r in ran.results for f in r.findings if r.ok]
+        criticals = [
+            f
+            for r in ran.results
+            for f in r.findings
+            if r.ok and f.severity == "critical"
+        ]
         done = await service.finalize(
             planned.review_id,
             {

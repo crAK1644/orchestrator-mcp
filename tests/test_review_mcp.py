@@ -94,6 +94,13 @@ async def test_running_needs_the_id_and_the_token_together(tmp_path, host_claude
     assert set(schema["properties"]["secrets"]["enum"]) == {"mask", "send_as_is"}
 
 
+async def test_retry_exposes_raw_for_a_send_as_is_review(tmp_path, host_claude):
+    schema = (await tools(build_server(reviewed(tmp_path))))[
+        "orchestrator_retry_review"
+    ].input_schema
+    assert "raw" in schema["properties"]
+
+
 async def test_web_access_is_off_unless_it_is_asked_for(tmp_path, host_claude):
     schema = (await tools(build_server(reviewed(tmp_path))))["orchestrator_review"].input_schema
     assert schema["properties"]["web"]["default"] is False
@@ -123,9 +130,12 @@ async def test_deleting_everything_takes_a_token_it_cannot_invent(tmp_path, host
         ("orchestrator_review", "Sends nothing"),
         ("orchestrator_review", "best-effort"),
         ("orchestrator_review", "reviewer's own CLI history"),
+        ("orchestrator_review", "not a separate payload verifier"),
         ("orchestrator_review_run", "never shown to any reviewer"),
         ("orchestrator_review_run", "reviewers replying is not a finished review"),
+        ("orchestrator_retry_review", "exact original goal and context"),
         ("orchestrator_finalize_review", "single\n        reviewer raised while the others disagree"),
+        ("orchestrator_finalize_review", "refuses finalization"),
         ("orchestrator_apply_fixes", "Changes nothing"),
         ("orchestrator_apply_fixes", "no file is edited and no command is run here"),
         ("orchestrator_record_fix_round", "A log entry, not an action"),

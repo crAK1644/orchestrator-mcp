@@ -158,6 +158,14 @@ MIGRATIONS: list[str] = [
         expires_at      REAL NOT NULL
     );
     """,
+    """
+    ALTER TABLE reviews ADD COLUMN secrets_mode TEXT;
+    ALTER TABLE review_consultations ADD COLUMN findings_parsed INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE review_consultations ADD COLUMN findings_truncated INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX reviews_parent_review_id_idx ON reviews(parent_review_id);
+    CREATE INDEX review_consultations_consultation_id_idx
+        ON review_consultations(consultation_id);
+    """,
 ]
 
 DEFAULT_PROFILE = "default"

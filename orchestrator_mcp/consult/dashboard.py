@@ -584,7 +584,8 @@ class ConsultDashboard:
         review block is configured at all. That over-refuses in one case (the block
         came from the managed file and `config.yaml` has since become unreadable) and
         under-refuses in none -- and a `config.yaml` that cannot be read is a server
-        that will not start either way.
+        that will not start either way. When no config path was supplied there is no
+        operator-owned file to inspect, so the answer is false.
         """
         if self.config_path is None:
             return False
@@ -593,7 +594,7 @@ class ConsultDashboard:
             consult = document.get("consult")
             if not isinstance(consult, dict):
                 return self.config.review is not None
-            return consult.get("review") is not None
+            return "review" in consult
         except (OSError, UnicodeDecodeError, AttributeError, yaml.YAMLError):
             return self.config.review is not None
 
@@ -679,7 +680,11 @@ class ConsultDashboard:
 
     def save_reviewers(self, form: dict[str, str]) -> tuple[int, str, str | None]:
         reviewer = (form.get("reviewer") or "").strip()
-        deep = [key.removeprefix("deep.") for key in form if key.startswith("deep.")]
+        deep = [
+            key.removeprefix("deep.")
+            for key in form
+            if key.startswith("deep.") and key.removeprefix("deep.").strip()
+        ]
         agents = self._reviewable()
 
         def refuse(message: str, status: int = HTTPStatus.OK) -> tuple[int, str, str | None]:
@@ -809,7 +814,11 @@ class ConsultDashboard:
             # one a hand-edit left there -- and writing that back is this process
             # putting its name on a file that will refuse the next start. Both halves of
             # the boot rules here, unlike the page, which wants only the first.
-            unbootable = self._unbootable(agents) or self._duplicate_of_written(agents)
+            unbootable = (
+                self._unbootable(agents)
+                or self._unbootable_review(document["review"], agents)
+                or self._duplicate_of_written(agents)
+            )
             if unbootable:
                 return HTTPStatus.CONFLICT, unbootable
             try:
@@ -929,6 +938,28 @@ class ConsultDashboard:
             except TypeError:
                 # Keys that are not strings, which `**` refuses.
                 return f"`{agent_id}` in this file is not a mapping of settings."
+        return None
+
+    def _unbootable_review(self, review: Any, agents: dict[str, Any]) -> str | None:
+        """Why the managed review block would stop the next server boot."""
+        if review is None:
+            return None
+        try:
+            block = ReviewConfig(**review)
+        except (ValidationError, TypeError) as exc:
+            message = _first_error(exc) if isinstance(exc, ValidationError) else str(exc)
+            return f"`review:` in this file is not valid: {message}"
+        available = {
+            agent_id: agent
+            for agent_id, agent in self.config.agents.items()
+            if not agent.managed
+        }
+        for agent_id, data in agents.items():
+            available[agent_id] = AgentConfig(agent_id=agent_id, **_settings(data))
+        for where in ("reviewers", "deep_reviewers"):
+            for agent_id in getattr(block, where):
+                if problem := _not_reviewable(available.get(agent_id), agent_id):
+                    return f"`review:` in this file is not valid: {problem}"
         return None
 
     def _restart_banner(self) -> str:
@@ -1652,7 +1683,7 @@ def _not_reviewable(agent: AgentConfig | None, agent_id: str) -> str | None:
 
 def _why_not(agent: AgentConfig, agent_id: str) -> str:
     problem = _not_reviewable(agent, agent_id)
-    return f" -- {'disabled' if not agent.enabled else 'no review capability'}" if problem else ""
+    return f" -- {problem}" if problem else ""
 
 
 def _reviewer_summary(review: ReviewConfig) -> str:

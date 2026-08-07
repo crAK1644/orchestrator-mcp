@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from ..contract import Usage
 from ..consult.contract import MAX_CONTEXT_CHARS as CONSULT_MAX_CONTEXT_CHARS
@@ -63,12 +63,17 @@ Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
 class MaterialItem(BaseModel):
-    """One thing the host says it put in `context`.
+    """One thing that went into `context`.
 
-    Host-declared and unverifiable: this server never reads a file, so it cannot
-    check that the manifest describes the material. It is a disclosure aid -- it
-    puts the host's sources on the record and, being inside the approval hash, it
-    cannot be rewritten between the preview and the send.
+    Two provenances, told apart by `ReviewPlan.material_verified`. When the host
+    passed `context` as a string this is host-declared and unverifiable -- the
+    server did not read a file, so it cannot check that the manifest describes the
+    material, and the entry is a disclosure aid that puts the host's sources on the
+    record. When the host passed `context_paths` the server built these entries
+    from the bytes it actually read, and they are measurements.
+
+    Either way, being inside the approval hash, the manifest cannot be rewritten
+    between the preview and the send.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -182,6 +187,9 @@ class ReviewPlan(BaseModel):
     mode: ReviewMode
     reviewers: list[ReviewerSnapshot] = Field(max_length=MAX_REVIEWERS)
     material: list[MaterialItem] = Field(default_factory=list, max_length=MAX_MATERIAL_ITEMS)
+    # True only when the server assembled `context` itself from `context_paths`, so
+    # the manifest is a measurement rather than the host's claim. See `MaterialItem`.
+    material_verified: bool = False
     goal_chars: int = Field(ge=0)
     context_chars: int = Field(ge=0)
     material_sha256: Sha
@@ -194,7 +202,7 @@ class ReviewPlan(BaseModel):
     # Set when a reviewer runs the model the host declared as its own. Advisory:
     # `host_model` is host-declared and unverifiable, like the manifest.
     host_model_conflict: str | None = Field(default=None, max_length=MAX_LABEL_CHARS)
-    confirm_token: str = Field(max_length=MAX_LABEL_CHARS)
+    confirm_token: str = Field(min_length=1, max_length=MAX_LABEL_CHARS)
 
 
 class CombinedFinding(BaseModel):
@@ -317,17 +325,32 @@ class ReviewResponse(BaseModel):
     latency_ms: int = 0
     error: ConsultError | None = None
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def unparsed_reviewers(self) -> list[str]:
+        """Reviewers that answered in prose their findings block could not be read out of.
+
+        Derived from `results` rather than stored, so it cannot drift from them.
+
+        Load-bearing, not diagnostic. `missing_criticals` proves that no reviewer's
+        Critical was dropped by checking the summary against the parsed findings --
+        so for a reviewer with none, it proves nothing. A non-empty list is carried
+        into the finalization refusal so the caller can see exactly which reviewer
+        made Critical-survival unverifiable.
+        """
+        return [r.agent_id for r in self.results if r.ok and not r.findings_parsed]
+
     def check_invariants(self) -> ReviewResponse:
         # Explicit raises rather than `assert`, for the reason `ConsultResponse`
         # gives: `python -O` strips assertions, and these are exactly the guards
         # that must not vanish there.
-        if self.status == "pending" and self.results:
-            raise AssertionError("a pending review has sent nothing and carries no results")
+        if self.status == "pending" and (self.results or self.summary is not None):
+            raise AssertionError("a pending review has sent nothing and carries no results or summary")
         if self.status == "failed" and any(r.findings for r in self.results):
             raise AssertionError("a failed review carries no findings")
-        # `error is None` because a refusal reports where the review actually is: a
-        # second `orchestrator_finalize_review` on a finished review is an error envelope stamped
-        # `complete`, and it carries the refusal rather than re-sending the synthesis.
+        # `error is None` because every refusal reports where the review actually is.
+        # An error envelope stamped `complete` carries the refusal rather than
+        # re-sending the synthesis that was stored earlier.
         if self.status == "complete" and self.error is None and self.summary is None:
             raise AssertionError("a complete review carries the synthesis that completed it")
         if self.plan is not None and self.status != "pending":
@@ -360,7 +383,7 @@ class DeleteApproval(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reviews: int = Field(ge=0)
-    confirm_token: str = Field(max_length=MAX_LABEL_CHARS)
+    confirm_token: str = Field(min_length=1, max_length=MAX_LABEL_CHARS)
     expires_in_s: int = Field(ge=0)
 
 
@@ -373,25 +396,29 @@ class DeletionResult(BaseModel):
 def missing_criticals(
     results: list[ReviewerResult], summary: ReviewSummary
 ) -> list[str]:
-    """Critical findings the synthesis does not account for, by `finding_id`.
+    """Invalid or incomplete finding provenance, by `finding_id`.
 
     The whole reason for asking more than one reviewer is that a lone dissenting
     Critical survives. Asking for that in a prompt is unenforceable, so it is
     checked here instead: every Critical a reviewer raised must be referenced by
-    some combined finding. Referenced, not agreed with -- a synthesis is free to
-    conclude the finding is wrong, but not to drop it silently.
+    some combined finding, and every referenced id must have been raised by a
+    reviewer. Referenced, not agreed with -- a synthesis is free to conclude the
+    finding is wrong, but not to drop it silently or invent its provenance.
     """
     referenced = {
         finding_id
         for combined in summary.combined_findings
         for finding_id in combined.source_finding_ids
     }
-    return [
+    known = {finding.finding_id for result in results for finding in result.findings}
+    missing = [
         finding.finding_id
         for result in results
         for finding in result.findings
         if finding.severity == "critical" and finding.finding_id not in referenced
     ]
+    unknown = sorted(referenced - known)
+    return [*missing, *unknown]
 
 
 REVIEWER_INSTRUCTIONS = """\
@@ -416,5 +443,12 @@ what to change.
 - Do not claim agreement or disagreement with anyone. You have not seen their answers.
 - An empty `findings` list is a real answer. Say so rather than inventing something.
 
-If you cannot produce the block, still write the prose review: it will be read.
+The block is required and must be the last thing in your `answer`. It is parsed by a \
+machine, so it must be valid JSON: escape every `"` inside a string as `\\"`, and every \
+newline as `\\n`. Quoting code is the usual way this breaks -- if a snippet is awkward \
+to escape, describe it instead of quoting it.
+
+Prose without the block loses every finding you made: nothing downstream can rank them, \
+group them, or check that your Critical survived. If you are asked again for the block, \
+send only the block.
 """

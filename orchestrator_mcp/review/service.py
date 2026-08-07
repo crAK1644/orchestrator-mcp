@@ -22,6 +22,7 @@ import json
 import re
 import secrets as secrets_mod
 import time
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -37,11 +38,14 @@ from ..consult.contract import (
 from ..consult.errors import ConsultErrorCode
 from ..consult.service import ConsultService
 from ..consult.store import ConsultStore, StoreError
+from ..consult.contract import MAX_CONTEXT_CHARS
 from .contract import (
     FIX_STEPS,
     MAX_FINDINGS,
     MAX_FIX_ROUNDS,
+    MAX_LABEL_CHARS,
     MAX_LIST_ITEMS,
+    MAX_MATERIAL_ITEMS,
     MAX_SECRET_HITS,
     REVIEWER_INSTRUCTIONS,
     SEVERITY_ORDER,
@@ -98,6 +102,7 @@ class ReviewService:
         # delete in the same process is ordered rather than racing; another process's
         # children are out of reach, which is what the execution lease covers instead.
         self._tasks: dict[str, list[asyncio.Task[Any]]] = {}
+        self._batch_done: dict[str, asyncio.Event] = {}
 
     async def open(self) -> ReviewService:
         await self.consult.open()
@@ -114,6 +119,7 @@ class ReviewService:
         goal: str = "",
         material: list[dict[str, Any]] | None = None,
         context: str | None = None,
+        context_paths: list[str] | None = None,
         web: bool = False,
         reviewers: list[str] | None = None,
         parent_review_id: UUID | str | None = None,
@@ -130,8 +136,8 @@ class ReviewService:
         try:
             await self.open()
             return await self._plan(
-                started, review_id, mode, goal, material or [], context, web,
-                reviewers, parent_review_id, host_model,
+                started, review_id, mode, goal, material or [], context, context_paths,
+                web, reviewers, parent_review_id, host_model,
             )
         except (StoreError, ValueError) as exc:
             code = exc.code if isinstance(exc, StoreError) else ConsultErrorCode.INVALID_REQUEST
@@ -153,6 +159,7 @@ class ReviewService:
         goal: str,
         material: list[dict[str, Any]],
         context: str | None,
+        context_paths: list[str] | None,
         web: bool,
         reviewers: list[str] | None,
         parent_review_id: UUID | str | None,
@@ -163,6 +170,23 @@ class ReviewService:
 
         snapshots = self._reviewer_snapshots(mode, reviewers)
         manifest = [MaterialItem(**item) for item in material]
+
+        # Resolved before the scan, so everything after this point -- the secret
+        # scan, the redaction, the approval hash, the stored row -- runs over the
+        # real material rather than over a list of filenames.
+        material_verified = False
+        if context_paths:
+            if context is not None:
+                raise ValueError(
+                    "pass `context` or `context_paths`, not both: two sources for one "
+                    "field is ambiguous about what would be sent"
+                )
+            context, read_manifest = _read_paths(context_paths)
+            # A host-declared manifest still wins -- it may say something truer than
+            # a filename. `material_verified` is what tells the two apart.
+            if not manifest:
+                manifest = read_manifest
+                material_verified = True
 
         hits = [SecretHit(field="goal", line=n) for n in secret_lines(goal)]
         hits += [SecretHit(field="context", line=n) for n in secret_lines(context or "")]
@@ -214,6 +238,7 @@ class ReviewService:
                 mode=mode,
                 reviewers=snapshots,
                 material=manifest,
+                material_verified=material_verified,
                 goal_chars=len(goal),
                 context_chars=len(context or ""),
                 material_sha256=material_sha,
@@ -365,24 +390,34 @@ class ReviewService:
                 )
             goal, context = material.goal, material.context
 
-        await self.store.consume_confirm_token(review.id, confirm_token)
-        if findings:
-            await self.store.save_host_findings(review.id, findings)
-
-        results = await self._batch(review, [s.agent_id for s in approved], context, goal)
+        results = await self._batch(
+            review,
+            [s.agent_id for s in approved],
+            context,
+            goal,
+            confirm=(confirm_token, findings, secrets),
+        )
         return await self._settle(started, review.id, results, findings)
 
     async def retry(
-        self, review_id: UUID | str, agent_ids: list[str] | None = None
+        self,
+        review_id: UUID | str,
+        agent_ids: list[str] | None = None,
+        raw: dict[str, Any] | None = None,
     ) -> ReviewResponse:
-        """Re-run the reviewers that failed. No new approval: the material has not
-        changed, and the stored hash is what says so."""
+        """Re-run failed reviewers, verifying raw material when the first run used it."""
         started = time.perf_counter()
         return await self._guard(
-            review_id, started, lambda review: self._retry(started, review, agent_ids)
+            review_id, started, lambda review: self._retry(started, review, agent_ids, raw)
         )
 
-    async def _retry(self, started: float, review, agent_ids: list[str] | None) -> ReviewResponse:
+    async def _retry(
+        self,
+        started: float,
+        review,
+        agent_ids: list[str] | None,
+        raw: dict[str, Any] | None,
+    ) -> ReviewResponse:
         self._verify_snapshot(review)
         rows = {row.agent_id: row for row in await self.store.reviewer_rows(review.id)}
         failed = [aid for aid, row in rows.items() if row.status != "ok"]
@@ -391,13 +426,32 @@ class ReviewService:
             raise ValueError(
                 "nothing to retry: every reviewer on this review already answered"
             )
+        goal, context = review.goal, review.context
+        if review.secrets_mode is None:
+            raise ValueError(
+                "this review predates retry payload tracking; plan a new review so a "
+                "retry cannot substitute redacted material for the original"
+            )
+        if review.secrets_mode == "send_as_is":
+            if raw is None:
+                raise ValueError(
+                    "this review originally used `secrets=\"send_as_is\"`; retry requires "
+                    "the exact original goal and context in `raw`"
+                )
+            material = RawReviewMaterial(**(raw or {}))
+            if sha256(canonical({"goal": material.goal, "context": material.context})) != review.raw_sha256:
+                raise ValueError(
+                    "this review originally used `secrets=\"send_as_is\"`; retry requires "
+                    "the exact original goal and context in `raw`"
+                )
+            goal, context = material.goal, material.context
         if not await self.store.transition(review.id, "running", RETRYABLE):
             raise ValueError(
                 f"review `{review.id}` is `{review.status}` and cannot be retried from there"
             )
 
         host = json.loads(review.host_findings_json) if review.host_findings_json else []
-        results = await self._batch(review, wanted, review.context, review.goal, rows)
+        results = await self._batch(review, wanted, context, goal, rows)
         return await self._settle(started, review.id, results, host)
 
     async def _batch(
@@ -407,6 +461,7 @@ class ReviewService:
         context: str | None,
         goal: str,
         rows: dict[str, Any] | None = None,
+        confirm: tuple[str, list[str], str] | None = None,
     ) -> dict[str, ReviewerResult]:
         """Ask each reviewer, holding the execution lease for the whole batch.
 
@@ -442,18 +497,44 @@ class ReviewService:
                 status="ok" if result.ok else "failed",
                 consultation_id=result.consultation_id,
                 findings=[f.model_dump(mode="json") for f in result.findings] or None,
+                findings_parsed=result.findings_parsed,
+                findings_truncated=result.findings_truncated,
                 answer=result.answer,
                 error_code=result.error.code.value if result.error else None,
             )
             return result
 
-        async with self.store.lease(review.id, ttl_s=ttl):
-            tasks = [asyncio.create_task(one(agent_id)) for agent_id in agent_ids]
-            self._tasks[str(review.id)] = tasks
-            try:
-                done = await asyncio.gather(*tasks, return_exceptions=True)
-            finally:
-                self._tasks.pop(str(review.id), None)
+        review_key = str(review.id)
+        created = asyncio.Event()
+        batch_done = self._batch_done.setdefault(review_key, created)
+        owns_batch_marker = batch_done is created
+        try:
+            async with self.store.lease(review.id, ttl_s=ttl):
+                if confirm is not None:
+                    token, host_findings, secrets_mode = confirm
+                    await self.store.consume_confirm_token(
+                        review.id,
+                        token,
+                        host_findings=host_findings,
+                        secrets_mode=secrets_mode,
+                    )
+                current = await self.store.get_review(review.id)
+                if current.status != "running":
+                    raise ValueError(
+                        f"review `{review.id}` became `{current.status}` before its "
+                        "reviewers started"
+                    )
+                tasks = [asyncio.create_task(one(agent_id)) for agent_id in agent_ids]
+                self._tasks[review_key] = tasks
+                try:
+                    done = await asyncio.gather(*tasks, return_exceptions=True)
+                finally:
+                    self._tasks.pop(review_key, None)
+        finally:
+            if owns_batch_marker:
+                batch_done.set()
+                if self._batch_done.get(review_key) is batch_done:
+                    self._batch_done.pop(review_key, None)
 
         out: dict[str, ReviewerResult] = {}
         for agent_id, result in zip(agent_ids, done, strict=True):
@@ -529,7 +610,8 @@ class ReviewService:
                     ok=row.status == "ok",
                     consultation_id=UUID(row.consultation_id) if row.consultation_id else None,
                     findings=[Finding(**f) for f in findings],
-                    findings_parsed=bool(findings),
+                    findings_parsed=bool(row.findings_parsed or row.findings_json),
+                    findings_truncated=row.findings_truncated,
                     answer=row.answer,
                     error=(
                         ConsultError(
@@ -579,19 +661,54 @@ class ReviewService:
         )
 
     async def _finalize(self, started: float, review, summary: dict[str, Any]) -> ReviewResponse:
+        if review.status != "awaiting_synthesis":
+            raise ValueError(
+                f"review `{review.id}` is `{review.status}`; only a review waiting on "
+                "synthesis can be completed"
+            )
         written = ReviewSummary(**summary)
         results = await self._results(review.id)
+
+        def refusal(message: str) -> ReviewResponse:
+            return _failed(
+                UUID(review.id),
+                review.mode,
+                review.status,
+                ConsultErrorCode.INVALID_REQUEST,
+                message,
+                started,
+                outcome=review.outcome,
+                results=results,
+            )
+
+        if not self.store.keeps_content:
+            return refusal(
+                "this review cannot be finalized because `store_full_content` was false "
+                "and the reviewer findings needed to verify provenance were not retained"
+            )
+        unparsed = [result.agent_id for result in results if result.ok and not result.findings_parsed]
+        truncated = [result.agent_id for result in results if result.findings_truncated]
+        if unparsed or truncated:
+            details = []
+            if unparsed:
+                details.append(f"unparsed findings from {', '.join(unparsed)}")
+            if truncated:
+                details.append(f"truncated findings from {', '.join(truncated)}")
+            return refusal(
+                "the summary cannot be finalized because Critical-finding survival "
+                f"cannot be verified: {'; '.join(details)}"
+            )
 
         # Checked, not merely asked for: the reason to consult more than one reviewer
         # is that a lone dissenting Critical survives the synthesis, and a rule stated
         # only in a prompt is a rule nothing enforces.
-        dropped = missing_criticals(results, written)
-        if dropped:
-            raise ValueError(
-                f"the summary accounts for no Critical finding {', '.join(dropped)}. Every "
-                "Critical must be referenced by some combined finding through "
-                "`source_finding_ids`, even one only a single reviewer raised and the "
-                "others contradict -- disagree with it in the row, do not drop it"
+        invalid = missing_criticals(results, written)
+        if invalid:
+            return refusal(
+                f"the summary has invalid or incomplete finding provenance: "
+                f"{', '.join(invalid)}. Every Critical must be referenced through "
+                "`source_finding_ids`, and every referenced id must come from a "
+                "reviewer's findings"
             )
 
         # Citations carried through rather than lost in synthesis: a web-mode
@@ -600,8 +717,7 @@ class ReviewService:
             cited = {(s.title, s.locator, s.source_type): s for r in results for s in r.sources}
             written = written.model_copy(update={"citations": list(cited.values())[:MAX_LIST_ITEMS]})
 
-        await self.store.save_summary(review.id, written.model_dump(mode="json"))
-        if not await self.store.transition(review.id, "complete", ("awaiting_synthesis",)):
+        if not await self.store.complete_review(review.id, written.model_dump(mode="json")):
             raise ValueError(
                 f"review `{review.id}` is `{review.status}`; only a review waiting on "
                 "synthesis can be completed"
@@ -750,6 +866,9 @@ class ReviewService:
         # Awaited rather than cancelled: the subprocesses are already running and each
         # task records its reviewer's row before returning. Awaiting is what makes a
         # cancel followed by a delete in this process ordered instead of racing.
+        batch_done = self._batch_done.get(str(review.id))
+        if batch_done is not None:
+            await batch_done.wait()
         tasks = self._tasks.get(str(review.id), [])
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -830,8 +949,11 @@ class ReviewService:
     # --- envelope -----------------------------------------------------------
 
     async def _guard(self, review_id: UUID | str, started: float, work) -> ReviewResponse:
-        """Load the review and run `work` over it, turning every failure into an
-        envelope carrying the id the caller needs to act on next."""
+        """Guard ReviewResponse-returning routes with an id-bearing error envelope.
+
+        Metadata and deletion routes return other contract types and handle their
+        narrower failures at their own MCP boundary.
+        """
         mode: ReviewMode = "standard"
         try:
             await self.open()
@@ -866,6 +988,69 @@ def _fix_rounds(review) -> list[FixRound]:
     return [FixRound(**r) for r in json.loads(review.fix_rounds_json or "[]")][:MAX_FIX_ROUNDS]
 
 
+def _read_paths(paths: list[str]) -> tuple[str, list[MaterialItem]]:
+    """Assemble `context` from files on disk, and the manifest describing them.
+
+    The reviewer never sees a path. Both adapters run it with no filesystem at all
+    -- codex in an empty temporary cwd with `features.shell_tool=false`, claude with
+    `--tools ""` -- so a path handed onward would be a string it cannot open, and a
+    review of a file nobody read. Reading here is also what keeps the preview
+    honest: `scan_secrets` can only report what is leaving because this process
+    holds the exact bytes.
+
+    Refusals are `ValueError`, which `plan` turns into an `INVALID_REQUEST`
+    envelope, and each one names the path it refused.
+
+    ponytail: no root restriction. A host that can call this can already read any
+    file and paste it into `context`, so a root would remove no capability -- it
+    would only break the ordinary case of a diff written to a scratch directory.
+    """
+    if len(paths) > MAX_MATERIAL_ITEMS:
+        raise ValueError(f"at most {MAX_MATERIAL_ITEMS} paths, got {len(paths)}")
+
+    parts: list[str] = []
+    manifest: list[MaterialItem] = []
+    total = 0
+    for raw in paths:
+        path = Path(raw).expanduser()
+        try:
+            resolved = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(f"`{raw}` cannot be read: {type(exc).__name__}") from exc
+        if not resolved.is_file():
+            raise ValueError(
+                f"`{raw}` is not a regular file; name the files to review, not a directory"
+            )
+        # Size first, so a huge file is refused rather than read into memory to find
+        # out it was too big. Bytes over-count against a character cap, which is the
+        # safe direction: it can refuse a file that would have just fit, never accept
+        # one that would not.
+        total += resolved.stat().st_size
+        if total > MAX_CONTEXT_CHARS:
+            raise ValueError(
+                f"the material is over the {MAX_CONTEXT_CHARS} character limit by `{raw}`; "
+                "send fewer paths, or narrow the diff"
+            )
+        # `replace` rather than a raise: a stray byte in one file should cost a
+        # character, not the whole review.
+        text = resolved.read_text(encoding="utf-8", errors="replace")
+        parts.append(f"===== {raw} =====\n{text}")
+        manifest.append(
+            MaterialItem(label=raw[:MAX_LABEL_CHARS], kind="file", locator="whole file",
+                         chars=len(text))
+        )
+
+    context = "\n\n".join(parts)
+    if len(context) > MAX_CONTEXT_CHARS:
+        # Reachable when the bytes fit but the decoded characters plus the headers do
+        # not. Same refusal, stated against the number that actually applies.
+        raise ValueError(
+            f"the assembled material is {len(context)} characters, over the "
+            f"{MAX_CONTEXT_CHARS} limit; send fewer paths, or narrow the diff"
+        )
+    return context, manifest
+
+
 def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, int]:
     """Pull the fenced JSON block out of a reviewer's prose. Never raises.
 
@@ -877,7 +1062,7 @@ def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, in
     for chunk in _candidates(answer):
         try:
             payload = json.loads(chunk)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         raw = payload.get("findings") if isinstance(payload, dict) else None
         if not isinstance(raw, list):
@@ -902,8 +1087,9 @@ def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, in
 
         dropped = 0
         if len(findings) > MAX_FINDINGS:
-            # Severity-ordered, so the cap can never be what drops a Critical.
-            # Stable within a severity, so a reviewer's own ordering survives.
+            # Severity-ordered so lower severities are dropped first. More than the
+            # cap's worth of Criticals can still truncate one, which is why finalize
+            # refuses any result carrying a non-zero `findings_truncated`.
             findings.sort(key=lambda f: SEVERITY_ORDER[f.severity])
             dropped = len(findings) - MAX_FINDINGS
             findings = findings[:MAX_FINDINGS]
@@ -974,11 +1160,16 @@ def _failed(
     code: ConsultErrorCode,
     message: str,
     started: float,
+    *,
+    outcome: Outcome | None = None,
+    results: list[ReviewerResult] | None = None,
 ) -> ReviewResponse:
     return ReviewResponse(
         review_id=review_id,
         mode=mode,
         status=status,
+        outcome=outcome,
+        results=results or [],
         error=ConsultError(code=code, message=redact(message)[:MAX_ERROR_CHARS]),
         latency_ms=_ms(started),
     ).check_invariants()

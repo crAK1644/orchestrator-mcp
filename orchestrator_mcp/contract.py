@@ -106,9 +106,13 @@ def scrub_json(value: Any) -> Any:
     if isinstance(value, str):
         return redact(value)
     if isinstance(value, dict):
-        return {key: scrub_json(item) for key, item in value.items()}
+        return {scrub_json(key): scrub_json(item) for key, item in value.items()}
     if isinstance(value, list):
         return [scrub_json(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(scrub_json(item) for item in value)
+    if isinstance(value, set):
+        return {scrub_json(item) for item in value}
     return value
 
 

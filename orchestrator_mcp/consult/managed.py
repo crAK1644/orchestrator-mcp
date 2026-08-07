@@ -106,13 +106,13 @@ def write_managed(path: Path, agents: dict[str, Any], review: dict[str, Any] | N
     starting up while someone clicks Save.
 
     Both blocks are written together, so saving reviewers cannot drop the agents or
-    the other way round. `review` is optional and an empty one writes no key at all,
-    which keeps a file that has only ever held agents byte-identical to what earlier
-    versions wrote.
+    the other way round. `review=None` writes no key, which keeps a file that has only
+    ever held agents byte-identical to what earlier versions wrote. An explicit empty
+    mapping is preserved so validation, rather than truthiness, decides its meaning.
     """
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     document: dict[str, Any] = {"agents": agents}
-    if review:
+    if review is not None:
         document["review"] = review
     body = yaml.safe_dump(document, sort_keys=True, default_flow_style=False)
 

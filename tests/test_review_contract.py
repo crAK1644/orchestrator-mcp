@@ -20,6 +20,7 @@ from orchestrator_mcp.review.contract import (
     MAX_LIST_ITEMS,
     REVIEWER_INSTRUCTIONS,
     CombinedFinding,
+    DeleteApproval,
     Finding,
     MaterialItem,
     RawReviewMaterial,
@@ -52,6 +53,11 @@ def test_a_pending_review_carries_no_results():
     """Nothing has been sent yet, so a result would be something this server wrote."""
     with pytest.raises(AssertionError):
         response(status="pending", results=[ReviewerResult(agent_id="a", ok=True)]).check_invariants()
+
+
+def test_a_pending_review_carries_no_summary():
+    with pytest.raises(AssertionError):
+        response(status="pending", summary=summary()).check_invariants()
 
 
 def test_a_failed_review_carries_no_findings():
@@ -126,6 +132,8 @@ def test_every_shown_field_is_actually_bounded():
         RawReviewMaterial(goal="")
     with pytest.raises(ValidationError):
         summary(summary="x" * 50_001)
+    with pytest.raises(ValidationError):
+        DeleteApproval(reviews=1, confirm_token="", expires_in_s=1)
 
 
 def test_the_models_refuse_fields_nobody_declared():
@@ -172,6 +180,21 @@ def test_lesser_severities_are_not_held_to_the_same_rule():
     assert missing_criticals(results, summary()) == []
 
 
+def test_a_summary_cannot_claim_provenance_from_a_finding_nobody_raised():
+    results = [ReviewerResult(agent_id="a", ok=True, findings=[finding("a", "minor")])]
+    invented = summary(
+        combined_findings=[
+            CombinedFinding(
+                problem="p",
+                severity="minor",
+                agreed_by=["a"],
+                source_finding_ids=["ghost-1"],
+            )
+        ]
+    )
+    assert missing_criticals(results, invented) == ["ghost-1"]
+
+
 # --- parsing a reviewer's answer --------------------------------------------
 
 
@@ -208,6 +231,15 @@ def test_an_unknown_severity_becomes_uncertain_rather_than_a_refusal():
 def test_malformed_json_keeps_the_prose_and_says_it_did_not_parse():
     findings, parsed, _ = _parse_findings("rev", "a real review\n```json\n{not json\n```")
     assert findings == [] and parsed is False
+
+
+def test_a_json_recursion_error_is_an_unparsed_answer_not_an_exception(monkeypatch):
+    def too_deep(_):
+        raise RecursionError
+
+    monkeypatch.setattr("orchestrator_mcp.review.service.json.loads", too_deep)
+    findings, parsed, dropped = _parse_findings("rev", '{"findings": []}')
+    assert (findings, parsed, dropped) == ([], False, 0)
 
 
 def test_an_unfenced_block_is_still_found():

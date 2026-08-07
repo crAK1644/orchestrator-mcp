@@ -19,7 +19,7 @@ import pytest
 from orchestrator_mcp.consult.adapters.base import AdapterResult, AgentStatus
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import ConsultationContent
-from orchestrator_mcp.contract import Usage
+from orchestrator_mcp.contract import Usage, scrub_json
 from orchestrator_mcp.review.service import ReviewService
 
 from .conftest import agent
@@ -28,6 +28,17 @@ SECRET = "sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH"
 OTHER = "ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII"
 
 REVIEWERS = {"codex-sol": agent("codex", "gpt-5.6-sol", 10)}
+
+
+def test_scrubbing_covers_mapping_keys_and_non_list_collections():
+    value = {
+        f"prefix-{SECRET}": (f"tuple-{SECRET}",),
+        "set": {f"set-{SECRET}"},
+    }
+    cleaned = scrub_json(value)
+    serialized = repr(cleaned)
+    assert SECRET not in serialized
+    assert serialized.count("[redacted]") == 3
 
 
 class LeakyAdapter:

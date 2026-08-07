@@ -724,6 +724,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         mode: ReviewMode = "standard",
         material: list[MaterialItem] | None = None,
         context: str | None = None,
+        context_paths: list[str] | None = None,
         web: bool = False,
         reviewers: list[str] | None = None,
         parent_review_id: UUID | None = None,
@@ -739,10 +740,21 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         survives it, so the plan raises the odds the user notices and guarantees
         nothing.
 
-        `material` is your own manifest of what you put in `context`. This server
-        never reads files, so it cannot check that the two agree -- it is a
-        disclosure aid, and being inside the approval hash it cannot be changed
-        between the preview and the send.
+        Give the material as **either** `context` (a string you write) **or**
+        `context_paths` (files this server reads for you). Both together is refused.
+        `context_paths` is how a large review fits in one call: a whole-branch diff
+        runs to hundreds of kilobytes, which you cannot type into a tool argument but
+        can write to a file and name here. The reviewer never sees a path either way
+        -- it runs with no filesystem at all -- so what reaches it is the bytes.
+
+        `material` is your own manifest of what went into `context`. When you wrote
+        `context` yourself this server cannot check the two agree: it is a disclosure
+        aid that puts your sources on the record. When you passed `context_paths` and
+        declared no manifest of your own, the server builds one from the bytes it
+        actually read and the plan comes back `material_verified: true`. Either way
+        the manifest is inside the approval hash. The run reads the same stored plan
+        this call created; the returned hash identifies that plan but is not a
+        separate payload verifier.
 
         `mode="deep"` asks up to five reviewers and requires your own findings first,
         passed to `orchestrator_review_run` as `host_findings`. `web=False` unless the user asked
@@ -757,6 +769,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             goal=goal,
             material=[m.model_dump(mode="json") for m in (material or [])],
             context=context,
+            context_paths=context_paths,
             web=web,
             reviewers=reviewers,
             parent_review_id=parent_review_id,
@@ -797,11 +810,21 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         )
 
     @server.tool(name="orchestrator_retry_review")
-    async def retry_review(review_id: UUID, agent_ids: list[str] | None = None) -> ReviewResponse:
-        """Re-run the reviewers that failed. No new approval is needed: the material
-        is unchanged, and the stored hash is what proves it. Reviewers that already
-        answered are not asked again and their answers are kept."""
-        return await service.retry(review_id, agent_ids)
+    async def retry_review(
+        review_id: UUID,
+        agent_ids: list[str] | None = None,
+        raw: RawReviewMaterial | None = None,
+    ) -> ReviewResponse:
+        """Re-run the reviewers that failed. Reviewers that already answered are not
+        asked again and their answers are kept.
+
+        A review first run with `secrets="send_as_is"` requires the exact original
+        goal and context in `raw` again. Its hash is checked against the original
+        plan so a retry cannot silently send the
+        stored redacted copy as though it were the same payload."""
+        return await service.retry(
+            review_id, agent_ids, raw.model_dump(mode="json") if raw else None
+        )
 
     @server.tool(name="orchestrator_finalize_review")
     async def finalize_review(
@@ -822,8 +845,9 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         Every Critical finding any reviewer raised must be referenced by some
         combined finding through `source_finding_ids`, **including one only a single
         reviewer raised while the others disagree**. That is the point of asking more
-        than one: disagree with it in `disagreed_by`, never drop it. This is checked,
-        and the call is refused if a Critical is unaccounted for.
+        than one: disagree with it in `disagreed_by`, never drop it. The call verifies
+        this only when every reviewer produced parseable, retained findings; otherwise
+        it refuses finalization instead of treating an empty finding set as proof.
 
         `checked` and `not_checked` are both required, so the scope of the review is
         stated rather than inferred from silence.

@@ -37,11 +37,21 @@ REVIEWERS = {
 class StubAdapter:
     """Answers with whatever it was given, and records the prompts it saw."""
 
-    def __init__(self, answer: str = FINDINGS, error=None, status=None, delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        answer: str = FINDINGS,
+        error=None,
+        status=None,
+        delay: float = 0.0,
+        entered: asyncio.Event | None = None,
+        release: asyncio.Event | None = None,
+    ) -> None:
         self.answer = answer
         self._error = error
         self._status = status
         self._delay = delay
+        self._entered = entered
+        self._release = release
         self.prompts: list[str] = []
         self.modes: list[SourceMode] = []
 
@@ -60,6 +70,10 @@ class StubAdapter:
     async def _answer(self, prompt, source_mode) -> AdapterResult:
         self.prompts.append(prompt.full_text)
         self.modes.append(source_mode)
+        if self._entered is not None:
+            self._entered.set()
+        if self._release is not None:
+            await self._release.wait()
         if self._delay:
             await asyncio.sleep(self._delay)
         if self._error:
@@ -261,6 +275,17 @@ async def test_a_wrong_token_does_not_send_anything(build):
     assert all(a.prompts == [] for a in adapters.values())
 
 
+async def test_a_busy_lease_does_not_burn_the_confirmation(build):
+    service = await build()
+    plan = await planned(service)
+
+    async with service.store.lease(plan.review_id, ttl_s=60):
+        refused = await service.run(plan.review_id, plan.plan.confirm_token)
+    assert refused.error.code == ConsultErrorCode.SESSION_BUSY
+    assert refused.status == "pending"
+    assert (await service.run(plan.review_id, plan.plan.confirm_token)).error is None
+
+
 # --- the approval is bound to the reviewer, not its name --------------------
 
 
@@ -326,6 +351,29 @@ async def test_a_mismatched_raw_copy_is_refused_without_burning_the_token(build)
     assert response.status == "pending"
     # The same token still works.
     assert (await service.run(plan.review_id, plan.plan.confirm_token)).error is None
+
+
+async def test_send_as_is_retry_requires_and_rechecks_the_original_material(build):
+    secret = "sk-ant-api03-AAAABBBBCCCCDDDDEEEE"
+    broken = StubAdapter(error=AdapterError(ConsultErrorCode.TIMEOUT, "slow"))
+    service = await build({"codex-sol": broken, "gemini-x": StubAdapter()})
+    plan = await planned(service, context=f"KEY={secret}")
+    raw = {"goal": "review the parser", "context": f"KEY={secret}"}
+    await service.run(
+        plan.review_id,
+        plan.plan.confirm_token,
+        secrets="send_as_is",
+        raw=raw,
+    )
+    broken._error = None
+
+    refused = await service.retry(plan.review_id)
+    assert "send_as_is" in refused.error.message
+    assert refused.status == "failed"
+
+    retried = await service.retry(plan.review_id, raw=raw)
+    assert retried.error is None
+    assert secret in broken.prompts[-1]
 
 
 # --- partial and failed reviews ---------------------------------------------
@@ -415,13 +463,22 @@ async def test_retrying_a_review_where_everyone_answered_is_refused(build):
 
 
 async def test_a_cancel_is_not_overwritten_by_the_batch_finishing(build):
-    adapters = {aid: StubAdapter(delay=0.05) for aid in REVIEWERS}
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    adapters = {
+        "codex-sol": StubAdapter(entered=entered, release=release),
+        "gemini-x": StubAdapter(),
+    }
     service = await build(adapters)
     plan = await planned(service)
     running = asyncio.create_task(service.run(plan.review_id, plan.plan.confirm_token))
-    await asyncio.sleep(0.01)
+    await entered.wait()
 
-    cancelled = await service.cancel(plan.review_id)
+    cancelling = asyncio.create_task(service.cancel(plan.review_id))
+    await asyncio.sleep(0)
+    assert not cancelling.done()
+    release.set()
+    cancelled = await cancelling
     finished = await running
 
     assert cancelled.status == "cancelled"
@@ -494,6 +551,54 @@ async def test_a_summary_that_drops_a_lone_critical_is_refused(build):
     assert (await service.store.get_review(plan.review_id)).status == "awaiting_synthesis"
 
 
+async def test_a_summary_with_an_invented_source_finding_is_refused(build):
+    service = await build()
+    plan = await planned(service)
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+    invented = {
+        "problem": "invented",
+        "severity": "minor",
+        "agreed_by": ["codex-sol"],
+        "source_finding_ids": ["ghost-1"],
+    }
+    response = await service.finalize(
+        plan.review_id,
+        _synthesis(run, combined_findings=[*_synthesis(run)["combined_findings"], invented]),
+    )
+    assert "ghost-1" in response.error.message
+
+
+async def test_unparsed_reviewer_findings_make_finalization_refuse(build):
+    service = await build({"codex-sol": StubAdapter(answer="prose only"), "gemini-x": StubAdapter()})
+    plan = await planned(service)
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+
+    response = await service.finalize(plan.review_id, _synthesis(run))
+    assert "unparsed findings" in response.error.message
+    assert response.unparsed_reviewers == ["codex-sol"]
+    assert response.status == "awaiting_synthesis"
+
+
+async def test_empty_but_parseable_findings_can_be_finalized(build):
+    empty = 'nothing found\n```json\n{"findings": []}\n```'
+    service = await build({"codex-sol": StubAdapter(answer=empty), "gemini-x": StubAdapter()})
+    plan = await planned(service)
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+
+    done = await service.finalize(plan.review_id, _synthesis(run))
+    assert done.status == "complete"
+
+
+async def test_content_free_storage_cannot_certify_an_empty_finding_set(build):
+    service = await build(store_full_content=False)
+    plan = await planned(service)
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+
+    response = await service.finalize(plan.review_id, _synthesis(run))
+    assert "store_full_content" in response.error.message
+    assert response.status == "awaiting_synthesis"
+
+
 async def test_finalizing_a_review_that_is_not_waiting_on_synthesis_is_refused(build):
     service = await build()
     plan = await planned(service)
@@ -501,6 +606,7 @@ async def test_finalizing_a_review_that_is_not_waiting_on_synthesis_is_refused(b
 
     assert response.error is not None
     assert response.status == "pending"
+    assert (await service.store.get_review(plan.review_id)).summary_json is None
 
 
 async def test_finalizing_twice_is_refused(build):

@@ -10,6 +10,8 @@ subprocesses running in another and status alone cannot see them.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import sqlite3
 import time
 import uuid
@@ -88,7 +90,7 @@ async def test_the_migration_applies_to_a_database_created_before_it_existed(tmp
     raw = sqlite3.connect(path)
     raw.executescript(
         "DROP TABLE reviews; DROP TABLE review_consultations; DROP TABLE review_leases; "
-        "DROP TABLE review_delete_confirmations; DELETE FROM schema_migrations WHERE version = 1;"
+        "DROP TABLE review_delete_confirmations; DELETE FROM schema_migrations WHERE version >= 1;"
     )
     raw.commit()
     raw.close()
@@ -204,6 +206,22 @@ async def test_a_retry_updates_the_reviewer_in_place(store):
     assert rows[0].status == "ok" and rows[0].consultation_id == first
 
 
+async def test_parser_metadata_survives_the_round_trip(store):
+    review_id = await plan(store)
+    await store.record_reviewer_result(
+        review_id,
+        "rev",
+        status="ok",
+        findings=[],
+        findings_parsed=True,
+        findings_truncated=3,
+    )
+
+    row = (await store.reviewer_rows(review_id))[0]
+    assert bool(row.findings_parsed) is True
+    assert row.findings_truncated == 3
+
+
 # --- deletion ---------------------------------------------------------------
 
 
@@ -290,13 +308,14 @@ async def test_a_review_created_after_the_count_survives_the_confirmation(store)
     never shown and was never approved."""
     old = await plan(store)
     token, count = await store.request_delete_all()
-    new = await plan(store)
+    new = await plan(store, parent_review_id=old)
 
     assert count == 1
     assert await store.delete_all_reviews(token) == 1
     with pytest.raises(StoreError):
         await store.get_review(old)
     assert (await store.get_review(new)).status == "pending"
+    assert (await store.get_review(new)).parent_review_id is None
 
 
 async def test_an_expired_confirmation_is_refused_rather_than_widened(store):
@@ -313,6 +332,44 @@ async def test_a_confirmation_is_spent_once(store):
     assert await store.delete_all_reviews(token) == 1
     with pytest.raises(StoreError, match="not outstanding"):
         await store.delete_all_reviews(token)
+
+
+async def test_a_refused_delete_does_not_burn_the_confirmation(store):
+    review_id = await plan(store, confirm_token="run")
+    token, _ = await store.request_delete_all()
+    await store.consume_confirm_token(review_id, "run")
+
+    with pytest.raises(StoreError, match="still running"):
+        await store.delete_all_reviews(token)
+    await store.transition(review_id, "cancelled", ("running",))
+    assert await store.delete_all_reviews(token) == 1
+
+
+async def test_delete_confirmation_storage_contains_only_the_hash(store):
+    token, _ = await store.request_delete_all()
+    rows = await store._run(
+        lambda: store._db.execute(
+            "SELECT token_sha FROM review_delete_confirmations"
+        ).fetchall()
+    )
+    assert [row[0] for row in rows] == [sha256(token)]
+    assert token not in rows[0][0]
+
+
+async def test_fix_round_updates_are_serialized_across_connections(store):
+    review_id = await plan(store)
+    other_store = ConsultStore(store.store.path, store_full_content=True)
+    await other_store.open()
+    other = ReviewStore(other_store)
+    try:
+        await asyncio.gather(
+            store.append_fix_round(review_id, {"finding_ids": ["a"], "outcome": "applied"}),
+            other.append_fix_round(review_id, {"finding_ids": ["b"], "outcome": "skipped"}),
+        )
+        saved = await store.get_review(review_id)
+        assert len(json.loads(saved.fix_rounds_json)) == 2
+    finally:
+        await other_store.close()
 
 
 async def test_an_unknown_confirmation_deletes_nothing(store):

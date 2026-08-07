@@ -354,6 +354,22 @@ async def test_saving_an_agent_keeps_the_reviewers(serve, editable):  # noqa: F8
     assert document["review"]["reviewers"] == ["codex-sol"]
 
 
+async def test_an_agent_save_refuses_a_hand_edited_invalid_review_block(
+    serve, editable  # noqa: F811
+):
+    get, consult_config = serve(editable())
+    write_managed(consult_config.managed_agents_path, {}, {})
+
+    status, body, location = get.post(
+        "/agents",
+        {"_token": get.token, "id": "new-one", "runtime": "codex", "command": "python3",
+         "model": "gpt-5.6-sol", "priority": "10", "enabled": "on", "score.review": "90"},
+    )
+
+    assert status == 409 and location is None
+    assert "review" in body and "not valid" in body
+
+
 async def test_more_than_one_standard_reviewer_is_refused_by_the_same_rule_boot_uses(
     serve, editable  # noqa: F811
 ):
