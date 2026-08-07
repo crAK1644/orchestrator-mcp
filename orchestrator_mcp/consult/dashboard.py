@@ -593,11 +593,12 @@ class ConsultDashboard:
             f"<td data-label=Activity>{row['turns']} turn{'s' if row['turns'] != 1 else ''}"
             f"<span class={'bad' if row['failures'] else 'meta'}> &middot; "
             f"{row['failures']} failed</span></td>"
-            f"<td data-label=State>{_status_word(row['status'])}</td>"
             "</tr>"
             for row in rows
         )
-        head = "<thead><tr><th>Consultation<th>Route<th>Started<th>Activity<th>State</tr></thead>"
+        # No State column. `status` is 'open' in every row of this table and always
+        # will be, and a column that reads the same in every row is width, not data.
+        head = "<thead><tr><th>Consultation<th>Route<th>Started<th>Activity</tr></thead>"
         return (
             "<div class='table-shell table-shell--cards'>"
             f"<table class=data-table>{head}<tbody>{body}</tbody></table></div>"
@@ -616,8 +617,7 @@ class ConsultDashboard:
             "<header class=detail-header><p class=eyebrow>Consultation trace</p>"
             "<div class=detail-title>"
             f"<h1>{_e(consultation['capability'])} &rarr; "
-            f"<code>{_e(consultation['target_agent_id'])}</code></h1>"
-            f"{_status_word(consultation['status'])}</div>"
+            f"<code>{_e(consultation['target_agent_id'])}</code></h1></div>"
             f"<p class=context-line><span><code>{_e(consultation['id'])}</code></span>"
             f"<span>{_e(consultation['created_at'])}</span></p></header>"
             "<div class=detail-grid><div>"
@@ -1753,11 +1753,10 @@ def _status_word(status: object) -> str:
     a reader should not skim past. Everything between them is in progress and gets no
     colour, because "running" is not news.
 
-    `open` is not in the coloured set, and a consultation is the only thing that is
-    ever open: it stays that way for as long as its row exists, so every consultation
-    on the page carries the badge. Given the signal colour, a page of stored history
-    reads as a page of work in flight -- the same untruth the Active tile used to tell,
-    nineteen times over.
+    `open` is deliberately absent: it belongs to consultations, which this page no
+    longer badges at all, because every consultation that has ever been recorded is
+    open and stays that way. Should anything render it again, muted is the honest
+    colour for it.
     """
     text = _e(status)
     if status == "complete":

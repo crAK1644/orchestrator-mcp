@@ -156,10 +156,11 @@ async def test_the_monitor_strip_counts_turns_and_never_calls_a_stored_row_activ
     assert "<dt>Active</dt>" not in body
     # No `review:` block and no review table: a permanent zero is the same lie small.
     assert "Reviews open" not in body
-    # And the row badge does not say it either. `open` is every consultation there
-    # has ever been, so in the signal colour the table reads as a queue of live work.
-    assert "status--muted'>open" in body
-    assert "status--active'>open" not in body
+    # And no row says it either. `open` is every consultation there has ever been, so
+    # a State column reading it is width rather than data -- and in the signal colour
+    # it was the table telling the same untruth as the tile, once per row.
+    assert ">open</span>" not in body
+    assert "<th>State" not in body
 
 
 async def test_a_consultation_appears_in_the_index_with_its_agent_and_model(serve):
