@@ -1752,13 +1752,19 @@ def _status_word(status: object) -> str:
     `complete` is the only finished-well state; `failed` and `cancelled` are the two
     a reader should not skim past. Everything between them is in progress and gets no
     colour, because "running" is not news.
+
+    `open` is not in the coloured set, and a consultation is the only thing that is
+    ever open: it stays that way for as long as its row exists, so every consultation
+    on the page carries the badge. Given the signal colour, a page of stored history
+    reads as a page of work in flight -- the same untruth the Active tile used to tell,
+    nineteen times over.
     """
     text = _e(status)
     if status == "complete":
         return f"<span class='status status--good'>{text}</span>"
     if status in ("failed", "cancelled"):
         return f"<span class='status status--bad'>{text}</span>"
-    if status in ("open", "running", "active", "awaiting_synthesis"):
+    if status in ("running", "active", "awaiting_synthesis"):
         return f"<span class='status status--active'>{text}</span>"
     return f"<span class='status status--muted'>{text}</span>"
 

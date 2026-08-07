@@ -194,17 +194,20 @@ async def test_a_review_appears_in_the_list_with_its_mode_and_outcome(serve, rev
 
 
 async def test_the_monitor_strip_counts_the_reviews_that_have_not_finished(serve, review_config):  # noqa: F811
-    """The one lifecycle on this page that is real: a review left unfinalized is still
-    open, and finalizing it takes the number back down."""
+    """The one lifecycle on this page that is real: an unfinalized review is open, a
+    finalized one is not, so the tile counts something other than the row total."""
     get, consult_config = serve(review_config())
     await make_review(consult_config, finalize=False)
 
     _, body = get("/")
     assert "<dt>Reviews open</dt><dd>1</dd>" in body
 
+    # Two reviews now, one of them finished. The count that used to be broken on the
+    # consultation side is the one being checked here: it must not follow the total.
     await make_review(consult_config)
     _, body = get("/")
     assert "<dt>Reviews open</dt><dd>1</dd>" in body
+    assert "All reviews" in body
 
 
 async def test_the_detail_page_shows_every_reviewer_and_its_findings(serve, review_config):  # noqa: F811
