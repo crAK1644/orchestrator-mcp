@@ -1,8 +1,8 @@
 """The Antigravity adapter, against a stub executable on PATH.
 
-The event shapes here were captured from a real `agy` 1.1.10 and are recorded in
-`docs/antigravity-spike.md`; the flag spellings come from its own `--help`. What
-these tests pin is the part that is ours: the prompt reaching argv intact even when
+The event shapes here were captured from a real `agy` 1.1.10; the flag spellings come
+from its own `--help`. What these tests pin is the part that is ours -- the fixtures
+below are the record of those shapes now: the prompt reaching argv intact even when
 it has to be split, the schema file being cleaned up, and the four ways this runtime
 can hand back a non-answer that looks like a success.
 """
