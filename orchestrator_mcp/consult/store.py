@@ -391,6 +391,10 @@ class ConsultStore:
                     scrub_json(conversation_label),
                     protocol_version,
                     config_hash,
+                    # The only value this column ever holds. A consultation has no
+                    # terminal state -- the row is what makes it resumable, so it is
+                    # open for as long as it exists. Anything reading it as liveness
+                    # is reading a constant; reviews are where a real lifecycle lives.
                     "open",
                     now,
                     now,
@@ -448,14 +452,6 @@ class ConsultStore:
                 f"consultation `{consultation.id}` is bound to `{consultation.target_agent_id}`; "
                 f"start a new consultation to ask `{target_agent}`",
             )
-
-    async def set_status(self, consultation_id: UUID | str, status: str) -> None:
-        await self._run(
-            lambda: self._db.execute(
-                "UPDATE consultations SET status = ?, updated_at = ? WHERE id = ?",
-                (status, _now(), str(consultation_id)),
-            )
-        )
 
     # --- turns --------------------------------------------------------------
 

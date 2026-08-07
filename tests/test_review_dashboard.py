@@ -193,6 +193,20 @@ async def test_a_review_appears_in_the_list_with_its_mode_and_outcome(serve, rev
     assert "deep" in body and "complete" in body and "all" in body
 
 
+async def test_the_monitor_strip_counts_the_reviews_that_have_not_finished(serve, review_config):  # noqa: F811
+    """The one lifecycle on this page that is real: a review left unfinalized is still
+    open, and finalizing it takes the number back down."""
+    get, consult_config = serve(review_config())
+    await make_review(consult_config, finalize=False)
+
+    _, body = get("/")
+    assert "<dt>Reviews open</dt><dd>1</dd>" in body
+
+    await make_review(consult_config)
+    _, body = get("/")
+    assert "<dt>Reviews open</dt><dd>1</dd>" in body
+
+
 async def test_the_detail_page_shows_every_reviewer_and_its_findings(serve, review_config):  # noqa: F811
     get, consult_config = serve(review_config())
     review_id = await make_review(consult_config)
