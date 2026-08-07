@@ -108,7 +108,56 @@ MIGRATIONS: list[str] = [
         holder          TEXT NOT NULL,
         expires_at      REAL NOT NULL
     );
+    """,
     """
+    CREATE TABLE reviews (
+        id                     TEXT PRIMARY KEY,
+        parent_review_id       TEXT REFERENCES reviews(id) DEFERRABLE INITIALLY DEFERRED,
+        mode                   TEXT NOT NULL,
+        status                 TEXT NOT NULL,
+        outcome                TEXT,
+        goal                   TEXT,
+        context                TEXT,
+        material_json          TEXT NOT NULL,
+        material_sha256        TEXT NOT NULL,
+        raw_sha256             TEXT NOT NULL,
+        reviewer_snapshot_json TEXT NOT NULL,
+        confirm_token_sha      TEXT,
+        secret_hits_json       TEXT NOT NULL,
+        web_requested          INTEGER NOT NULL DEFAULT 0,
+        host_findings_json     TEXT,
+        summary_json           TEXT,
+        fix_rounds_json        TEXT,
+        created_at             TEXT NOT NULL,
+        updated_at             TEXT NOT NULL
+    );
+
+    CREATE TABLE review_consultations (
+        review_id       TEXT NOT NULL REFERENCES reviews(id),
+        agent_id        TEXT NOT NULL,
+        consultation_id TEXT REFERENCES consultations(id),
+        status          TEXT NOT NULL,
+        findings_json   TEXT,
+        answer          TEXT,
+        error_code      TEXT,
+        created_at      TEXT NOT NULL,
+        PRIMARY KEY (review_id, agent_id)
+    );
+
+    CREATE TABLE review_leases (
+        review_id  TEXT PRIMARY KEY,
+        holder     TEXT NOT NULL,
+        expires_at REAL NOT NULL
+    );
+
+    CREATE TABLE review_delete_confirmations (
+        token_sha       TEXT PRIMARY KEY,
+        review_ids_json TEXT NOT NULL,
+        displayed_count INTEGER NOT NULL,
+        created_at      TEXT NOT NULL,
+        expires_at      REAL NOT NULL
+    );
+    """,
 ]
 
 DEFAULT_PROFILE = "default"

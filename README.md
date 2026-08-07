@@ -230,6 +230,47 @@ Each entry under `consult.agents` accepts:
 | `store_full_content` | true | Set false to store only metadata and routing information. |
 | `dashboard` | off | See below. |
 
+## The review path
+
+A consultation asks one agent. A review asks one or more of them the same question over the same approved material, groups the answers under a `review_id`, and hands your own AI everything it needs to write one conclusion. It is off unless you configure reviewers:
+
+```yaml
+consult:
+  review:
+    reviewers: [codex-sol]                    # `standard`: exactly one
+    deep_reviewers: [codex-sol, gemini-x]     # `deep`: one to five
+```
+
+Each id must be a configured agent that is enabled and scores above 0 for `review`. A `review:` block in both the config file and the dashboard's `agents.yaml` is a startup error rather than a precedence rule, because a precedence rule is how an edit saves successfully and does nothing.
+
+### The handshake
+
+Reviews are two calls, not one:
+
+1. **`review`** returns a plan and sends nothing: which reviewers, how much material, whether web access was requested, how many requests it will cost, and the lines where something credential-shaped was found — positions only, never values. Show it to the user.
+2. **`review_run`** spends the one-time `confirm_token` from that plan and asks every reviewer in parallel.
+
+It stops at `awaiting_synthesis`. External models replying is not a finished review; **`finalize_review`** records your AI's combined conclusion and is the only path to `complete`. Every Critical finding any reviewer raised must be referenced there, **including one only a single reviewer raised while the others disagree** — that is checked, and the call is refused otherwise.
+
+| Tool | What it does |
+|---|---|
+| `review` | Plans a review and shows what would be sent. Sends nothing. |
+| `review_run` | Spends the token and asks every reviewer. |
+| `retry_review` | Re-runs only the reviewers that failed. Answers already given are kept. |
+| `finalize_review` | Records the synthesis. The only path to `complete`. |
+| `cancel_review` | Stops a review. Reviewers that already answered keep their answers. |
+| `test_reviewers` | Checks the reviewers are installed and logged in. No project material leaves the machine. |
+| `get_review` / `list_reviews` | Read one review, or recent ones newest first. |
+| `delete_review` | Deletes a review, its rechecks, and every consultation under either. |
+| `request_delete_all` / `delete_all_reviews` | Counts what deleting all history would remove, then deletes exactly that snapshot. |
+
+### What a review does not do
+
+- **No web access unless you ask for it.** `web: false` is the default for every review.
+- **Reviewers cannot act.** Same answer-only mode as `consult`: no file changes, no commands, no requests for more material.
+- **No automatic fixes.** Findings are returned; editing is your AI's job, with your approval.
+- **Credential-shaped values are replaced before every insert**, in the goal, the context, the manifest, and every reviewer's answer. Detection is best-effort pattern matching — see [Not included](#not-included) for what it cannot cover.
+
 ## The direct routing path
 
 `ask` and `list_capabilities` route a request to a model deployment through LiteLLM. This is separate from the consultation path and, for any hosted provider, it is the part that needs an API key.
@@ -451,6 +492,7 @@ Deliberately out of scope for now:
 - **No consultations from the dashboard.** The page reads history and edits agent configuration; it has never started an agent process, and that is worth keeping until there is a reason to give it up.
 - **No runtime settings in the dashboard.** Timeouts, storage, and the dashboard's own host and port are config-file settings. A page that can change the port it is served on is a footgun that deserves its own design.
 - **No accounts on the dashboard.** Its protection is a loopback bind, a `Host` header check, and a per-process token — enough for one person on one machine, not for a shared host.
+- **Redaction covers this database only.** Credential-shaped values are replaced before every insert, and detection is best-effort — a secret with no recognizable shape survives it. Material sent to a reviewer also lands in that reviewer's own CLI history (Codex writes `~/.codex/sessions/`, and the others keep their own logs). Nothing here can reach those files.
 - **No automatic restart.** Both processes read the configuration once, at startup.
 - **No multi-user or shared state.** One SQLite file, local to your computer.
 - **No semantic intent routing**, streaming tool results, automatic PII removal, or shared Redis state on the routing path. LiteLLM can provide some of these through its own configuration and callbacks.

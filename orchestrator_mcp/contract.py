@@ -74,7 +74,42 @@ def redact(text: str) -> str:
     so it is a second line of defence behind "do not put credentials where an error
     message can reach", never a licence to forward these messages anywhere.
     """
-    return _SECRETS.sub("[redacted]", text)
+    return redact_counted(text)[0]
+
+
+def redact_counted(text: str) -> tuple[str, int]:
+    """`redact`, and how many matches it replaced."""
+    return _SECRETS.subn("[redacted]", text)
+
+
+def secret_lines(text: str) -> list[int]:
+    """1-based line numbers where something credential-shaped starts.
+
+    Positions, never values. This is what a preview shows before material is sent
+    anywhere, and a preview that quoted the secret back would be one more place it
+    lives.
+    """
+    return [text.count("\n", 0, match.start()) + 1 for match in _SECRETS.finditer(text)]
+
+
+def scrub_json(value: Any) -> Any:
+    """`redact` over every string leaf of a JSON-shaped value.
+
+    Leaves rather than the serialized blob: a pattern that ran up to a closing quote
+    would otherwise be replaced across it and leave text that no longer parses.
+
+    Plain strings pass straight through, which is what makes this the whole sanitizer
+    contract rather than half of one -- a turn is recorded with text in four columns
+    and a `model_dump()` dict in the fifth, and a `str -> str` sanitizer would have
+    silently skipped the dict.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {key: scrub_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [scrub_json(item) for item in value]
+    return value
 
 
 class ErrorInfo(BaseModel):

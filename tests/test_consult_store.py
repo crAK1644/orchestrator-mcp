@@ -16,7 +16,7 @@ import pytest
 from orchestrator_mcp.consult.contract import ConsultRoute, SourceMode
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.routing import ExcludedCandidate, RoutingDecision
-from orchestrator_mcp.consult.store import ConsultStore, StoreError
+from orchestrator_mcp.consult.store import MIGRATIONS, ConsultStore, StoreError
 
 ROUTE = ConsultRoute(
     agent_id="codex-sol",
@@ -66,7 +66,9 @@ async def test_opening_twice_is_not_a_second_migration(tmp_path):
     versions = second._db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
     profiles = second._db.execute("SELECT COUNT(*) FROM profiles").fetchone()[0]
     await second.close()
-    assert (versions, profiles) == (1, 1)
+    # Against `len(MIGRATIONS)` rather than a literal: the ledger grows by design,
+    # and what this test is about is that a second open applies none of them again.
+    assert (versions, profiles) == (len(MIGRATIONS), 1)
 
 
 OPENER = """\
@@ -106,7 +108,7 @@ async def test_processes_opening_one_new_database_together_all_migrate_it(tmp_pa
         "SELECT (SELECT COUNT(*) FROM schema_migrations), (SELECT COUNT(*) FROM profiles)"
     ).fetchone())
     await store.close()
-    assert counts == (1, 1)
+    assert counts == (len(MIGRATIONS), 1)
 
 
 async def test_wal_is_on(store):
@@ -209,11 +211,14 @@ async def test_store_full_content_false_keeps_the_shape_and_drops_the_bodies(tmp
         consultation_id,
         1,
         SourceMode.DOCUMENT,
-        user_prompt="secret question",
-        context="secret document",
-        compiled_prompt="secret prompt",
-        raw_output="secret answer",
-        validated_response={"answer": "secret answer"},
+        # A marker no schema identifier could ever contain: the scan below reads the
+        # whole file, and `sqlite_master` holds the DDL, so a word like "secret" would
+        # match a *column name* and pass or fail for the wrong reason.
+        user_prompt="pelican question",
+        context="pelican document",
+        compiled_prompt="pelican prompt",
+        raw_output="pelican answer",
+        validated_response={"answer": "pelican answer"},
         input_tokens=7,
         latency_ms=99,
     )
@@ -223,7 +228,7 @@ async def test_store_full_content_false_keeps_the_shape_and_drops_the_bodies(tmp
     assert (turn.user_prompt, turn.context, turn.compiled_prompt) == (None, None, None)
     assert (turn.raw_output, turn.validated_response_json) == (None, None)
     assert (turn.input_tokens, turn.latency_ms) == (7, 99)
-    assert b"secret" not in (tmp_path / "db.sqlite3").read_bytes()
+    assert b"pelican" not in (tmp_path / "db.sqlite3").read_bytes()
 
 
 async def test_the_second_turn_cannot_reuse_a_sequence_number(store):

@@ -15,7 +15,7 @@ import re
 import time
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import jsonschema
@@ -43,6 +43,20 @@ from .contract import (
 from .consult.config import host_runtime, load_consult_config
 from .consult.contract import ConsultAgentsResponse, ConsultationRecord, ConsultResponse
 from .consult.service import ConsultService
+from .consult.store import ConsultStore
+from .review.contract import (
+    CombinedFinding,
+    DeleteApproval,
+    DeletionResult,
+    MaterialItem,
+    RawReviewMaterial,
+    ReviewListing,
+    ReviewMode,
+    ReviewResponse,
+    ReviewSummary,
+)
+from .review.service import ReviewService
+from .review.store import DELETE_CONFIRM_TTL_S
 
 __all__ =["ConfigError", "Orchestrator", "build_server", "load_config", "main", "validate_config"]
 
@@ -608,7 +622,16 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
     # is what the compatibility snapshot asserts.
     consult_config = load_consult_config(orchestrator.config)
     if consult_config is not None:
-        _add_consult_tools(server, ConsultService(consult_config, host_runtime()))
+        runtime = host_runtime()
+        # One store for both layers, not one each: a review and the consultations
+        # under it are then written by the same serialized worker, and a deletion can
+        # remove them in one transaction instead of hoping two connections agree.
+        store = ConsultStore(consult_config.database_path, consult_config.store_full_content)
+        _add_consult_tools(server, ConsultService(consult_config, runtime, store=store))
+        # Advertised only when reviewers are configured. A server with none should
+        # not offer a `review` tool that can do nothing but refuse.
+        if consult_config.review is not None:
+            _add_review_tools(server, ReviewService(consult_config, runtime, store=store))
 
     return server
 
@@ -678,6 +701,205 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         chosen."""
         await service.open()
         return await service.get_consultation(consultation_id)
+
+
+def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
+    """The review surface: a two-call handshake, then synthesis.
+
+    Two tools rather than one that switches on its arguments. A single `review`
+    taking either `(mode, goal, context)` or `(review_id, confirm_token)` is two
+    mutually exclusive argument sets in one schema, which a calling model reads as
+    "everything is optional" -- the same reasoning as `_agent_enum`.
+
+    The handshake is advisory and the docstrings say so: an MCP server has no
+    channel to a human and cannot verify anyone saw the plan. What it does buy is
+    an explicit sequence, a `review_id` that exists before anything is sent, and a
+    stored record of what was approved against what went out.
+    """
+
+    @server.tool(name="review")
+    async def review(
+        goal: str,
+        mode: ReviewMode = "standard",
+        material: list[MaterialItem] | None = None,
+        context: str | None = None,
+        web: bool = False,
+        reviewers: list[str] | None = None,
+        parent_review_id: UUID | None = None,
+        host_model: str | None = None,
+    ) -> ReviewResponse:
+        """Plan a review and show what would be sent. **Sends nothing.**
+
+        Show the returned `plan` to the user before calling `review_run`: which
+        reviewers, how much material, whether web access is requested, how many
+        requests it will cost, and `secret_hits` -- lines where something
+        credential-shaped was found (positions only, never values). Secret detection
+        is best-effort pattern matching; a credential with no recognizable shape
+        survives it, so the plan raises the odds the user notices and guarantees
+        nothing.
+
+        `material` is your own manifest of what you put in `context`. This server
+        never reads files, so it cannot check that the two agree -- it is a
+        disclosure aid, and being inside the approval hash it cannot be changed
+        between the preview and the send.
+
+        `mode="deep"` asks up to five reviewers and requires your own findings first,
+        passed to `review_run` as `host_findings`. `web=False` unless the user asked
+        for web access: reviewers get none by default.
+
+        Returns `confirm_token`, which is shown once and can be spent once. Note that
+        material sent to a reviewer also lands in that reviewer's own CLI history,
+        which nothing here can reach.
+        """
+        return await service.plan(
+            mode=mode,
+            goal=goal,
+            material=[m.model_dump(mode="json") for m in (material or [])],
+            context=context,
+            web=web,
+            reviewers=reviewers,
+            parent_review_id=parent_review_id,
+            host_model=host_model,
+        )
+
+    @server.tool(name="review_run")
+    async def review_run(
+        review_id: UUID,
+        confirm_token: str,
+        host_findings: list[str] | None = None,
+        secrets: Literal["mask", "send_as_is"] = "mask",
+        raw: RawReviewMaterial | None = None,
+    ) -> ReviewResponse:
+        """Send the approved material to every reviewer, in parallel. Call this only
+        after the user has seen the plan and agreed.
+
+        `secrets="mask"` sends the redacted copy. `secrets="send_as_is"` sends the
+        original and requires `raw` to repeat the exact goal and context you planned
+        with -- for when the user has looked at a flagged line and decided it is a
+        variable named `password` or a fixture's fake key. Either way the stored copy
+        is redacted.
+
+        `host_findings` is your own independent opinion, formed before you read
+        anyone else's. Required for `mode="deep"`, and never shown to any reviewer.
+
+        Stops at `awaiting_synthesis`: reviewers replying is not a finished review.
+        Read every `results[]` entry, write the comparison yourself, and call
+        `finalize_review`. A reviewer that failed leaves the others' answers intact --
+        `retry_review` re-runs only the failures.
+        """
+        return await service.run(
+            review_id,
+            confirm_token,
+            host_findings=host_findings,
+            secrets=secrets,
+            raw=raw.model_dump(mode="json") if raw else None,
+        )
+
+    @server.tool(name="retry_review")
+    async def retry_review(review_id: UUID, agent_ids: list[str] | None = None) -> ReviewResponse:
+        """Re-run the reviewers that failed. No new approval is needed: the material
+        is unchanged, and the stored hash is what proves it. Reviewers that already
+        answered are not asked again and their answers are kept."""
+        return await service.retry(review_id, agent_ids)
+
+    @server.tool(name="finalize_review")
+    async def finalize_review(
+        review_id: UUID,
+        summary: str,
+        recommendation: str,
+        # Required in the schema, not merely asked for in the prose below: a scope
+        # that is optional is a scope that gets left out.
+        checked: list[str],
+        not_checked: list[str],
+        combined_findings: list[CombinedFinding] | None = None,
+        agreements: list[str] | None = None,
+        disagreements: list[str] | None = None,
+        options: list[str] | None = None,
+    ) -> ReviewResponse:
+        """Record your synthesis. The only path to `complete`.
+
+        Every Critical finding any reviewer raised must be referenced by some
+        combined finding through `source_finding_ids`, **including one only a single
+        reviewer raised while the others disagree**. That is the point of asking more
+        than one: disagree with it in `disagreed_by`, never drop it. This is checked,
+        and the call is refused if a Critical is unaccounted for.
+
+        `checked` and `not_checked` are both required, so the scope of the review is
+        stated rather than inferred from silence.
+        """
+        return await service.finalize(
+            review_id,
+            {
+                "summary": summary,
+                "recommendation": recommendation,
+                "combined_findings": [f.model_dump(mode="json") for f in (combined_findings or [])],
+                "agreements": agreements or [],
+                "disagreements": disagreements or [],
+                "options": options or [],
+                "checked": checked,
+                "not_checked": not_checked,
+            },
+        )
+
+    @server.tool(name="cancel_review")
+    async def cancel_review(review_id: UUID) -> ReviewResponse:
+        """Stop a review. Reviewers that already answered keep their answers.
+
+        A review launched by *this* server process is waited out before this returns.
+        One launched by a second process is marked cancelled, but its subprocesses
+        cannot be signalled from here -- they will finish on their own. Deleting the
+        review is refused until they do.
+        """
+        return await service.cancel(review_id)
+
+    @server.tool(name="test_reviewers")
+    async def test_reviewers(mode: ReviewMode | None = None) -> ConsultAgentsResponse:
+        """Check that the configured reviewers are installed and logged in.
+
+        A preflight and nothing more: **no project material leaves this machine.**
+        Omit `mode` to check the reviewers for both standard and deep.
+        """
+        return await service.test_reviewers(mode)
+
+    @server.tool(name="get_review")
+    async def get_review(review_id: UUID) -> ReviewResponse:
+        """Retrieve a review: its status, every reviewer's result, and the synthesis
+        if one was recorded. Answers are absent when the operator has turned off
+        `store_full_content`."""
+        return await service.get(review_id)
+
+    @server.tool(name="list_reviews")
+    async def list_reviews(limit: int = 20) -> list[ReviewListing]:
+        """List recent reviews, newest first. Metadata only -- no material."""
+        return await service.list(limit)
+
+    @server.tool(name="delete_review")
+    async def delete_review(review_id: UUID) -> DeletionResult:
+        """Delete a review, its rechecks, and every consultation under either.
+
+        Refused while a review is running, or while its reviewers are still in flight
+        in any server process. Cancel it and try again."""
+        return DeletionResult(deleted=await service.delete(review_id))
+
+    @server.tool(name="request_delete_all")
+    async def request_delete_all() -> DeleteApproval:
+        """Ask what deleting all review history would remove.
+
+        Deletes nothing. Show the count to the user and pass the token to
+        `delete_all_reviews` only if they agree. The token is bound to exactly the
+        reviews counted here, so one created in the meantime is not caught by an
+        approval that never mentioned it."""
+        token, count = await service.request_delete_all()
+        return DeleteApproval(
+            reviews=count, confirm_token=token, expires_in_s=int(DELETE_CONFIRM_TTL_S)
+        )
+
+    @server.tool(name="delete_all_reviews")
+    async def delete_all_reviews(confirm_token: str) -> DeletionResult:
+        """Delete the reviews `request_delete_all` counted, and only those. Requires
+        the token from that call; an expired one is refused rather than silently
+        widened to whatever exists now."""
+        return DeletionResult(deleted=await service.delete_all(confirm_token))
 
 
 def main() -> None:

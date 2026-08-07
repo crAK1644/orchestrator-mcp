@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from ..contract import ConfigError
 from .contract import PROTOCOL_VERSION, Capability, Runtime
-from .managed import DEFAULT_MANAGED_PATH, managed_path, read_managed
+from .managed import DEFAULT_MANAGED_PATH, managed_path, read_managed_document
 
 HOST_RUNTIME_ENV = "ORCHESTRATOR_HOST_RUNTIME"
 
@@ -99,6 +99,53 @@ class DashboardConfig(BaseModel):
         return value
 
 
+MAX_DEEP_REVIEWERS = 5
+
+
+class ReviewConfig(BaseModel):
+    """Who reviews.
+
+    Named agents rather than a capability score, because a review is only worth
+    comparing with the last one if the same models wrote both. The score still has
+    to be there -- see `check_reviewer` -- it just does not do the choosing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reviewers: list[str] = Field(default_factory=list)
+    deep_reviewers: list[str] = Field(default_factory=list)
+
+    @field_validator("reviewers")
+    @classmethod
+    def _exactly_one(cls, value: list[str]) -> list[str]:
+        if len(value) != 1:
+            raise ValueError(
+                f"`reviewers:` must name exactly one agent (got {len(value)}); "
+                "`deep_reviewers:` is the list for asking several"
+            )
+        return value
+
+    @field_validator("deep_reviewers")
+    @classmethod
+    def _one_to_five(cls, value: list[str]) -> list[str]:
+        if not 1 <= len(value) <= MAX_DEEP_REVIEWERS:
+            raise ValueError(
+                f"`deep_reviewers:` must name 1 to {MAX_DEEP_REVIEWERS} agents "
+                f"(got {len(value)})"
+            )
+        return value
+
+    @field_validator("reviewers", "deep_reviewers")
+    @classmethod
+    def _no_duplicates(cls, value: list[str]) -> list[str]:
+        # The same agent twice is two paid requests to one model, returned as though
+        # two of them agreed.
+        repeated = sorted({agent_id for agent_id in value if value.count(agent_id) > 1})
+        if repeated:
+            raise ValueError(f"names {', '.join(repr(a) for a in repeated)} more than once")
+        return value
+
+
 class ConsultConfig(BaseModel):
     # `validate_default` so the default database path is expanded too: `~` reaching
     # `sqlite3.connect` creates a directory literally named `~` next to wherever the
@@ -118,6 +165,9 @@ class ConsultConfig(BaseModel):
     web_turn_limit: int = Field(default=8, ge=1)
     agents: dict[str, AgentConfig] = Field(min_length=1)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+    # Absent means the review tools are not advertised at all. A server with no
+    # reviewers configured should not offer a `review` tool that can only refuse.
+    review: ReviewConfig | None = None
 
     @field_validator("database_path", "managed_agents_path")
     @classmethod
@@ -150,6 +200,38 @@ class ConsultConfig(BaseModel):
             agent.agent_id = agent_id
         return agents
 
+    @model_validator(mode="after")
+    def _reviewers_can_review(self) -> ConsultConfig:
+        if self.review is not None:
+            for where in ("reviewers", "deep_reviewers"):
+                for agent_id in getattr(self.review, where):
+                    self.check_reviewer(agent_id, where)
+        return self
+
+    def check_reviewer(self, agent_id: str, where: str = "reviewers") -> None:
+        """Refuse an agent that cannot take a review, wherever it was named.
+
+        Shared with the runtime paths on purpose: an explicit reviewer list on one
+        call, and a recheck's selection, go through these same three checks, so a
+        reviewer refused at boot cannot arrive later by another door.
+
+        The host's own runtime is not checked here -- this config has no way to know
+        which runtime it is running under. `ReviewService.plan` does, and refuses it
+        there, before anything is approved.
+        """
+        agent = self.agents.get(agent_id)
+        if agent is None:
+            raise ValueError(f"`{where}:` names `{agent_id}`, which is not a configured agent")
+        if not agent.enabled:
+            raise ValueError(
+                f"`{where}:` names `{agent_id}`, which is disabled; enable it or name another"
+            )
+        if agent.score_for("review") <= 0:
+            raise ValueError(
+                f"`{where}:` names `{agent_id}`, which scores 0 for `review`; give it a "
+                "`review:` entry under its `scores:` or name a different agent"
+            )
+
     def eligible(self, host_runtime: str) -> list[AgentConfig]:
         """Configured agents that could answer at all: enabled, and not ourselves."""
         return [a for a in self.agents.values() if a.enabled and a.runtime != host_runtime]
@@ -176,14 +258,40 @@ def load_consult_config(config: dict[str, Any]) -> ConsultConfig | None:
     if not isinstance(block, dict):
         raise ConfigError("`consult:` must be a mapping")
 
-    block = dict(block) | {"agents": _merged_agents(block)}
+    # Read once, merge twice. Two reads of the managed file can straddle a dashboard
+    # save and take the agents from before it and the reviewers from after -- a
+    # combination that was never written and that no validator downstream could spot.
+    document = read_managed_document(managed_path(block))
+    block = dict(block) | {
+        "agents": _merged_agents(block, document),
+        "review": _merged_review(block, document),
+    }
     try:
         return ConsultConfig(**block)
     except ValidationError as exc:
         raise ConfigError(f"invalid `consult:` block: {exc}") from exc
 
 
-def _merged_agents(block: dict[str, Any]) -> dict[str, Any]:
+def _merged_review(block: dict[str, Any], document: dict[str, Any]) -> Any:
+    """The `review:` block, from whichever file has one.
+
+    Not merged key by key the way the agents are: a reviewer list is a single
+    decision, and half of it from each file is not a list anyone chose. Naming it in
+    both is the same startup error, for the same reason -- the copy that lost would
+    look edited and saved to whoever wrote it.
+    """
+    written = block.get("review")
+    managed = document["review"]
+    if written is not None and managed is not None:
+        raise ConfigError(
+            f"`review:` is defined in both the config and {managed_path(block)}. Delete "
+            "one: the server will not guess which was meant, because the copy it ignored "
+            "would look edited and saved to whoever wrote it."
+        )
+    return written if written is not None else managed
+
+
+def _merged_agents(block: dict[str, Any], document: dict[str, Any]) -> dict[str, Any]:
     """The agents from `config.yaml` and the ones the dashboard owns, as one mapping.
 
     Merged before `ConsultConfig` is built, so everything downstream -- routing, the
@@ -195,7 +303,7 @@ def _merged_agents(block: dict[str, Any]) -> dict[str, Any]:
         return written  # let pydantic produce the error, in its own words
 
     path = managed_path(block)
-    managed = read_managed(path)
+    managed = document["agents"]
 
     both = sorted(set(written) & set(managed))
     if both:

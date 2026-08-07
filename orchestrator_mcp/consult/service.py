@@ -14,6 +14,7 @@ written by this server rather than by the consulted agent.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -46,12 +47,22 @@ class ConsultService:
         config: ConsultConfig,
         host_runtime: Runtime,
         store: ConsultStore | None = None,
+        store_sanitizer: Callable[[Any], Any] | None = None,
     ) -> None:
         self.config = config
         self.host_runtime = host_runtime
         self.router = ConsultRouter(config, host_runtime)
         self.store = store or ConsultStore(config.database_path, config.store_full_content)
         self.request_model = build_consult_request(sorted(config.agents))
+        # What every turn is passed through on its way into the database, and only
+        # there -- the adapter is still handed the caller's own text, because a
+        # consultation answering a redacted question is not the same consultation.
+        #
+        # Default is identity, so the plain `consult` path stores exactly what it
+        # always did. A caller that cannot let credentials reach disk (the review
+        # layer) passes `scrub_json`; there is deliberately no cleanup pass, which
+        # only a design that writes the secret first would need.
+        self._scrub: Callable[[Any], Any] = store_sanitizer or (lambda value: value)
 
     async def open(self) -> ConsultService:
         await self.store.open()
@@ -223,8 +234,8 @@ class ConsultService:
         async def fail(code: ConsultErrorCode, message: str, action: RequiredAction | None = None):
             await self.store.record_turn(
                 consultation_id, sequence, source_mode,
-                user_prompt=request.prompt, context=request.context,
-                compiled_prompt=prompt.full_text, error_code=code,
+                user_prompt=self._scrub(request.prompt), context=self._scrub(request.context),
+                compiled_prompt=self._scrub(prompt.full_text), error_code=code,
             )
             return _failed(consultation_id, capability, source_mode, code, message, started,
                            agent_id=agent.agent_id, required_action=action)
@@ -263,11 +274,14 @@ class ConsultService:
             consultation_id,
             sequence,
             source_mode,
-            user_prompt=request.prompt,
-            context=request.context,
-            compiled_prompt=prompt.full_text,
-            raw_output=result.raw_output,
-            validated_response=result.content.model_dump(),
+            user_prompt=self._scrub(request.prompt),
+            context=self._scrub(request.context),
+            compiled_prompt=self._scrub(prompt.full_text),
+            raw_output=self._scrub(result.raw_output),
+            # Scrubbed as a dict, before `record_turn` serializes it. The structured
+            # answer is a column like any other, and a sanitizer that only understood
+            # text would have left a credential here with `raw_output` clean.
+            validated_response=self._scrub(result.content.model_dump()),
             input_tokens=result.usage.prompt_tokens,
             output_tokens=result.usage.completion_tokens,
             cost_usd=result.usage.cost_usd,
@@ -303,9 +317,17 @@ class ConsultService:
 
     # --- read-only surfaces -------------------------------------------------
 
-    async def list_agents(self, check: bool = True) -> ConsultAgentsResponse:
+    async def list_agents(
+        self, check: bool = True, agent_ids: list[str] | None = None
+    ) -> ConsultAgentsResponse:
+        # Filtered here rather than by the caller afterwards: with `check=True` every
+        # row costs a subprocess, so narrowing after the fact would preflight agents
+        # nobody asked about. None means all of them, as it always did.
+        wanted = None if agent_ids is None else set(agent_ids)
         agents = []
         for agent_id, agent in sorted(self.config.agents.items()):
+            if wanted is not None and agent_id not in wanted:
+                continue
             host = agent.runtime == self.host_runtime
             # The host's own runtime is never consulted, so probing it would be a
             # subprocess launched to answer a question already settled.
