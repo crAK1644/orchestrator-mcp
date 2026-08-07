@@ -42,15 +42,25 @@ import yaml
 from pydantic import ValidationError
 
 from ..contract import ConfigError
+from ..review.contract import Severity
 from .adapters import adapter_for
 from .adapters.base import AdapterError, resolve_command
 from .adapters.codex_cli import rate_limit as codex_rate_limit
-from .config import AgentConfig, ConsultConfig, load_consult_config
+from .config import (
+    MAX_DEEP_REVIEWERS,
+    AgentConfig,
+    ConsultConfig,
+    ReviewConfig,
+    load_consult_config,
+)
 from .contract import Capability, Runtime
-from .managed import read_managed, write_managed
+from .managed import read_managed, read_managed_document, write_managed
 
 CAPABILITIES = get_args(Capability)
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Worst first, and taken from the contract rather than retyped, so a severity added
+# there cannot end up rendered in whatever order SQLite returned it.
+SEVERITIES = get_args(Severity)
 
 # Slugs each runtime is known to take, offered as a `datalist` rather than a `select`:
 # the field stays free text, because a model that ships tomorrow has to be typeable
@@ -187,6 +197,12 @@ class ConsultDashboard:
             return HTTPStatus.OK, self.index()
         if path.startswith("/consultation/"):
             return self.consultation(unquote(path.removeprefix("/consultation/")))
+        if path == "/reviews":
+            return HTTPStatus.OK, self.reviews_page()
+        if path == "/reviewers":
+            return self._if_editable(lambda: (HTTPStatus.OK, self.reviewers_page(query)))
+        if path.startswith("/reviews/"):
+            return self.review(unquote(path.removeprefix("/reviews/")))
         if path == "/agents":
             return self._if_editable(lambda: (HTTPStatus.OK, self.agents_page(query)))
         if path == "/agents/new":
@@ -214,6 +230,7 @@ class ConsultDashboard:
     def index(self) -> str:
         link = (
             " &middot; <a href='/agents'>configure agents</a>"
+            " &middot; <a href='/reviewers'>configure reviewers</a>"
             if self.config.dashboard.editable
             else ""
         )
@@ -222,6 +239,7 @@ class ConsultDashboard:
             f"<h1>Consult Protocol v1</h1><p class=meta>orchestrator-mcp-server {_e(self.version)}"
             f" &middot; {_e(str(self.config.database_path))}{link}</p>"
             f"<h2>Agents</h2>{self._agents_table()}{self._rate_limit_line()}"
+            f"{self._reviews_section()}"
             f"<h2>Consultations</h2>{self._consultations_table()}",
         )
 
@@ -396,6 +414,305 @@ class ConsultDashboard:
             )
         return "".join(sections)
 
+    # --- reviews -------------------------------------------------------------
+
+    def _reviews_ready(self) -> bool:
+        """Whether the migration that creates `reviews` has run yet.
+
+        This connection is `mode=ro` and could not create the table if it wanted to, so
+        a server that has not been restarted since this version shipped leaves every
+        review query raising `no such table` -- on a page whose whole job is to stay
+        readable. Probing `sqlite_master` turns that into a sentence about restarting.
+        """
+        return bool(
+            self._query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reviews'")
+        )
+
+    def _reviews_missing(self) -> str:
+        """Why there is no review table to read, or "" when there is one.
+
+        Two different absences, and telling someone to restart is only the answer to
+        one of them: a database that does not exist yet is a server that has never
+        consulted anything, and no restart will conjure a review into it.
+        """
+        if self._reviews_ready():
+            return ""
+        if not Path(self.config.database_path).exists():
+            return "No reviews recorded yet."
+        return NOT_MIGRATED
+
+    def _review_rows(self, limit: int) -> list[sqlite3.Row]:
+        return self._query(
+            "SELECT r.id, r.created_at, r.mode, r.status, r.outcome, r.goal, "
+            "r.parent_review_id, "
+            "(SELECT COUNT(*) FROM review_consultations c WHERE c.review_id = r.id) "
+            "  AS reviewers, "
+            "(SELECT COUNT(*) FROM review_consultations c WHERE c.review_id = r.id "
+            " AND c.error_code IS NOT NULL) AS failures "
+            "FROM reviews r ORDER BY r.created_at DESC LIMIT ?",
+            (limit,),
+        )
+
+    def _reviews_section(self) -> str:
+        """The newest few on the index -- and nothing at all where reviews are unused.
+
+        An install with no `review:` block and no review history gets no empty section
+        advertising a feature it has not configured. One that *has* configured reviews
+        gets the un-migrated notice, because there the missing table is news.
+        """
+        missing = self._reviews_missing()
+        if missing:
+            return (
+                f"<h2>Reviews</h2><p class=meta>{_e(missing)}</p>"
+                if self.config.review is not None
+                else ""
+            )
+        rows = self._review_rows(10)
+        if not rows and self.config.review is None:
+            return ""
+        more = "<p><a href='/reviews'>All reviews</a></p>" if rows else ""
+        return f"<h2>Reviews</h2>{self._reviews_table(rows)}{more}"
+
+    def _reviews_table(self, rows: list[sqlite3.Row]) -> str:
+        if not rows:
+            return "<p class=meta>No reviews recorded yet.</p>"
+        body = "".join(
+            "<tr>"
+            f"<td><a href='/reviews/{_e(row['id'])}'><code>{_e(row['id'][:8])}</code></a></td>"
+            f"<td class=meta>{_e(row['created_at'])}</td>"
+            f"<td>{_e(row['mode'])}{' &middot; recheck' if row['parent_review_id'] else ''}</td>"
+            f"<td>{_status_word(row['status'])}</td>"
+            f"<td>{_e(row['outcome'] or '--')}</td>"
+            f"<td>{row['reviewers']}</td>"
+            f"<td class={'bad' if row['failures'] else 'ok'}>{row['failures']}</td>"
+            f"<td>{_e(_short(row['goal'], 90))}</td>"
+            "</tr>"
+            for row in rows
+        )
+        head = (
+            "<tr><th>id<th>started<th>mode<th>status<th>outcome<th>reviewers"
+            "<th>failed<th>goal</tr>"
+        )
+        return f"<table>{head}{body}</table>"
+
+    def reviews_page(self) -> str:
+        head = "<p><a href='/'>&larr; consultations</a></p><h1>Reviews</h1>"
+        missing = self._reviews_missing()
+        if missing:
+            return _document("Reviews", f"{head}<p class=meta>{_e(missing)}</p>")
+        return _document("Reviews", head + self._reviews_table(self._review_rows(200)))
+
+    def review(self, review_id: str) -> tuple[int, str]:
+        missing = self._reviews_missing()
+        if missing:
+            return HTTPStatus.NOT_FOUND, _document(
+                "Reviews",
+                f"<h1>Reviews</h1><p class=meta>{_e(missing)}</p>"
+                "<p><a href='/'>Back</a></p>",
+            )
+        rows = self._query("SELECT * FROM reviews WHERE id = ?", (review_id,))
+        if not rows:
+            return HTTPStatus.NOT_FOUND, _document(
+                "Not found", "<p>No such review.</p><p><a href='/reviews'>Back</a></p>"
+            )
+        review = rows[0]
+        reviewers = self._query(
+            "SELECT * FROM review_consultations WHERE review_id = ? ORDER BY agent_id",
+            (review_id,),
+        )
+        findings = [
+            finding
+            for row in reviewers
+            for finding in _findings_of(row)
+        ]
+        parent = (
+            f" &middot; recheck of <a href='/reviews/{_e(review['parent_review_id'])}'>"
+            f"<code>{_e(review['parent_review_id'][:8])}</code></a>"
+            if review["parent_review_id"]
+            else ""
+        )
+        return HTTPStatus.OK, _document(
+            f"Review {review_id[:8]}",
+            "<p><a href='/reviews'>&larr; all reviews</a></p>"
+            f"<h1>{_e(review['mode'])} review &middot; {_status_word(review['status'])}</h1>"
+            f"<p class=meta>{_e(review['id'])} &middot; outcome "
+            f"{_e(review['outcome'] or '--')} &middot; {_e(review['created_at'])}"
+            f" &middot; updated {_e(review['updated_at'])}"
+            f" &middot; web {'requested' if review['web_requested'] else 'off'}"
+            f"{_secret_line(review['secret_hits_json'])}{parent}</p>"
+            f"{_material(review['material_json'])}"
+            # The stored copies, which are the redacted ones -- what a reviewer was
+            # sent is not kept anywhere this page can reach.
+            f"{_block('Goal (as stored)', review['goal'])}"
+            f"{_block('Context (as stored)', review['context'])}"
+            f"{_host_findings(review['host_findings_json'])}"
+            f"<h2>Reviewers</h2>{_reviewer_table(reviewers)}"
+            f"<h2>Findings</h2>{_findings_table(findings)}"
+            f"<h2>Synthesis</h2>{_synthesis(review['summary_json'])}"
+            f"<h2>Answers</h2>{_answers(reviewers)}"
+            f"{self._rechecks(review_id)}",
+        )
+
+    def _rechecks(self, review_id: str) -> str:
+        rows = self._query(
+            "SELECT id, created_at, status, outcome FROM reviews "
+            "WHERE parent_review_id = ? ORDER BY created_at",
+            (review_id,),
+        )
+        if not rows:
+            return ""
+        items = "".join(
+            f"<li><a href='/reviews/{_e(row['id'])}'><code>{_e(row['id'][:8])}</code></a> "
+            f"&mdash; {_status_word(row['status'])} "
+            f"<span class=meta>{_e(row['outcome'] or '')} {_e(row['created_at'])}</span></li>"
+            for row in rows
+        )
+        return f"<h2>Rechecks</h2><ul>{items}</ul>"
+
+    # --- configuring reviewers -----------------------------------------------
+
+    def _review_in_config(self) -> bool:
+        """Whether the operator's own file defines `review:`.
+
+        A `review:` block in both files is a startup error, not a merge -- the same
+        rule the agents follow -- so this page has to refuse the save rather than write
+        a file the next boot rejects. Read off disk for the reason `_written_ids`
+        gives: what that file said at boot is not what it says now.
+
+        A file this cannot read falls back to "yes, it is written there" whenever a
+        review block is configured at all. That over-refuses in one case (the block
+        came from the managed file and `config.yaml` has since become unreadable) and
+        under-refuses in none -- and a `config.yaml` that cannot be read is a server
+        that will not start either way.
+        """
+        if self.config_path is None:
+            return False
+        try:
+            document = yaml.safe_load(self.config_path.read_text()) or {}
+            consult = document.get("consult")
+            if not isinstance(consult, dict):
+                return self.config.review is not None
+            return consult.get("review") is not None
+        except (OSError, UnicodeDecodeError, AttributeError, yaml.YAMLError):
+            return self.config.review is not None
+
+    def _reviewable(self) -> dict[str, AgentConfig]:
+        """The agents this page can see, whichever file they live in.
+
+        `self.config.agents` alone is the boot snapshot, and an agent added through
+        this dashboard a minute ago is not in it -- refusing that one would refuse
+        exactly what the form is for.
+        """
+        managed, written = self._split_agents()
+        return written | managed
+
+    def reviewers_page(self, query: str = "") -> str:
+        params = parse_qs(query)
+        notice = (
+            "<p class='banner done'>Saved. It takes effect when the MCP server next "
+            "starts.</p>"
+            if params.get("saved")
+            else ""
+        )
+        return self.reviewers_form(notice=notice)
+
+    def reviewers_form(self, values: dict[str, str] | None = None,
+                       error: str = "", notice: str = "") -> str:
+        """Who reviews: one agent for `review`, one to five for `deep_review`."""
+        agents = self._reviewable()
+        current = self.config.review or ReviewConfig.model_construct(
+            reviewers=[], deep_reviewers=[]
+        )
+        chosen = values or {
+            **({"reviewer": current.reviewers[0]} if current.reviewers else {}),
+            **{f"deep.{aid}": "on" for aid in current.deep_reviewers},
+        }
+
+        if self._review_in_config():
+            return _document(
+                "Reviewers",
+                "<p><a href='/'>&larr; consultations</a></p><h1>Reviewers</h1>"
+                f"<p>The <code>review:</code> block is defined in {_e(self._config_name)}. "
+                "Edit it there, or delete it from that file first -- the server refuses "
+                "to start with both.</p>"
+                f"{_reviewer_summary(current)}",
+            )
+
+        offered = sorted(agents.items())
+        options = "".join(
+            f"<option value='{_e(aid)}'"
+            f"{' selected' if chosen.get('reviewer') == aid else ''}"
+            f"{' disabled' if _not_reviewable(agent, aid) else ''}>{_e(aid)}"
+            f"{_e(_why_not(agent, aid))}</option>"
+            for aid, agent in offered
+        )
+        boxes = "".join(
+            f"<label><input type=checkbox name='deep.{_e(aid)}'"
+            f"{' checked' if chosen.get(f'deep.{aid}') else ''}"
+            f"{' disabled' if _not_reviewable(agent, aid) else ''}> "
+            f"<code>{_e(aid)}</code> <span class=meta>{_e(agent.runtime)} "
+            f"{_e(agent.model)}{_e(_why_not(agent, aid))}</span></label>"
+            for aid, agent in offered
+        ) or "<p class=meta>No agents configured yet.</p>"
+
+        return _document(
+            "Reviewers",
+            "<p><a href='/'>&larr; consultations</a></p><h1>Reviewers</h1>"
+            f"<p class=meta>{_e(str(self.config.managed_agents_path))}</p>"
+            f"{notice}{self._restart_banner()}"
+            + (f"<p class=error>{_e(error)}</p>" if error else "")
+            + "<form method=post action='/reviewers'>"
+            f"<input type=hidden name=_token value='{_e(self.token)}'>"
+            "<label><span>review &mdash; the single agent a standard review asks. One, "
+            "because a second opinion nobody compared is just a slower first one; "
+            "several is what deep review is for.</span>"
+            f"<select name=reviewer><option value=''>none</option>{options}</select></label>"
+            f"<fieldset><legend>deep review &mdash; 1 to {MAX_DEEP_REVIEWERS} agents, each "
+            "asked independently and none of them shown another's answer</legend>"
+            f"{boxes}</fieldset>"
+            "<p class=meta>An agent has to be enabled and scored for <code>review</code> "
+            "before it can be named here. Tick <code>review</code> in its capabilities on "
+            "its own page.</p>"
+            "<button type=submit>Save</button></form>",
+        )
+
+    def save_reviewers(self, form: dict[str, str]) -> tuple[int, str, str | None]:
+        reviewer = (form.get("reviewer") or "").strip()
+        deep = [key.removeprefix("deep.") for key in form if key.startswith("deep.")]
+        agents = self._reviewable()
+
+        def refuse(message: str, status: int = HTTPStatus.OK) -> tuple[int, str, str | None]:
+            return status, self.reviewers_form(values=form, error=message), None
+
+        if self._review_in_config():
+            # Not back into the form: `reviewers_form` renders the read-only page in
+            # this case, and it would swallow the message explaining the refusal.
+            return HTTPStatus.CONFLICT, _document(
+                "Not saved",
+                f"<h1>Not saved</h1><p><code>review:</code> is defined in "
+                f"{_e(self._config_name)}. Delete it there first -- the server refuses "
+                "to start with the block in both files.</p>"
+                "<p><a href='/reviewers'>Back</a></p>",
+            ), None
+        for agent_id in sorted({reviewer, *deep} - {""}):
+            problem = _not_reviewable(agents.get(agent_id), agent_id)
+            if problem:
+                return refuse(problem)
+        try:
+            block = ReviewConfig(
+                reviewers=[reviewer] if reviewer else [], deep_reviewers=sorted(deep)
+            )
+        except ValidationError as exc:
+            return refuse(_first_error(exc))
+
+        def store(document: dict[str, Any]) -> tuple[int, str] | None:
+            document["review"] = block.model_dump(mode="json")
+            return None
+
+        problem = self._rewrite_document(store)
+        if problem:
+            return refuse(problem[1], problem[0])
+        return HTTPStatus.SEE_OTHER, "", "/reviewers?saved=1"
 
     # --- configuring agents --------------------------------------------------
 
@@ -467,14 +784,25 @@ class ConsultDashboard:
 
         Returns None when it wrote, or a status and a message when it did not.
         """
+        return self._rewrite_document(lambda document: change(document["agents"]))
+
+    def _rewrite_document(
+        self, change: Callable[[dict[str, Any]], tuple[int, str] | None]
+    ) -> tuple[int, str] | None:
+        """`_rewrite` over the whole managed document, agents and reviewers together.
+
+        Both keys are read once and written once, so an agent save cannot drop the
+        reviewer block it never looked at, and a reviewer save cannot drop an agent.
+        """
         with self._writing:
             try:
-                agents = read_managed(self.config.managed_agents_path)
+                document = read_managed_document(self.config.managed_agents_path)
             except (ConfigError, OSError) as exc:
                 return HTTPStatus.CONFLICT, str(exc)
-            refusal = change(agents)
+            refusal = change(document)
             if refusal is not None:
                 return refusal
+            agents = document["agents"]
             # What is about to be written has to be something the server can boot on.
             # The form cannot produce a bad entry, but it can be asked to save alongside
             # one a hand-edit left there -- and writing that back is this process
@@ -484,7 +812,7 @@ class ConsultDashboard:
             if unbootable:
                 return HTTPStatus.CONFLICT, unbootable
             try:
-                write_managed(self.config.managed_agents_path, agents)
+                write_managed(self.config.managed_agents_path, agents, document["review"])
             except OSError as exc:
                 # A readable file in a directory this user cannot write to. The read
                 # above says nothing about that, so the failure lands here and has to
@@ -676,7 +1004,8 @@ class ConsultDashboard:
             f"<p class=meta>{_e(str(self.config.managed_agents_path))}</p>"
             f"{notice}{self._restart_banner()}"
             f"{managed_table}"
-            "<p><a href='/agents/new'>Add an agent</a></p>"
+            "<p><a href='/agents/new'>Add an agent</a> &middot; "
+            "<a href='/reviewers'>configure reviewers</a></p>"
             f"{read_only}",
         )
 
@@ -1027,13 +1356,282 @@ def _resets(when: object) -> str:
 
 
 def _status_cell(row: sqlite3.Row | None) -> str:
+    """The newest recorded check, said as one.
+
+    "Last checked" and not a bare timestamp, because this page runs no subprocess: the
+    row is whatever the last preflight wrote, and a week-old one read as a fresh probe
+    is how an agent looks ready long after its login expired. `test_reviewers` is the
+    tool that actually asks.
+    """
     if row is None:
         return "<span class=meta>never checked</span>"
+    when = f"<span class=meta> &middot; last checked {_e(row['checked_at'])}</span>"
     if row["installed"] and row["authenticated"]:
-        return f"<span class=ok>ready</span> <span class=meta>{_e(row['checked_at'])}</span>"
+        return f"<span class=ok>ready</span>{when}"
     label = "not installed" if not row["installed"] else "not connected"
-    detail = f" &middot; {_e(row['detail'])}" if row["detail"] else ""
-    return f"<span class=bad>{label}</span><span class=meta>{detail}</span>"
+    detail = f"<span class=meta> &middot; {_e(row['detail'])}</span>" if row["detail"] else ""
+    return f"<span class=bad>{label}</span>{detail}{when}"
+
+
+# --- reviews ----------------------------------------------------------------
+
+NOT_MIGRATED = (
+    "This database has no review tables yet. This page opens it read-only and cannot "
+    "create them -- restart the MCP server and it will add them at startup."
+)
+
+
+def _short(value: object, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _status_word(status: object) -> str:
+    """A status, coloured only where the colour says something.
+
+    `complete` is the only finished-well state; `failed` and `cancelled` are the two
+    a reader should not skim past. Everything between them is in progress and gets no
+    colour, because "running" is not news.
+    """
+    text = _e(status)
+    if status == "complete":
+        return f"<span class=ok>{text}</span>"
+    if status in ("failed", "cancelled"):
+        return f"<span class=bad>{text}</span>"
+    return text
+
+
+def _loads(value: object, fallback: Any) -> Any:
+    """Stored JSON, or the fallback. A column this page cannot parse is a row it still
+    has to render -- half a review is worth more than a traceback."""
+    if not value:
+        return fallback
+    try:
+        return json.loads(str(value))
+    except ValueError:
+        return fallback
+
+
+def _secret_line(secret_hits_json: object) -> str:
+    hits = _loads(secret_hits_json, [])
+    if not isinstance(hits, list) or not hits:
+        return ""
+    where = ", ".join(
+        f"{_e(hit.get('field'))} line {_e(hit.get('line'))}"
+        for hit in hits
+        if isinstance(hit, dict)
+    )
+    # Positions, never values -- which is also all that was ever stored.
+    return f" &middot; <span class=bad>{len(hits)} secret-shaped</span> ({where})"
+
+
+def _material(material_json: object) -> str:
+    """The manifest the host declared. Not proof: this server never read those files,
+    so what it says is a disclosure the caller put on the record, not a measurement."""
+    items = _loads(material_json, [])
+    if not isinstance(items, list) or not items:
+        return ""
+    listed = "".join(
+        f"<li><code>{_e(item.get('label'))}</code> "
+        f"<span class=meta>{_e(item.get('kind'))} {_e(item.get('locator'))} &middot; "
+        f"{_e(item.get('chars'))} chars</span></li>"
+        for item in items
+        if isinstance(item, dict)
+    )
+    return f"<p class=meta>material, as declared by the caller:</p><ul>{listed}</ul>"
+
+
+def _host_findings(host_findings_json: object) -> str:
+    findings = _loads(host_findings_json, [])
+    if not isinstance(findings, list) or not findings:
+        return ""
+    listed = "".join(f"<li>{_e(item)}</li>" for item in findings)
+    return (
+        "<h2>The host's own reading</h2>"
+        "<p class=meta>Formed before any reviewer was asked, and shown to none of "
+        f"them.</p><ul>{listed}</ul>"
+    )
+
+
+def _findings_of(row: sqlite3.Row) -> list[dict[str, Any]]:
+    findings = _loads(row["findings_json"], [])
+    return [item for item in findings if isinstance(item, dict)] if isinstance(
+        findings, list
+    ) else []
+
+
+def _reviewer_table(rows: list[sqlite3.Row]) -> str:
+    if not rows:
+        return "<p class=meta>No reviewer has been asked yet.</p>"
+    body = "".join(
+        "<tr>"
+        f"<td><code>{_e(row['agent_id'])}</code></td>"
+        f"<td>{_status_word(row['status'])}</td>"
+        f"<td>{len(_findings_of(row))}</td>"
+        f"<td class=bad>{_e(row['error_code'] or '')}</td>"
+        + (
+            f"<td><a href='/consultation/{_e(row['consultation_id'])}'>"
+            f"<code>{_e(str(row['consultation_id'])[:8])}</code></a></td>"
+            if row["consultation_id"]
+            else "<td class=meta>--</td>"
+        )
+        + f"<td class=meta>{_e(row['created_at'])}</td></tr>"
+        for row in rows
+    )
+    head = "<tr><th>reviewer<th>status<th>findings<th>error<th>consultation<th>answered</tr>"
+    return f"<table>{head}{body}</table>"
+
+
+def _findings_table(findings: list[dict[str, Any]]) -> str:
+    """Every reviewer's findings in one table, worst first.
+
+    Sorted by severity and not by reviewer on purpose: a lone Critical from one model
+    is exactly the row that must not be buried under another model's Minors.
+    """
+    if not findings:
+        return "<p class=meta>No findings recorded.</p>"
+    order = {severity: rank for rank, severity in enumerate(SEVERITIES)}
+    body = "".join(
+        "<tr>"
+        f"<td>{_severity(finding.get('severity'))}</td>"
+        f"<td><code>{_e(finding.get('location') or '')}</code></td>"
+        f"<td><code>{_e(finding.get('agent_id') or '')}</code></td>"
+        f"<td>{_e(finding.get('why') or '')}</td>"
+        f"<td>{_e(finding.get('fix') or '')}</td>"
+        "</tr>"
+        for finding in sorted(
+            findings, key=lambda f: order.get(f.get("severity"), len(order))
+        )
+    )
+    return (
+        "<table><tr><th>severity<th>location<th>reviewer<th>why<th>fix</tr>"
+        f"{body}</table>"
+    )
+
+
+def _severity(severity: object) -> str:
+    if severity == "critical":
+        return f"<span class=bad>{_e(severity)}</span>"
+    return _e(severity)
+
+
+def _synthesis(summary_json: object) -> str:
+    """The host AI's conclusion, in the four columns the review format promises:
+    problem, seriousness, who agreed, and what to do."""
+    summary = _loads(summary_json, None)
+    if not isinstance(summary, dict):
+        return (
+            "<p class=meta>Not written yet. Reviewers replying is not a finished "
+            "review -- the conclusion arrives with <code>finalize_review</code>.</p>"
+        )
+    rows = "".join(
+        "<tr>"
+        f"<td>{_e(finding.get('problem') or '')}</td>"
+        f"<td>{_severity(finding.get('severity'))}</td>"
+        f"<td><code>{_e(', '.join(finding.get('agreed_by') or []) or '--')}</code>"
+        + (
+            f"<br><span class=meta>disagreed: "
+            f"{_e(', '.join(finding.get('disagreed_by') or []))}</span>"
+            if finding.get("disagreed_by")
+            else ""
+        )
+        + f"</td><td>{_e(finding.get('proposed_action') or '')}</td></tr>"
+        for finding in summary.get("combined_findings") or []
+        if isinstance(finding, dict)
+    )
+    table = (
+        "<table><tr><th>problem<th>seriousness<th>reviewers agreeing"
+        f"<th>proposed action</tr>{rows}</table>"
+        if rows
+        else ""
+    )
+    return (
+        f"<p>{_e(summary.get('summary') or '')}</p>{table}"
+        f"<p><strong>Recommendation.</strong> {_e(summary.get('recommendation') or '')}</p>"
+        + _list("Agreements", summary.get("agreements"))
+        + _list("Disagreements", summary.get("disagreements"))
+        + _list("Options", summary.get("options"))
+        + _list("Checked", summary.get("checked"))
+        + _list("Not checked", summary.get("not_checked"))
+        + _citations(summary.get("citations"))
+    )
+
+
+def _list(label: str, items: object) -> str:
+    if not isinstance(items, list) or not items:
+        return ""
+    listed = "".join(f"<li>{_e(item)}</li>" for item in items)
+    return f"<p class=meta>{_e(label)}</p><ul>{listed}</ul>"
+
+
+def _citations(sources: object) -> str:
+    """Web-mode citations, carried through the synthesis rather than dropped in it.
+
+    The URL is text, never a link: it came out of a model, and this page does not
+    offer one-click navigation to somewhere a model named.
+    """
+    if not isinstance(sources, list) or not sources:
+        return ""
+    listed = "".join(
+        f"<li>{_e(source.get('title') or '')} "
+        f"<code>{_e(source.get('url') or '')}</code></li>"
+        for source in sources
+        if isinstance(source, dict)
+    )
+    return f"<p class=meta>Citations</p><ul>{listed}</ul>"
+
+
+def _answers(rows: list[sqlite3.Row]) -> str:
+    """Each reviewer's answer as it arrived, folded away.
+
+    Folded because the point of the page above is the comparison; the original is
+    what you open when the comparison looks wrong.
+    """
+    sections = [
+        f"<details><summary><code>{_e(row['agent_id'])}</code> "
+        f"&middot; {_status_word(row['status'])}</summary>"
+        f"<pre>{_e(row['answer'])}</pre></details>"
+        for row in rows
+        if row["answer"]
+    ]
+    if not sections:
+        return (
+            "<p class=meta>Nothing stored. Either no reviewer answered, or "
+            "<code>store_full_content</code> is off.</p>"
+        )
+    return "".join(sections)
+
+
+def _not_reviewable(agent: AgentConfig | None, agent_id: str) -> str | None:
+    """Why this agent cannot be named a reviewer, or None.
+
+    The three rules `ConsultConfig.check_reviewer` applies at boot, restated against
+    the agents this page can see. Restated rather than called, because that method
+    reads the boot snapshot, and an agent added through this dashboard a minute ago
+    is not in it -- refusing that one would refuse the very thing the form is for.
+    """
+    if agent is None:
+        return f"`{agent_id}` is not a configured agent."
+    if not agent.enabled:
+        return f"`{agent_id}` is disabled. Enable it, or name another."
+    if agent.score_for("review") <= 0:
+        return (
+            f"`{agent_id}` is not offered `review` work. Tick `review` in its "
+            "capabilities, or name another."
+        )
+    return None
+
+
+def _why_not(agent: AgentConfig, agent_id: str) -> str:
+    problem = _not_reviewable(agent, agent_id)
+    return f" -- {'disabled' if not agent.enabled else 'no review capability'}" if problem else ""
+
+
+def _reviewer_summary(review: ReviewConfig) -> str:
+    return (
+        f"<p>review: <code>{_e(', '.join(review.reviewers) or 'none')}</code><br>"
+        f"deep review: <code>{_e(', '.join(review.deep_reviewers) or 'none')}</code></p>"
+    )
 
 
 def _document(title: str, body: str) -> str:
@@ -1106,6 +1704,8 @@ class _Handler(BaseHTTPRequestHandler):
             status, body, location = self.dashboard.save(form)
         elif path == "/agents/delete":
             status, body, location = self.dashboard.delete(form)
+        elif path == "/reviewers":
+            status, body, location = self.dashboard.save_reviewers(form)
         else:
             status, body, location = (
                 HTTPStatus.NOT_FOUND,

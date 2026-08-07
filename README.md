@@ -349,6 +349,20 @@ An agent that exists in both files keeps its row and its delete button, since de
 
 Changes take effect when the MCP server next starts. The page says so after every save, and it warns you when the running server is on an older configuration than the one on disk.
 
+The agent table's status column is the newest recorded preflight, labelled **last checked**. The page runs nothing: it reads whatever the last check wrote, which may be days old. `test_reviewers` is the tool that actually asks.
+
+### Reviews in the dashboard
+
+`/reviews` lists reviews newest first, and `/reviews/<id>` shows one: its status and outcome, every reviewer with the consultation it ran under, all findings sorted worst-first across reviewers, the synthesis in the problem / seriousness / who-agreed / proposed-action shape, and each reviewer's original answer folded into a `<details>`. Rechecks link back to the review they came from.
+
+What you see is what was stored, which is the redacted copy — a credential-shaped value was replaced before the insert, and the page reports only that one was found and on which line.
+
+There is no delete button. The dashboard opens the database read-only, so deleting is `delete_review` and `delete_all_reviews`, from your AI.
+
+With `editable: true`, `/reviewers` sets who reviews: one agent for `review`, one to five for `deep_review`. It writes the same `~/.orchestrator-mcp/agents.yaml`, both blocks together, so a reviewer save cannot drop your agents. A `review:` block in `config.yaml` makes the page read-only and says which file to edit — the same reason the agents have no precedence rule.
+
+A database created before this version has no review tables, and the read-only connection cannot add them. The page says to restart the MCP server, which migrates at startup.
+
 By default, consultation prompts and answers are saved in SQLite. Set `store_full_content: false` to save only metadata and routing information.
 
 ## Configuration
