@@ -452,3 +452,23 @@ Prose without the block loses every finding you made: nothing downstream can ran
 group them, or check that your Critical survived. If you are asked again for the block, \
 send only the block.
 """
+
+# Sent as a second turn in the *same* consultation when the first answer's findings
+# block could not be read. The material is already in that session's history, so this
+# costs a few hundred characters rather than another copy of the context -- which is
+# the whole reason it is a re-ask and not a re-run.
+REASK_INSTRUCTIONS = """\
+Your findings block could not be parsed, so every finding you just made is currently \
+lost. Do not review anything again and do not change your conclusions.
+
+Reply with the fenced JSON block for the review you just wrote, and nothing else:
+
+```json
+{"findings": [{"location": "src/auth.py:88", "severity": "critical", "why": "...", \
+"example": "...", "fix": "..."}]}
+```
+
+It must be valid JSON: escape every `"` inside a string as `\\"` and every newline as \
+`\\n`. If a code snippet is awkward to escape, describe it instead of quoting it. If you \
+found nothing, send `{"findings": []}`.
+"""

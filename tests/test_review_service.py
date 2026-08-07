@@ -143,6 +143,51 @@ async def test_planning_shows_what_would_be_sent_and_sends_it(build):
     assert all(a.prompts == [] for a in adapters.values())
 
 
+async def test_the_server_reads_the_paths_and_measures_what_it_read(build, tmp_path):
+    """The reviewer has no filesystem, so naming a path only works if the server
+    reads it. Having read it, the manifest is a measurement rather than a claim."""
+    first = tmp_path / "a.py"
+    first.write_text("def parse(): ...")
+    second = tmp_path / "b.py"
+    second.write_text("def emit(): ...")
+    service = await build()
+
+    response = await planned(service, context_paths=[str(first), str(second)])
+
+    assert response.plan.material_verified is True
+    assert [m.label for m in response.plan.material] == [str(first), str(second)]
+    assert [m.chars for m in response.plan.material] == [16, 15]
+    # The headers and the blank line between the two files count too.
+    assert response.plan.context_chars > 16 + 15
+
+    run = await service.run(response.review_id, response.plan.confirm_token)
+    sent = next(iter(service.adapters.values())).prompts[0]
+    assert "def parse(): ..." in sent and "def emit(): ..." in sent
+    assert run.status == "awaiting_synthesis"
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory"])
+async def test_a_path_that_is_not_a_readable_file_is_refused_by_name(build, tmp_path, kind):
+    target = tmp_path / "gone.py" if kind == "missing" else tmp_path
+    service = await build()
+
+    response = await service.plan(goal="review the parser", context_paths=[str(target)])
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert str(target) in response.error.message
+
+
+async def test_context_and_context_paths_together_are_refused(build, tmp_path):
+    path = tmp_path / "a.py"
+    path.write_text("def parse(): ...")
+    service = await build()
+
+    response = await service.plan(
+        goal="review the parser", context="def parse(): ...", context_paths=[str(path)]
+    )
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert "not both" in response.error.message
+
+
 async def test_a_deep_review_plans_every_configured_reviewer(build):
     service = await build()
     response = await planned(service, mode="deep")
@@ -577,6 +622,47 @@ async def test_unparsed_reviewer_findings_make_finalization_refuse(build):
     assert "unparsed findings" in response.error.message
     assert response.unparsed_reviewers == ["codex-sol"]
     assert response.status == "awaiting_synthesis"
+
+
+class SecondTurnAdapter(StubAdapter):
+    """Prose on the first turn, then whatever it is told to send on the second."""
+
+    def __init__(self, second: str) -> None:
+        super().__init__()
+        self._second = second
+
+    async def _answer(self, prompt, source_mode):
+        # `prompts` records this call inside `super()`, so an empty list is turn 1.
+        self.answer = "prose only, no block" if not self.prompts else self._second
+        return await super()._answer(prompt, source_mode)
+
+
+async def test_an_unparsed_block_is_asked_for_once_more_in_the_same_session(build):
+    stub = SecondTurnAdapter('```json\n{"findings": []}\n```')
+    service = await build({"codex-sol": stub, "gemini-x": StubAdapter()})
+    plan = await planned(service, context="def parse(): ...")
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+
+    result = next(r for r in run.results if r.agent_id == "codex-sol")
+    assert result.findings_parsed and result.findings == []
+    # Turn 1's prose is the review; only the structure came from turn 2.
+    assert result.answer == "prose only, no block"
+    assert run.unparsed_reviewers == []
+    # One re-ask, and it carried no second copy of the material.
+    assert len(stub.prompts) == 2
+    assert "def parse(): ..." not in stub.prompts[1]
+    record = await service.consult.get_consultation(result.consultation_id)
+    assert len(record.turns) == 2
+
+
+async def test_a_reviewer_that_will_not_send_a_block_is_asked_once_and_reported(build):
+    stub = StubAdapter(answer="prose only, no block")
+    service = await build({"codex-sol": stub, "gemini-x": StubAdapter()})
+    plan = await planned(service)
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+
+    assert run.unparsed_reviewers == ["codex-sol"]
+    assert len(stub.prompts) == 2  # one retry, not a loop
 
 
 async def test_empty_but_parseable_findings_can_be_finalized(build):

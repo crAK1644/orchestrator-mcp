@@ -47,6 +47,7 @@ from .contract import (
     MAX_LIST_ITEMS,
     MAX_MATERIAL_ITEMS,
     MAX_SECRET_HITS,
+    REASK_INSTRUCTIONS,
     REVIEWER_INSTRUCTIONS,
     SEVERITY_ORDER,
     Finding,
@@ -489,6 +490,7 @@ class ReviewService:
                 consultation_id=UUID(existing) if existing else None,
             )
             result = self._to_result(agent_id, response)
+            result = await self._reask(agent_id, result, source_mode)
             # Persisted before returning, so a cancel or a crash never loses a
             # reviewer that already answered.
             await self.store.record_reviewer_result(
@@ -649,6 +651,49 @@ class ReviewService:
             follow_up_questions=content.follow_up_questions[:MAX_LIST_ITEMS],
             sources=content.sources[:MAX_LIST_ITEMS],
             usage=response.usage,
+        )
+
+    async def _reask(
+        self, agent_id: str, result: ReviewerResult, source_mode: SourceMode
+    ) -> ReviewerResult:
+        """One follow-up turn when the findings block could not be read.
+
+        An unparsed answer is not a failed one -- the review was written, only its
+        structure was lost, and in that state `missing_criticals` enforces nothing.
+        The re-ask rides the same consultation, so the material is already in the
+        session's history and this costs a few hundred characters rather than another
+        copy of the context.
+
+        ponytail: one retry, not a loop. A reviewer that cannot produce valid JSON
+        twice will not produce it on the third ask, and `unparsed_reviewers` already
+        reports the hole.
+        """
+        if result.findings_parsed or not result.ok or result.consultation_id is None:
+            return result
+
+        try:
+            response = await self.consult.consult(
+                capability="review",
+                target_agent=agent_id,
+                prompt=REASK_INSTRUCTIONS,
+                source_mode=source_mode,
+                consultation_id=result.consultation_id,
+            )
+        except Exception:
+            # The prose answer is already in hand; losing the re-ask must not lose it.
+            return result
+
+        second = self._to_result(agent_id, response)
+        if not second.findings_parsed:
+            return result
+        # Turn 1's prose is the review; turn 2 carries only the structure it was asked
+        # for. Merged into one result so no second reviewer row is written.
+        return result.model_copy(
+            update={
+                "findings": second.findings,
+                "findings_parsed": True,
+                "findings_truncated": second.findings_truncated,
+            }
         )
 
     # --- finish -------------------------------------------------------------

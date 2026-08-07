@@ -251,6 +251,23 @@ async def test_a_plan_that_was_never_run_is_stored_redacted(build):
     assert_absent(build.path, SECRET, OTHER)
 
 
+async def test_a_credential_read_off_disk_is_caught_and_never_stored(build, tmp_path):
+    """`context_paths` is a second door into the same field. A scan that only sees
+    what the host typed would let a credential in a file walk straight past it."""
+    path = tmp_path / "settings.py"
+    path.write_text(f"AUTH = {OTHER}\n")
+    service = await build()
+
+    plan = await service.plan(goal=f"is {SECRET} safe", context_paths=[str(path)])
+
+    assert {h.field for h in plan.plan.secret_hits} == {"goal", "context"}
+    assert OTHER not in plan.model_dump_json()
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+    assert run.status == "awaiting_synthesis"
+    await service.close()
+    assert_absent(build.path, SECRET, OTHER)
+
+
 async def test_a_credential_in_an_error_message_is_scrubbed(build):
     """Adapter errors quote the command line, and a command line can carry a token."""
     service = await build()
