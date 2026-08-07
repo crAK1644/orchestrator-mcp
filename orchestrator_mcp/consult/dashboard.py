@@ -112,34 +112,233 @@ MAX_BODY_BYTES = 64 * 1024
 ALLOWED_HOSTS = ("127.0.0.1", "localhost", "::1", "[::1]")
 
 STYLE = """
-:root { color-scheme: light dark; }
-body { font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; margin: 2rem auto; max-width: 76rem;
-       padding: 0 1rem; }
-h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
-table { border-collapse: collapse; width: 100%; margin: .5rem 0 1.5rem; }
-th, td { border-bottom: 1px solid #8883; padding: .35rem .5rem; text-align: left;
-         vertical-align: top; }
-th { font-weight: 600; opacity: .7; font-size: .85rem; }
-code, pre { font-family: ui-monospace, monospace; font-size: .85rem; }
-pre { background: #8881; padding: .6rem .8rem; border-radius: 4px; overflow-x: auto;
-      white-space: pre-wrap; word-break: break-word; max-height: 26rem; }
-.meta { opacity: .65; font-size: .85rem; }
-.bad { color: #c0392b; font-weight: 600; }
-.ok { color: #1e8449; }
-a { color: inherit; }
-label { display: block; margin: .6rem 0; }
-label > span { display: block; font-size: .85rem; opacity: .7; margin-bottom: .15rem; }
-input[type=text], input[type=number], select { font: inherit; padding: .3rem .4rem;
-       min-width: 18rem; max-width: 100%; }
-input[type=number] { min-width: 5rem; }
-fieldset { border: 1px solid #8883; border-radius: 4px; margin: 1rem 0; padding: .5rem 1rem 1rem; }
-legend { font-size: .85rem; opacity: .7; padding: 0 .3rem; }
-.scores label { display: inline-block; margin-right: 1rem; }
-button { font: inherit; padding: .35rem .9rem; border-radius: 4px; cursor: pointer; }
-.banner { border: 1px solid #8884; border-left: 3px solid currentColor; border-radius: 4px;
-       padding: .6rem .8rem; margin: 1rem 0; }
-.banner.warn { color: #b9770e; } .banner.done { color: #1e8449; }
-.error { color: #c0392b; margin: .5rem 0; }
+:root {
+  color-scheme: light dark;
+  --ink: #101418;
+  --panel: #ffffff;
+  --panel-raised: #f8fafb;
+  --paper: #f3f5f7;
+  --text: #17212b;
+  --muted: #697785;
+  --rule: #d8dee4;
+  --rule-strong: #bac4ce;
+  --signal: #1677e8;
+  --signal-soft: #e8f2ff;
+  --good: #16805a;
+  --good-soft: #e7f5ef;
+  --bad: #c34646;
+  --bad-soft: #fcecec;
+  --warn: #9a6512;
+  --warn-soft: #fff3dc;
+  --shadow: 0 12px 36px #1d29331a;
+  font-synthesis: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --panel: #171c21;
+    --panel-raised: #1c2228;
+    --paper: #101418;
+    --text: #edf2f6;
+    --muted: #8b98a5;
+    --rule: #2b333b;
+    --rule-strong: #3b4650;
+    --signal: #63a8ff;
+    --signal-soft: #182c42;
+    --good: #65c9a3;
+    --good-soft: #17332a;
+    --bad: #ff8f8f;
+    --bad-soft: #3a2224;
+    --warn: #e7b35f;
+    --warn-soft: #382d1e;
+    --shadow: 0 14px 40px #00000038;
+  }
+}
+* { box-sizing: border-box; }
+html { background: var(--paper); }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--text);
+  font: 13px/1.48 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-rendering: optimizeLegibility;
+}
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 13.5rem minmax(0, 1fr); }
+.rail {
+  position: sticky; top: 0; height: 100vh; align-self: start;
+  display: flex; flex-direction: column; padding: 1.2rem .8rem;
+  background: var(--ink); color: #edf2f6; border-right: 1px solid #2b333b;
+}
+.brand { display: flex; align-items: center; gap: .7rem; padding: .25rem .45rem 1.25rem; }
+.brand-mark {
+  display: grid; place-items: center; width: 2rem; height: 2rem;
+  border: 1px solid #50606f; border-radius: 6px;
+  color: #fff; font: 700 .66rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: -.04em;
+}
+.brand-copy strong {
+  display: block; font: 700 .91rem/1.1 "Arial Narrow", "Avenir Next Condensed", ui-sans-serif, sans-serif;
+  letter-spacing: .015em;
+}
+.brand-copy span { display: block; margin-top: .22rem; color: #8b98a5; font-size: .67rem; }
+.rail-label { margin: .45rem .55rem .35rem; color: #74818d; font-size: .63rem; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; }
+.rail nav { display: grid; gap: .18rem; }
+.rail nav a {
+  display: flex; align-items: center; gap: .65rem; min-height: 2.15rem;
+  padding: .42rem .55rem; color: #aeb9c3; text-decoration: none;
+  border: 1px solid transparent; border-radius: 5px;
+}
+.rail nav a::before { content: ""; width: .36rem; height: .36rem; border: 1px solid #5f6b76; border-radius: 50%; }
+.rail nav a:hover { color: #fff; background: #ffffff0a; }
+.rail nav a[aria-current=page] { color: #fff; background: #ffffff0d; border-color: #ffffff12; }
+.rail nav a[aria-current=page]::before { background: var(--signal); border-color: var(--signal); box-shadow: 0 0 0 3px #63a8ff20; }
+.rail-foot { margin-top: auto; padding: .75rem .55rem 0; border-top: 1px solid #2b333b; color: #7f8c97; font-size: .66rem; }
+main { min-width: 0; width: 100%; max-width: 96rem; padding: 2rem 2.35rem 4rem; }
+.page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.5rem; margin-bottom: 1.15rem; }
+.page-heading-copy { min-width: 0; }
+.eyebrow { margin: 0 0 .38rem; color: var(--signal); font-size: .66rem; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+h1, h2, h3, h4 { color: var(--text); font-family: "Arial Narrow", "Avenir Next Condensed", ui-sans-serif, sans-serif; }
+h1 { margin: 0; font-size: clamp(1.55rem, 2.5vw, 2rem); line-height: 1.08; letter-spacing: -.025em; }
+h2 { margin: 2.2rem 0 .7rem; font-size: 1rem; line-height: 1.2; letter-spacing: .01em; }
+h3 { margin: 0; font-size: .95rem; }
+h4 { margin: 1rem 0 .45rem; font-size: .82rem; }
+p { margin: .6rem 0; }
+a { color: inherit; text-decoration-color: color-mix(in srgb, currentColor 45%, transparent); text-underline-offset: .18em; }
+a:hover { color: var(--signal); text-decoration-color: currentColor; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--signal); outline-offset: 2px;
+}
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82rem; }
+code { font-variant-ligatures: none; }
+.meta { color: var(--muted); font-size: .76rem; }
+.context-line {
+  display: flex; flex-wrap: wrap; gap: .35rem .8rem; margin: .85rem 0 0;
+  color: var(--muted); font-size: .72rem;
+}
+.context-line > span { min-width: 0; overflow-wrap: anywhere; }
+.back-link { display: inline-flex; align-items: center; gap: .35rem; margin-bottom: 1.2rem; color: var(--muted); font-size: .76rem; text-decoration: none; }
+.back-link:hover { color: var(--signal); }
+.monitor-strip {
+  display: grid; grid-template-columns: repeat(4, minmax(8rem, 1fr));
+  margin: 1.25rem 0 1.5rem; border: 1px solid var(--rule); border-radius: 7px;
+  background: var(--panel); box-shadow: var(--shadow); overflow: hidden;
+}
+.monitor-strip > div { min-width: 0; padding: .72rem .85rem; border-right: 1px solid var(--rule); }
+.monitor-strip > div:last-child { border-right: 0; }
+.monitor-strip dt { color: var(--muted); font-size: .63rem; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+.monitor-strip dd { margin: .25rem 0 0; font: 650 1rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--rule); }
+.section-heading h2 { margin-bottom: .58rem; }
+.section-heading a { color: var(--muted); font-size: .72rem; }
+.section-heading + .table-shell, .section-heading + .empty-state { margin-top: .7rem; }
+.table-shell { width: 100%; overflow-x: auto; border: 1px solid var(--rule); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: .56rem .68rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--rule); }
+tr:last-child td { border-bottom: 0; }
+th {
+  color: var(--muted); background: var(--panel-raised); font-size: .62rem;
+  font-weight: 800; letter-spacing: .09em; text-transform: uppercase; white-space: nowrap;
+}
+tbody tr { transition: background-color 100ms ease; }
+tbody tr:hover { background: color-mix(in srgb, var(--signal) 4%, transparent); }
+.data-table td { vertical-align: middle; }
+.primary-cell { min-width: 13rem; }
+.primary-cell > a, .primary-cell > strong { display: block; font-weight: 680; text-decoration: none; }
+.primary-cell .meta { display: block; margin-top: .12rem; }
+.route-cell { min-width: 11rem; }
+.route-cell .meta { display: block; margin-top: .12rem; }
+.capabilities { display: flex; flex-wrap: wrap; gap: .25rem; max-width: 24rem; }
+.tag { display: inline-flex; align-items: center; min-height: 1.25rem; padding: .08rem .35rem; border: 1px solid var(--rule); border-radius: 4px; color: var(--muted); background: var(--panel-raised); font-size: .67rem; white-space: nowrap; }
+.status { display: inline-flex; align-items: center; gap: .35rem; min-height: 1.35rem; padding: .08rem .42rem; border: 1px solid var(--rule); border-radius: 999px; font-size: .68rem; font-weight: 700; white-space: nowrap; }
+.status::before { content: ""; width: .32rem; height: .32rem; border-radius: 50%; background: currentColor; }
+.status + .meta { display: block; margin-top: .18rem; }
+.status--good { color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, var(--rule)); background: var(--good-soft); }
+.status--bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--rule)); background: var(--bad-soft); }
+.status--active { color: var(--signal); border-color: color-mix(in srgb, var(--signal) 35%, var(--rule)); background: var(--signal-soft); }
+.status--muted { color: var(--muted); background: var(--panel-raised); }
+.bad { color: var(--bad); font-weight: 680; }
+.ok { color: var(--good); }
+.empty-state { padding: 1.1rem; border: 1px dashed var(--rule-strong); border-radius: 7px; color: var(--muted); background: var(--panel); }
+.rate-limit { display: flex; align-items: center; gap: .55rem; margin: .65rem 0 0; color: var(--muted); font-size: .72rem; }
+.rate-limit::before { content: "budget"; padding: .06rem .32rem; border: 1px solid var(--rule); border-radius: 3px; font-size: .58rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.detail-header { padding-bottom: 1rem; border-bottom: 1px solid var(--rule); }
+.detail-title { display: flex; align-items: center; flex-wrap: wrap; gap: .7rem; }
+.detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 17rem; gap: 1.2rem; align-items: start; }
+.detail-aside { position: sticky; top: 1rem; padding: .8rem; border: 1px solid var(--rule); border-radius: 7px; background: var(--panel); }
+.detail-aside dl { margin: 0; display: grid; gap: .7rem; }
+.detail-aside dt { color: var(--muted); font-size: .62rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.detail-aside dd { margin: .12rem 0 0; overflow-wrap: anywhere; }
+.route-trace { position: relative; margin: .5rem 0 1rem; padding-left: 1.2rem; }
+.route-trace::before { content: ""; position: absolute; left: .28rem; top: .7rem; bottom: .7rem; width: 1px; background: var(--rule-strong); }
+.route-step { position: relative; margin: 0 0 .55rem; padding: .62rem .72rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); }
+.route-step::before { content: ""; position: absolute; left: -1.13rem; top: .9rem; width: .43rem; height: .43rem; border: 2px solid var(--paper); border-radius: 50%; background: var(--signal); box-shadow: 0 0 0 1px var(--signal); }
+.route-step p { margin: 0; }
+.route-exclusions { margin: .5rem 0 0; padding: .45rem .6rem; border-top: 1px solid var(--rule); color: var(--muted); }
+.route-exclusions ul { margin: .35rem 0 0; padding-left: 1.1rem; }
+.turn { margin: .65rem 0; border: 1px solid var(--rule); border-radius: 7px; background: var(--panel); overflow: hidden; }
+.turn-head { display: flex; justify-content: space-between; gap: 1rem; padding: .68rem .78rem; border-bottom: 1px solid var(--rule); background: var(--panel-raised); }
+.turn-stats { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .3rem .75rem; color: var(--muted); font: .68rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.turn-body { padding: .25rem .78rem .7rem; }
+.payload-block { margin-top: .7rem; }
+.payload-block > .meta { margin: 0 0 .3rem; font-size: .64rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+pre { margin: 0; padding: .7rem .78rem; max-height: 28rem; overflow: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--text); }
+details { margin: .55rem 0; border: 1px solid var(--rule); border-radius: 5px; background: var(--panel); }
+summary { cursor: pointer; padding: .48rem .62rem; color: var(--muted); font-size: .72rem; font-weight: 700; }
+details > pre, details > p, details > table { margin: 0 .62rem .62rem; }
+.form-shell { max-width: 52rem; }
+.form-section { margin: 1rem 0; padding: 1rem; border: 1px solid var(--rule); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
+.form-section-title { margin: 0 0 .85rem; padding-bottom: .55rem; border-bottom: 1px solid var(--rule); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem 1rem; }
+label { display: block; margin: 0; }
+label > span { display: block; margin-bottom: .28rem; color: var(--text); font-size: .72rem; font-weight: 700; }
+.help { display: block; margin-top: .3rem; color: var(--muted); font-size: .68rem; font-weight: 450; line-height: 1.4; }
+input[type=text], input[type=number], select {
+  width: 100%; min-height: 2.2rem; padding: .38rem .5rem;
+  border: 1px solid var(--rule-strong); border-radius: 5px; background: var(--paper); color: var(--text); font: inherit;
+}
+input[readonly] { color: var(--muted); background: var(--panel-raised); }
+input[type=checkbox] { accent-color: var(--signal); }
+.choice-row { display: flex; flex-wrap: wrap; gap: .45rem 1rem; }
+.choice-row label, .scores label { display: inline-flex; align-items: center; gap: .38rem; min-height: 1.7rem; font-size: .73rem; }
+fieldset { min-width: 0; margin: 0; padding: .72rem .8rem; border: 1px solid var(--rule); border-radius: 6px; }
+legend { padding: 0 .3rem; color: var(--muted); font-size: .68rem; font-weight: 700; }
+.form-actions { display: flex; align-items: center; gap: .7rem; margin-top: 1rem; }
+button, .button { display: inline-flex; align-items: center; justify-content: center; min-height: 2.15rem; padding: .4rem .8rem; border: 1px solid var(--signal); border-radius: 5px; background: var(--signal); color: #071421; font: 750 .75rem/1 ui-sans-serif, sans-serif; cursor: pointer; text-decoration: none; }
+button:hover, .button:hover { filter: brightness(1.06); color: #071421; }
+button.danger { border-color: var(--bad); background: transparent; color: var(--bad); }
+.banner { padding: .68rem .78rem; margin: 1rem 0; border: 1px solid var(--rule); border-left: 3px solid currentColor; border-radius: 5px; background: var(--panel); }
+.banner.warn { color: var(--warn); background: var(--warn-soft); }
+.banner.done { color: var(--good); background: var(--good-soft); }
+.error { padding: .65rem .75rem; color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 38%, var(--rule)); border-radius: 5px; background: var(--bad-soft); }
+@media (max-width: 880px) {
+  .app-shell { grid-template-columns: 1fr; }
+  .rail { position: static; width: 100%; height: auto; padding: .55rem .7rem; }
+  .brand { padding: .15rem .35rem .55rem; }
+  .brand-mark { width: 1.65rem; height: 1.65rem; }
+  .brand-copy span, .rail-label, .rail-foot { display: none; }
+  .rail nav { display: flex; overflow-x: auto; }
+  .rail nav a { flex: 0 0 auto; min-height: 1.9rem; }
+  main { padding: 1.3rem 1rem 3rem; }
+  .detail-grid { grid-template-columns: 1fr; }
+  .detail-aside { position: static; order: -1; }
+}
+@media (max-width: 640px) {
+  .page-heading { align-items: flex-start; flex-direction: column; gap: .7rem; }
+  .monitor-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .monitor-strip > div:nth-child(2) { border-right: 0; }
+  .monitor-strip > div:nth-child(-n+2) { border-bottom: 1px solid var(--rule); }
+  .form-grid { grid-template-columns: 1fr; }
+  .turn-head { flex-direction: column; }
+  .turn-stats { justify-content: flex-start; }
+  .table-shell--cards { overflow: visible; border: 0; background: transparent; box-shadow: none; }
+  .table-shell--cards .data-table, .table-shell--cards tbody { display: block; }
+  .table-shell--cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .table-shell--cards tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: .55rem; padding: .55rem .68rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); box-shadow: var(--shadow); }
+  .table-shell--cards td { display: block; padding: .28rem 0; border: 0; min-width: 0; overflow-wrap: anywhere; }
+  .table-shell--cards td::before { content: attr(data-label); display: block; margin-bottom: .12rem; color: var(--muted); font-size: .57rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+  .table-shell--cards td.primary-cell { grid-column: 1 / -1; padding-bottom: .45rem; border-bottom: 1px solid var(--rule); margin-bottom: .18rem; }
+  .table-shell--cards td.route-cell { min-width: 0; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
 """
 
 
@@ -228,19 +427,52 @@ class ConsultDashboard:
         return render()
 
     def index(self) -> str:
-        link = (
-            " &middot; <a href='/agents'>configure agents</a>"
-            " &middot; <a href='/reviewers'>configure reviewers</a>"
+        actions = (
+            "<div class=form-actions><a class=button href='/agents'>Configure agents</a>"
+            "<a href='/reviewers'>Configure reviewers</a></div>"
             if self.config.dashboard.editable
             else ""
         )
         return _document(
             "Consultations",
-            f"<h1>Consult Protocol v1</h1><p class=meta>orchestrator-mcp-server {_e(self.version)}"
-            f" &middot; {_e(str(self.config.database_path))}{link}</p>"
-            f"<h2>Agents</h2>{self._agents_table()}{self._rate_limit_line()}"
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Consult Protocol v1</p><h1>Operations monitor</h1>"
+            "<p class=context-line>"
+            f"<span>orchestrator-mcp-server {_e(self.version)}</span>"
+            f"<span>{_e(str(self.config.database_path))}</span></p></div>{actions}</header>"
+            f"{self._monitor_strip()}"
+            "<section><div class=section-heading><h2>Consultations</h2>"
+            "<span class=meta>Newest 200</span></div>"
+            f"{self._consultations_table()}</section>"
             f"{self._reviews_section()}"
-            f"<h2>Consultations</h2>{self._consultations_table()}",
+            "<section><div class=section-heading><h2>Agents</h2>"
+            f"<span class=meta>{len(self.config.agents)} configured</span></div>"
+            f"{self._agents_table()}{self._rate_limit_line()}</section>",
+            editable=self.config.dashboard.editable,
+        )
+
+    def _monitor_strip(self) -> str:
+        rows = self._query(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN status NOT IN ('complete', 'failed', 'cancelled') THEN 1 ELSE 0 END) "
+            "AS active, "
+            "SUM(CASE WHEN status IN ('failed', 'cancelled') THEN 1 ELSE 0 END) AS stopped, "
+            "(SELECT COUNT(*) FROM consultation_turns WHERE error_code IS NOT NULL) AS failures "
+            "FROM consultations"
+        )
+        stats = rows[0] if rows else None
+        total = int(stats["total"] or 0) if stats else 0
+        active = int(stats["active"] or 0) if stats else 0
+        stopped = int(stats["stopped"] or 0) if stats else 0
+        failures = int(stats["failures"] or 0) if stats else 0
+        enabled = sum(agent.enabled for agent in self.config.agents.values())
+        return (
+            "<dl class=monitor-strip aria-label='Current operating state'>"
+            f"<div><dt>Consultations</dt><dd>{total}</dd></div>"
+            f"<div><dt>Active</dt><dd>{active}</dd></div>"
+            f"<div><dt>Stopped / failed turns</dt><dd>{stopped} / {failures}</dd></div>"
+            f"<div><dt>Agents enabled</dt><dd>{enabled} / {len(self.config.agents)}</dd></div>"
+            "</dl>"
         )
 
     def _agents_table(self) -> str:
@@ -254,27 +486,29 @@ class ConsultDashboard:
         rows = []
         for agent_id, agent in sorted(self.config.agents.items()):
             status = latest.get(agent_id)
-            scores = ", ".join(f"{k} {v}" for k, v in sorted(agent.scores.items())) or "--"
+            scores = "".join(
+                f"<span class=tag>{_e(k)} {v}</span>" for k, v in sorted(agent.scores.items())
+            ) or "<span class=meta>none</span>"
             rows.append(
                 "<tr>"
-                f"<td><code>{_e(agent_id)}</code></td>"
-                f"<td>{_e(agent.runtime)}</td>"
-                f"<td><code>{_e(agent.model)}</code></td>"
-                f"<td>{agent.priority}</td>"
-                f"<td>{'yes' if agent.enabled else 'no'}</td>"
-                f"<td>{_e(scores)}</td>"
-                f"<td>{'yes' if agent.web_search else 'no'}</td>"
-                f"<td>{_status_cell(status)}</td>"
+                f"<td class=primary-cell data-label=Agent><strong><code>{_e(agent_id)}</code></strong>"
+                f"<span class=meta>{_e(agent.runtime)} &middot; <code>{_e(agent.model)}</code></span></td>"
+                f"<td data-label=Availability>{_status_cell(status)}"
+                f"<span class=meta>{'enabled' if agent.enabled else 'disabled'}</span></td>"
+                f"<td data-label=Routing><span class=meta>priority {agent.priority}</span>"
+                f"<div class=capabilities>{scores}</div></td>"
+                f"<td data-label=Web>{'yes' if agent.web_search else 'no'}</td>"
                 # Text to copy, never a button: logging a runtime in is the operator's
                 # action on their own account, and this server has no part in it.
-                f"<td><code>{_e(adapter_for(agent, self.config).connect_command(agent))}</code></td>"
+                f"<td data-label='Connect with'><code>"
+                f"{_e(adapter_for(agent, self.config).connect_command(agent))}</code></td>"
                 "</tr>"
             )
-        head = (
-            "<tr><th>agent<th>runtime<th>model<th>priority<th>enabled<th>scores"
-            "<th>web<th>last status<th>connect with</tr>"
+        head = "<thead><tr><th>Agent<th>Availability<th>Routing<th>Web<th>Connect with</tr></thead>"
+        return (
+            "<div class='table-shell table-shell--cards'>"
+            f"<table class=data-table>{head}<tbody>{''.join(rows)}</tbody></table></div>"
         )
-        return f"<table>{head}{''.join(rows)}</table>"
 
     def _rate_limit_line(self) -> str:
         """What is left of the Codex subscription window, when anything knows.
@@ -293,7 +527,7 @@ class ConsultDashboard:
         when = _resets(limit.get("resets_at"))
         plan = f" &middot; {_e(str(limit['plan_type']))} plan" if limit.get("plan_type") else ""
         return (
-            f"<p class=meta>codex usage: {limit['used_percent']:.0f}%{window} used{when}{plan}"
+            f"<p class=rate-limit>codex usage: {limit['used_percent']:.0f}%{window} used{when}{plan}"
             # Said plainly because it is: this is whatever the last consultation was
             # told, not a number this page went and asked for.
             " &middot; as of the last consultation</p>"
@@ -303,33 +537,40 @@ class ConsultDashboard:
         rows = self._query(
             "SELECT c.id, c.created_at, c.updated_at, c.target_agent_id, c.target_model, "
             "c.capability, c.conversation_label, c.status, "
+            "(SELECT t.user_prompt FROM consultation_turns t WHERE t.consultation_id = c.id "
+            " ORDER BY t.sequence_number LIMIT 1) AS first_prompt, "
             "(SELECT COUNT(*) FROM consultation_turns t WHERE t.consultation_id = c.id) AS turns, "
             "(SELECT COUNT(*) FROM consultation_turns t WHERE t.consultation_id = c.id "
             " AND t.error_code IS NOT NULL) AS failures "
             "FROM consultations c ORDER BY c.created_at DESC LIMIT 200"
         )
         if not rows:
-            return "<p class=meta>No consultations recorded yet.</p>"
+            return (
+                "<div class=empty-state><strong>No consultations recorded yet.</strong> "
+                "New consultations will appear here with their route and current state.</div>"
+            )
 
         body = "".join(
             "<tr>"
-            f"<td><a href='/consultation/{_e(row['id'])}'><code>{_e(row['id'][:8])}</code></a></td>"
-            f"<td class=meta>{_e(row['created_at'])}</td>"
-            f"<td><code>{_e(row['target_agent_id'])}</code></td>"
-            f"<td><code>{_e(row['target_model'])}</code></td>"
-            f"<td>{_e(row['capability'])}</td>"
-            f"<td>{_e(row['conversation_label'] or '')}</td>"
-            f"<td>{row['turns']}</td>"
-            f"<td class={'bad' if row['failures'] else 'ok'}>{row['failures']}</td>"
-            f"<td>{_e(row['status'])}</td>"
+            f"<td class=primary-cell data-label=Consultation>"
+            f"<a href='/consultation/{_e(row['id'])}'>"
+            f"{_e(row['conversation_label'] or _short(row['first_prompt'], 72) or 'Untitled consultation')}</a>"
+            f"<span class=meta><code>{_e(row['id'][:8])}</code> &middot; {_e(row['capability'])}</span></td>"
+            f"<td class=route-cell data-label=Route><code>{_e(row['target_agent_id'])}</code>"
+            f"<span class=meta><code>{_e(row['target_model'])}</code></span></td>"
+            f"<td class=meta data-label=Started>{_e(row['created_at'])}</td>"
+            f"<td data-label=Activity>{row['turns']} turn{'s' if row['turns'] != 1 else ''}"
+            f"<span class={'bad' if row['failures'] else 'meta'}> &middot; "
+            f"{row['failures']} failed</span></td>"
+            f"<td data-label=State>{_status_word(row['status'])}</td>"
             "</tr>"
             for row in rows
         )
-        head = (
-            "<tr><th>id<th>started<th>agent<th>model<th>capability<th>label"
-            "<th>turns<th>failed<th>status</tr>"
+        head = "<thead><tr><th>Consultation<th>Route<th>Started<th>Activity<th>State</tr></thead>"
+        return (
+            "<div class='table-shell table-shell--cards'>"
+            f"<table class=data-table>{head}<tbody>{body}</tbody></table></div>"
         )
-        return f"<table>{head}{body}</table>"
 
     def consultation(self, consultation_id: str) -> tuple[int, str]:
         rows = self._query("SELECT * FROM consultations WHERE id = ?", (consultation_id,))
@@ -340,22 +581,30 @@ class ConsultDashboard:
         consultation = rows[0]
         return HTTPStatus.OK, _document(
             f"Consultation {consultation_id[:8]}",
-            f"<p><a href='/'>&larr; all consultations</a></p>"
+            "<a class=back-link href='/'>&larr; Operations monitor</a>"
+            "<header class=detail-header><p class=eyebrow>Consultation trace</p>"
+            "<div class=detail-title>"
             f"<h1>{_e(consultation['capability'])} &rarr; "
             f"<code>{_e(consultation['target_agent_id'])}</code></h1>"
-            f"<p class=meta>{_e(consultation['id'])} &middot; "
-            f"model <code>{_e(consultation['target_model'])}</code> &middot; "
-            f"runtime {_e(consultation['target_runtime'])} &middot; "
-            f"asked by {_e(consultation['origin_runtime'])} &middot; "
-            f"{_e(consultation['protocol_version'])} &middot; "
-            f"config {_e(consultation['config_hash'])} &middot; "
-            f"{_e(consultation['created_at'])}</p>"
+            f"{_status_word(consultation['status'])}</div>"
+            f"<p class=context-line><span><code>{_e(consultation['id'])}</code></span>"
+            f"<span>{_e(consultation['created_at'])}</span></p></header>"
+            "<div class=detail-grid><div>"
+            f"<h2>Routing</h2>{self._routing(consultation_id)}"
+            f"<h2>Turns</h2>{self._turns(consultation_id)}</div>"
+            "<aside class=detail-aside aria-label='Consultation metadata'><dl>"
+            f"<div><dt>Agent</dt><dd><code>{_e(consultation['target_agent_id'])}</code></dd></div>"
+            f"<div><dt>Model</dt><dd><code>{_e(consultation['target_model'])}</code></dd></div>"
+            f"<div><dt>Runtime</dt><dd>{_e(consultation['target_runtime'])}</dd></div>"
+            f"<div><dt>Asked by</dt><dd>{_e(consultation['origin_runtime'])}</dd></div>"
+            f"<div><dt>Protocol</dt><dd>{_e(consultation['protocol_version'])}</dd></div>"
+            f"<div><dt>Config</dt><dd><code>{_e(consultation['config_hash'])}</code></dd></div>"
             # The native session id is not shown: it is the consulted CLI's handle on
             # a live session, and a page has no use for it.
-            f"<p class=meta>native session "
-            f"{'bound' if consultation['native_session_id'] else 'not bound'}</p>"
-            f"<h2>Routing</h2>{self._routing(consultation_id)}"
-            f"<h2>Turns</h2>{self._turns(consultation_id)}",
+            f"<div><dt>Native session</dt><dd>"
+            f"{'bound' if consultation['native_session_id'] else 'not bound'}</dd></div>"
+            "</dl></aside></div>",
+            editable=self.config.dashboard.editable,
         )
 
     def _routing(self, consultation_id: str) -> str:
@@ -375,14 +624,18 @@ class ConsultDashboard:
                 for item in excluded
             )
             body += (
-                f"<p>selected <code>{_e(row['selected_agent'] or 'none')}</code>"
-                f"{' (explicitly named)' if row['explicit'] else ' (by score)'}"
+                "<article class=route-step>"
+                f"<p><span class=meta>{_e(row['capability'])} route</span><br>"
+                f"selected <code>{_e(row['selected_agent'] or 'none')}</code> "
+                f"<span class=meta>{'explicitly named' if row['explicit'] else 'by score'}</span>"
                 + (f" &middot; <span class=bad>{_e(row['error_code'])}</span>"
                    if row["error_code"] else "")
                 + "</p>"
-                + (f"<p class=meta>not considered:</p><ul>{reasons}</ul>" if reasons else "")
+                + ("<div class=route-exclusions><span>Not considered</span>"
+                   f"<ul>{reasons}</ul></div>" if reasons else "")
+                + "</article>"
             )
-        return body
+        return f"<div class=route-trace>{body}</div>"
 
     def _turns(self, consultation_id: str) -> str:
         rows = self._query(
@@ -396,21 +649,23 @@ class ConsultDashboard:
         for row in rows:
             cost = f"${row['cost_usd']:.5f}" if row["cost_usd"] is not None else "--"
             header = (
+                "<div class=turn-head>"
                 f"<h3>Turn {row['sequence_number']} &middot; {_e(row['source_mode'])}</h3>"
-                f"<p class=meta>{row['latency_ms']} ms &middot; "
-                f"{row['input_tokens']} in / {row['output_tokens']} out &middot; {cost} &middot; "
-                f"{_e(row['created_at'])}"
+                f"<div class=turn-stats><span>{row['latency_ms']} ms</span>"
+                f"<span>{row['input_tokens']} in / {row['output_tokens']} out</span>"
+                f"<span>{cost}</span><span>{_e(row['created_at'])}</span>"
                 + (f" &middot; <span class=bad>{_e(row['error_code'])}</span>"
                    if row["error_code"] else "")
-                + "</p>"
+                + "</div></div>"
             )
             sections.append(
-                header
+                "<article class=turn>" + header + "<div class=turn-body>"
                 + _block("Prompt", row["user_prompt"])
                 + _block("Context", row["context"])
                 + _block("Compiled prompt", row["compiled_prompt"])
                 + _block("Answer", _pretty(row["validated_response_json"]))
                 + _block("Raw output", row["raw_output"])
+                + "</div></article>"
             )
         return "".join(sections)
 
@@ -463,44 +718,61 @@ class ConsultDashboard:
         missing = self._reviews_missing()
         if missing:
             return (
-                f"<h2>Reviews</h2><p class=meta>{_e(missing)}</p>"
+                "<section><div class=section-heading><h2>Reviews</h2></div>"
+                f"<div class=empty-state>{_e(missing)}</div></section>"
                 if self.config.review is not None
                 else ""
             )
         rows = self._review_rows(10)
         if not rows and self.config.review is None:
             return ""
-        more = "<p><a href='/reviews'>All reviews</a></p>" if rows else ""
-        return f"<h2>Reviews</h2>{self._reviews_table(rows)}{more}"
+        more = "<a href='/reviews'>All reviews</a>" if rows else ""
+        return (
+            "<section><div class=section-heading><h2>Reviews</h2>"
+            f"{more}</div>{self._reviews_table(rows)}</section>"
+        )
 
     def _reviews_table(self, rows: list[sqlite3.Row]) -> str:
         if not rows:
-            return "<p class=meta>No reviews recorded yet.</p>"
+            return "<div class=empty-state>No reviews recorded yet.</div>"
         body = "".join(
             "<tr>"
-            f"<td><a href='/reviews/{_e(row['id'])}'><code>{_e(row['id'][:8])}</code></a></td>"
-            f"<td class=meta>{_e(row['created_at'])}</td>"
-            f"<td>{_e(row['mode'])}{' &middot; recheck' if row['parent_review_id'] else ''}</td>"
-            f"<td>{_status_word(row['status'])}</td>"
-            f"<td>{_e(row['outcome'] or '--')}</td>"
-            f"<td>{row['reviewers']}</td>"
-            f"<td class={'bad' if row['failures'] else 'ok'}>{row['failures']}</td>"
-            f"<td>{_e(_short(row['goal'], 90))}</td>"
+            f"<td class=primary-cell data-label=Review>"
+            f"<a href='/reviews/{_e(row['id'])}'>{_e(_short(row['goal'], 90) or 'Untitled review')}</a>"
+            f"<span class=meta><code>{_e(row['id'][:8])}</code> &middot; {_e(row['mode'])}"
+            f"{' &middot; recheck' if row['parent_review_id'] else ''}</span></td>"
+            f"<td data-label=State>{_status_word(row['status'])}</td>"
+            f"<td data-label=Outcome>{_e(row['outcome'] or '--')}</td>"
+            f"<td data-label=Coverage>{row['reviewers']} reviewer{'s' if row['reviewers'] != 1 else ''}"
+            f"<span class={'bad' if row['failures'] else 'meta'}> &middot; {row['failures']} failed</span></td>"
+            f"<td class=meta data-label=Started>{_e(row['created_at'])}</td>"
             "</tr>"
             for row in rows
         )
-        head = (
-            "<tr><th>id<th>started<th>mode<th>status<th>outcome<th>reviewers"
-            "<th>failed<th>goal</tr>"
+        head = "<thead><tr><th>Review<th>State<th>Outcome<th>Coverage<th>Started</tr></thead>"
+        return (
+            "<div class='table-shell table-shell--cards'>"
+            f"<table class=data-table>{head}<tbody>{body}</tbody></table></div>"
         )
-        return f"<table>{head}{body}</table>"
 
     def reviews_page(self) -> str:
-        head = "<p><a href='/'>&larr; consultations</a></p><h1>Reviews</h1>"
+        head = (
+            "<a class=back-link href='/'>&larr; Operations monitor</a>"
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Independent review</p><h1>Reviews</h1>"
+            "<p class=context-line><span>Recent review runs and rechecks</span></p>"
+            "</div></header>"
+        )
         missing = self._reviews_missing()
         if missing:
-            return _document("Reviews", f"{head}<p class=meta>{_e(missing)}</p>")
-        return _document("Reviews", head + self._reviews_table(self._review_rows(200)))
+            return _document(
+                "Reviews", f"{head}<div class=empty-state>{_e(missing)}</div>",
+                editable=self.config.dashboard.editable,
+            )
+        return _document(
+            "Reviews", head + self._reviews_table(self._review_rows(200)),
+            editable=self.config.dashboard.editable,
+        )
 
     def review(self, review_id: str) -> tuple[int, str]:
         missing = self._reviews_missing()
@@ -533,13 +805,15 @@ class ConsultDashboard:
         )
         return HTTPStatus.OK, _document(
             f"Review {review_id[:8]}",
-            "<p><a href='/reviews'>&larr; all reviews</a></p>"
-            f"<h1>{_e(review['mode'])} review &middot; {_status_word(review['status'])}</h1>"
-            f"<p class=meta>{_e(review['id'])} &middot; outcome "
-            f"{_e(review['outcome'] or '--')} &middot; {_e(review['created_at'])}"
-            f" &middot; updated {_e(review['updated_at'])}"
-            f" &middot; web {'requested' if review['web_requested'] else 'off'}"
-            f"{_secret_line(review['secret_hits_json'])}{parent}</p>"
+            "<a class=back-link href='/reviews'>&larr; All reviews</a>"
+            "<header class=detail-header><p class=eyebrow>Independent review trace</p>"
+            "<div class=detail-title>"
+            f"<h1>{_e(review['mode'])} review</h1>{_status_word(review['status'])}</div>"
+            f"<p class=context-line><span><code>{_e(review['id'])}</code></span>"
+            f"<span>outcome {_e(review['outcome'] or '--')}</span>"
+            f"<span>{_e(review['created_at'])}</span><span>updated {_e(review['updated_at'])}</span>"
+            f"<span>web {'requested' if review['web_requested'] else 'off'}</span>"
+            f"<span>{_secret_line(review['secret_hits_json'])}{parent}</span></p></header>"
             f"{_material(review['material_json'])}"
             # The stored copies, which are the redacted ones -- what a reviewer was
             # sent is not kept anywhere this page can reach.
@@ -552,6 +826,7 @@ class ConsultDashboard:
             f"<h2>Answers</h2>{_answers(reviewers)}"
             f"{_fix_rounds(review['fix_rounds_json'])}"
             f"{self._rechecks(review_id)}",
+            editable=self.config.dashboard.editable,
         )
 
     def _rechecks(self, review_id: str) -> str:
@@ -633,11 +908,14 @@ class ConsultDashboard:
         if self._review_in_config():
             return _document(
                 "Reviewers",
-                "<p><a href='/'>&larr; consultations</a></p><h1>Reviewers</h1>"
+                "<a class=back-link href='/'>&larr; Operations monitor</a>"
+                "<header class=page-heading><div class=page-heading-copy>"
+                "<p class=eyebrow>Review configuration</p><h1>Reviewers</h1>"
+                "</div></header><div class=empty-state>"
                 f"<p>The <code>review:</code> block is defined in {_e(self._config_name)}. "
                 "Edit it there, or delete it from that file first -- the server refuses "
                 "to start with both.</p>"
-                f"{_reviewer_summary(current)}",
+                f"{_reviewer_summary(current)}</div>",
             )
 
         offered = sorted(agents.items())
@@ -659,23 +937,27 @@ class ConsultDashboard:
 
         return _document(
             "Reviewers",
-            "<p><a href='/'>&larr; consultations</a></p><h1>Reviewers</h1>"
-            f"<p class=meta>{_e(str(self.config.managed_agents_path))}</p>"
+            "<a class=back-link href='/'>&larr; Operations monitor</a>"
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Review configuration</p><h1>Reviewers</h1>"
+            f"<p class=context-line><span>{_e(str(self.config.managed_agents_path))}</span></p>"
+            "</div></header><div class=form-shell>"
             f"{notice}{self._restart_banner()}"
             + (f"<p class=error>{_e(error)}</p>" if error else "")
             + "<form method=post action='/reviewers'>"
             f"<input type=hidden name=_token value='{_e(self.token)}'>"
-            "<label><span>review &mdash; the single agent a standard review asks. One, "
-            "because a second opinion nobody compared is just a slower first one; "
-            "several is what deep review is for.</span>"
-            f"<select name=reviewer><option value=''>none</option>{options}</select></label>"
-            f"<fieldset><legend>deep review &mdash; 1 to {MAX_DEEP_REVIEWERS} agents, each "
-            "asked independently and none of them shown another's answer</legend>"
-            f"{boxes}</fieldset>"
-            "<p class=meta>An agent has to be enabled and scored for <code>review</code> "
-            "before it can be named here. Tick <code>review</code> in its capabilities on "
-            "its own page.</p>"
-            "<button type=submit>Save</button></form>",
+            "<section class=form-section><h2 class=form-section-title>Standard review</h2>"
+            "<label><span>Reviewer</span>"
+            f"<select name=reviewer><option value=''>none</option>{options}</select>"
+            "<small class=help>A standard review asks one agent. Use deep review for independent comparison.</small>"
+            "</label></section>"
+            "<section class=form-section><h2 class=form-section-title>Deep review</h2>"
+            f"<fieldset><legend>Select 1 to {MAX_DEEP_REVIEWERS} independent reviewers</legend>"
+            f"<div class=choice-row>{boxes}</div></fieldset>"
+            "<p class=help>Reviewers do not see one another's answers. An agent must be enabled and "
+            "offered <code>review</code> work before it can be selected.</p></section>"
+            "<div class=form-actions><button type=submit>Save reviewers</button>"
+            "<a href='/'>Cancel</a></div></form></div>",
         )
 
     def save_reviewers(self, form: dict[str, str]) -> tuple[int, str, str | None]:
@@ -999,22 +1281,24 @@ class ConsultDashboard:
         managed, written = self._split_agents()
         rows = "".join(
             "<tr>"
-            f"<td><code>{_e(aid)}</code></td>"
-            f"<td>{_e(agent.runtime)}</td>"
-            f"<td><code>{_e(agent.model)}</code></td>"
-            f"<td>{_e(agent.reasoning_effort or '--')}</td>"
-            f"<td>{'yes' if agent.enabled else 'no'}</td>"
-            f"<td>{_e(', '.join(f'{k} {v}' for k, v in sorted(agent.scores.items())) or '--')}</td>"
-            f"<td><a href='/agents/{_e(aid)}'>edit</a> &middot; "
+            f"<td class=primary-cell data-label=Agent><strong><code>{_e(aid)}</code></strong>"
+            f"<span class=meta>{_e(agent.runtime)} &middot; <code>{_e(agent.model)}</code></span></td>"
+            f"<td data-label=Effort>{_e(agent.reasoning_effort or '--')}</td>"
+            f"<td data-label=State>{_status_word('active' if agent.enabled else 'disabled')}</td>"
+            f"<td data-label=Capabilities><div class=capabilities>"
+            f"{''.join(f'<span class=tag>{_e(k)} {v}</span>' for k, v in sorted(agent.scores.items())) or '<span class=meta>none</span>'}"
+            f"</div></td>"
+            f"<td data-label=Actions><a href='/agents/{_e(aid)}'>edit</a> &middot; "
             f"{_delete_form(aid, self.token)}</td>"
             "</tr>"
             for aid, agent in sorted(managed.items())
         )
         managed_table = (
-            "<table><tr><th>agent<th>runtime<th>model<th>effort<th>enabled<th>scores"
-            f"<th></tr>{rows}</table>"
+            "<div class='table-shell table-shell--cards'><table class=data-table>"
+            "<thead><tr><th>Agent<th>Effort<th>State<th>Capabilities<th>Actions</tr></thead>"
+            f"<tbody>{rows}</tbody></table></div>"
             if rows
-            else "<p class=meta>No agents configured here yet.</p>"
+            else "<div class=empty-state>No agents configured here yet.</div>"
         )
 
         read_only = ""
@@ -1033,12 +1317,14 @@ class ConsultDashboard:
 
         return _document(
             "Agents",
-            "<p><a href='/'>&larr; consultations</a></p><h1>Agents</h1>"
-            f"<p class=meta>{_e(str(self.config.managed_agents_path))}</p>"
+            "<a class=back-link href='/'>&larr; Operations monitor</a>"
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Routing configuration</p><h1>Agents</h1>"
+            f"<p class=context-line><span>{_e(str(self.config.managed_agents_path))}</span></p>"
+            "</div><a class=button href='/agents/new'>Add an agent</a></header>"
             f"{notice}{self._restart_banner()}"
             f"{managed_table}"
-            "<p><a href='/agents/new'>Add an agent</a> &middot; "
-            "<a href='/reviewers'>configure reviewers</a></p>"
+            "<p><a href='/reviewers'>Configure reviewers</a></p>"
             f"{read_only}",
         )
 
@@ -1099,8 +1385,12 @@ class ConsultDashboard:
 
         return _document(
             "Edit agent" if editing else "New agent",
-            "<p><a href='/agents'>&larr; agents</a></p>"
+            "<a class=back-link href='/agents'>&larr; Agents</a>"
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Routing configuration</p>"
             f"<h1>{'Edit' if editing else 'New'} agent</h1>"
+            "<p class=context-line><span>Choose where this runtime can receive work.</span></p>"
+            "</div></header><div class=form-shell>"
             + (f"<p class=error>{_e(error)}</p>" if error else "")
             + "<form method=post action='/agents'>"
             f"<input type=hidden name=_token value='{_e(self.token)}'>"
@@ -1108,33 +1398,36 @@ class ConsultDashboard:
             # new agent that happens to be typed with the same id. `readonly` above is
             # the browser's half of that and is not a check.
             + (f"<input type=hidden name=_editing value='{_e(v.get('id', ''))}'>" if editing else "")
-            + f"<label><span>agent id</span><input type=text name=id required "
-            f"value='{_e(v.get('id', ''))}'{' readonly' if editing else ''}></label>"
-            f"<label><span>runtime</span><select name=runtime>{runtimes}</select></label>"
-            "<label><span>command &mdash; a name on PATH, or an absolute path. The Codex "
-            "CLI ships inside ChatGPT.app and is not on PATH.</span>"
-            f"<input type=text name=command required value='{_e(v.get('command', ''))}'></label>"
-            "<label><span>model &mdash; pick one of the known slugs or type any other. "
-            "On antigravity the reasoning level is part of the name; on codex and claude "
-            "it is the next field.</span>"
-            f"<input type=text name=model required list=model-presets "
-            f"value='{_e(v.get('model', ''))}'></label>"
+            + "<section class=form-section><h2 class=form-section-title>Identity</h2>"
+            "<div class=form-grid>"
+            f"<label><span>Agent ID</span><input type=text name=id required "
+            f"value='{_e(v.get('id', ''))}'{' readonly' if editing else ''}>"
+            "<small class=help>Stable name used in routing records and URLs.</small></label>"
+            f"<label><span>Runtime</span><select name=runtime>{runtimes}</select></label>"
+            "<label><span>Command</span>"
+            f"<input type=text name=command required value='{_e(v.get('command', ''))}'>"
+            "<small class=help>A name on PATH or an absolute path. The bundled Codex CLI is not on PATH.</small></label>"
+            "<label><span>Model</span>"
+            f"<input type=text name=model required list=model-presets value='{_e(v.get('model', ''))}'>"
+            "<small class=help>Choose a known slug or enter a newer one directly.</small></label>"
             f"<datalist id=model-presets>{models}</datalist>"
-            "<label><span>reasoning effort &mdash; codex only; unset means the model's "
-            "own default, which is not what your ~/.codex/config.toml says. Antigravity "
-            "carries the level in the model slug instead</span>"
-            f"<select name=reasoning_effort><option value=''>unset</option>{efforts}</select></label>"
-            f"<label><span>priority &mdash; lower wins a tie</span>"
-            f"<input type=number name=priority min=0 value='{_e(v.get('priority', '100'))}'></label>"
-            f"<label><input type=checkbox name=enabled{' checked' if v.get('enabled') else ''}> "
-            "enabled</label>"
-            f"<label><input type=checkbox name=web_search"
-            f"{' checked' if v.get('web_search') else ''}> web search &mdash; required "
-            "before a web-mode consultation will route here</label>"
-            "<fieldset class=scores><legend>capabilities &mdash; the work this agent is "
-            "offered. Unticked means never route it here; between two agents ticked for "
-            f"the same capability, the lower priority wins</legend>{scores}</fieldset>"
-            "<button type=submit>Save</button></form>",
+            "<label><span>Reasoning effort</span>"
+            f"<select name=reasoning_effort><option value=''>unset</option>{efforts}</select>"
+            "<small class=help>Codex only. Antigravity carries the level in the model slug.</small></label>"
+            f"<label><span>Priority</span><input type=number name=priority min=0 "
+            f"value='{_e(v.get('priority', '100'))}'>"
+            "<small class=help>Lower priority wins when scores tie.</small></label>"
+            "</div></section>"
+            "<section class=form-section><h2 class=form-section-title>Routing</h2>"
+            "<div class=choice-row>"
+            f"<label><input type=checkbox name=enabled{' checked' if v.get('enabled') else ''}> enabled</label>"
+            f"<label><input type=checkbox name=web_search{' checked' if v.get('web_search') else ''}> "
+            "web search</label></div>"
+            "<p class=help>Web search must be enabled before a web-mode consultation can route here.</p>"
+            "<fieldset class=scores><legend>Capabilities offered to this agent</legend>"
+            f"{scores}</fieldset></section>"
+            f"<div class=form-actions><button type=submit>{'Save changes' if editing else 'Add agent'}</button>"
+            "<a href='/agents'>Cancel</a></div></form></div>",
         )
 
     def save(self, form: dict[str, str]) -> tuple[int, str, str | None]:
@@ -1330,7 +1623,7 @@ def _delete_form(agent_id: str, token: str) -> str:
         "<form method=post action='/agents/delete' style='display:inline'>"
         f"<input type=hidden name=_token value='{_e(token)}'>"
         f"<input type=hidden name=id value='{_e(agent_id)}'>"
-        "<button type=submit>delete</button></form>"
+        "<button class=danger type=submit>delete</button></form>"
     )
 
 
@@ -1345,7 +1638,10 @@ def _e(value: object) -> str:
 def _block(label: str, value: str | None) -> str:
     if not value:
         return ""
-    return f"<p class=meta>{_e(label)}</p><pre>{_e(value)}</pre>"
+    return (
+        "<section class=payload-block>"
+        f"<p class=meta>{_e(label)}</p><pre>{_e(value)}</pre></section>"
+    )
 
 
 def _pretty(value: str | None) -> str | None:
@@ -1397,13 +1693,13 @@ def _status_cell(row: sqlite3.Row | None) -> str:
     tool that actually asks.
     """
     if row is None:
-        return "<span class=meta>never checked</span>"
-    when = f"<span class=meta> &middot; last checked {_e(row['checked_at'])}</span>"
+        return "<span class='status status--muted'>never checked</span>"
+    when = f"<span class=meta>last checked {_e(row['checked_at'])}</span>"
     if row["installed"] and row["authenticated"]:
-        return f"<span class=ok>ready</span>{when}"
+        return f"<span class='status status--good'>ready</span>{when}"
     label = "not installed" if not row["installed"] else "not connected"
-    detail = f"<span class=meta> &middot; {_e(row['detail'])}</span>" if row["detail"] else ""
-    return f"<span class=bad>{label}</span>{detail}{when}"
+    detail = f"<span class=meta>{_e(row['detail'])}</span>" if row["detail"] else ""
+    return f"<span class='status status--bad'>{label}</span>{detail}{when}"
 
 
 # --- reviews ----------------------------------------------------------------
@@ -1428,10 +1724,12 @@ def _status_word(status: object) -> str:
     """
     text = _e(status)
     if status == "complete":
-        return f"<span class=ok>{text}</span>"
+        return f"<span class='status status--good'>{text}</span>"
     if status in ("failed", "cancelled"):
-        return f"<span class=bad>{text}</span>"
-    return text
+        return f"<span class='status status--bad'>{text}</span>"
+    if status in ("open", "running", "active", "awaiting_synthesis"):
+        return f"<span class='status status--active'>{text}</span>"
+    return f"<span class='status status--muted'>{text}</span>"
 
 
 def _loads(value: object, fallback: Any) -> Any:
@@ -1694,12 +1992,48 @@ def _reviewer_summary(review: ReviewConfig) -> str:
     )
 
 
-def _document(title: str, body: str) -> str:
+def _navigation(title: str, editable: bool = False) -> str:
+    section = (
+        "reviewers" if title == "Reviewers"
+        else "reviews" if title.startswith("Review")
+        else "agents" if "agent" in title.lower()
+        else "monitor"
+    )
+    # Editing pages already passed the editable guard, so they retain their local
+    # navigation even when rendered from an error path that did not pass the flag on.
+    show_admin = editable or section in ("agents", "reviewers")
+    items = [
+        ("monitor", "/", "Monitor"),
+        ("reviews", "/reviews", "Reviews"),
+    ]
+    if show_admin:
+        items.extend(
+            (("agents", "/agents", "Agents"), ("reviewers", "/reviewers", "Reviewers"))
+        )
+    links = "".join(
+        f"<a href='{href}'{' aria-current=page' if key == section else ''}>{label}</a>"
+        for key, href, label in items
+    )
+    admin_label = "<p class=rail-label>Configure</p>" if show_admin else ""
+    return (
+        "<aside class=rail>"
+        "<div class=brand><span class=brand-mark>O/M</span>"
+        "<span class=brand-copy><strong>orchestrator-mcp</strong>"
+        "<span>local control surface</span></span></div>"
+        "<p class=rail-label>Operate</p><nav aria-label=Primary>"
+        f"{links}</nav>{admin_label}"
+        "<p class=rail-foot>Loopback interface<br>Stored content stays local</p>"
+        "</aside>"
+    )
+
+
+def _document(title: str, body: str, *, editable: bool = False) -> str:
     return (
         "<!doctype html><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         f"<title>{_e(title)} &middot; orchestrator-mcp</title>"
-        f"<style>{STYLE}</style>{body}"
+        f"<style>{STYLE}</style><body><div class=app-shell>{_navigation(title, editable)}"
+        f"<main id=main>{body}</main></div></body>"
     )
 
 
@@ -1863,8 +2197,8 @@ def build_httpd(config: ConsultConfig, config_path: Path | None = None) -> Threa
 
 def main() -> int:
     # Imported here rather than at module scope: `load_config` lives in the module
-    # that builds the LiteLLM router, and a dashboard should not pay for that import
-    # to print a usage error.
+    # that builds the whole MCP surface, and a dashboard should not pay for that
+    # import to print a usage error.
     import os
 
     from ..server import CONFIG_ENV, DEFAULT_CONFIG, load_config

@@ -1,9 +1,9 @@
 """The prompt compiler.
 
-Versioned and centralized rather than assembled at the call sites, for the same
-reason `_build_messages` in the LiteLLM path is: the ordering is load-bearing.
-Our protocol contract goes first and the caller's task goes last, inside a JSON
-payload, so nothing in a task or a document can read as a new instruction.
+Versioned and centralized rather than assembled at the call sites, because the
+ordering is load-bearing. Our protocol contract goes first and the caller's task
+goes last, inside a JSON payload, so nothing in a task or a document can read as
+a new instruction.
 
 The compiled text is asserted byte for byte by the golden tests. Changing a word
 here is a visible diff in those, which is the point -- a prompt is a contract with

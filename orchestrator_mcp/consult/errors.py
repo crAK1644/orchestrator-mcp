@@ -1,9 +1,8 @@
 """Failure codes for the consultation path.
 
-Separate from `ErrorCode` in the LiteLLM path on purpose: the failures are
-different in kind. A consultation talks to a locally installed agent runtime, so
-"not installed" and "logged out" are the common cases, and neither has an
-equivalent on an HTTP endpoint.
+A consultation talks to a locally installed agent runtime, so "not installed" and
+"logged out" are the common cases -- neither of which has an equivalent on an HTTP
+endpoint, which is why this vocabulary is its own and not a provider's.
 """
 
 from __future__ import annotations

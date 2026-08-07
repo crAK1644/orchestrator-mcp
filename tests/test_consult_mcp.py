@@ -13,11 +13,11 @@ import pytest
 from orchestrator_mcp.contract import ConfigError
 from orchestrator_mcp.server import build_server
 
-from .conftest import base_config, consult_block
+from .conftest import consult_block
 
 
 def config(tmp_path, **overrides):
-    return base_config() | {
+    return {
         "consult": consult_block(
             database_path=str(tmp_path / "consultations.sqlite3"), **overrides
         )
@@ -28,12 +28,16 @@ async def tools(server):
     return {t.name: t for t in await server.list_tools()}
 
 
-async def test_configuring_consult_adds_exactly_three_tools(tmp_path, host_claude):
-    before = set(await tools(build_server(base_config())))
-    after = set(await tools(build_server(config(tmp_path))))
-
-    assert before == {"orchestrator_ask", "orchestrator_list_capabilities"}
-    assert after - before == {"orchestrator_consult", "orchestrator_list_consult_agents", "orchestrator_get_consultation"}
+async def test_configuring_consult_without_reviewers_adds_exactly_three_tools(
+    tmp_path, host_claude
+):
+    """`review:` is a separate opt-in. A config with agents and no reviewers gets the
+    consultation tools and nothing that would refuse every call."""
+    assert set(await tools(build_server(config(tmp_path)))) == {
+        "orchestrator_consult",
+        "orchestrator_list_consult_agents",
+        "orchestrator_get_consultation",
+    }
 
 
 async def test_the_consult_schema_offers_only_configured_agents(tmp_path, host_claude):
@@ -139,7 +143,7 @@ async def test_consult_without_a_host_runtime_refuses_to_boot(tmp_path, monkeypa
 
 async def test_a_bad_consult_block_refuses_to_boot(tmp_path, host_claude):
     with pytest.raises(ConfigError):
-        build_server(base_config() | {"consult": {"agents": {"x": {"runtime": "gemini"}}}})
+        build_server({"consult": {"agents": {"x": {"runtime": "gemini"}}}})
 
 
 async def test_the_store_is_not_created_until_a_consultation_happens(tmp_path, host_claude):

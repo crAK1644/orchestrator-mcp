@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
@@ -11,16 +10,17 @@ import yaml
 from orchestrator_mcp.contract import ConfigError
 from orchestrator_mcp.consult.config import HOST_RUNTIME_ENV, ConsultConfig, host_runtime, load_consult_config
 from orchestrator_mcp.consult.contract import ConsultationContent, consultation_content_schema
+from orchestrator_mcp.server import validate_config
 
-from .conftest import agent, base_config, consult_block
+from .conftest import agent, consult_block
 
 
 def test_no_consult_block_is_not_an_error():
-    assert load_consult_config(base_config()) is None
+    assert load_consult_config({}) is None
 
 
 def test_the_block_parses_with_defaults():
-    config = load_consult_config(base_config() | {"consult": consult_block()})
+    config = load_consult_config({"consult": consult_block()})
     assert config.protocol_version == "consult-v1"
     assert config.timeout_s == 180
     assert config.store_full_content is True
@@ -56,7 +56,7 @@ def test_the_block_parses_with_defaults():
 )
 def test_a_bad_block_refuses_to_boot(block):
     with pytest.raises(ConfigError):
-        load_consult_config(base_config() | {"consult": block})
+        load_consult_config({"consult": block})
 
 
 @pytest.mark.parametrize("field", ["database_path", "managed_agents_path"])
@@ -66,14 +66,14 @@ def test_a_variable_that_expands_to_nothing_is_the_same_blank_path(field, monkey
     monkeypatch.setenv("ORCHESTRATOR_TEST_EMPTY", "")
     with pytest.raises(ConfigError):
         load_consult_config(
-            base_config() | {"consult": consult_block(**{field: "$ORCHESTRATOR_TEST_EMPTY"})}
+            {"consult": consult_block(**{field: "$ORCHESTRATOR_TEST_EMPTY"})}
         )
 
 
 @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
 def test_every_reasoning_level_the_cli_accepts_is_configurable(effort):
     config = load_consult_config(
-        base_config() | {"consult": {"agents": {"a": agent(reasoning_effort=effort)}}}
+        {"consult": {"agents": {"a": agent(reasoning_effort=effort)}}}
     )
     assert config.agents["a"].reasoning_effort == effort
 
@@ -81,18 +81,18 @@ def test_every_reasoning_level_the_cli_accepts_is_configurable(effort):
 def test_reasoning_effort_defaults_to_unset_rather_than_a_level():
     """Unset must stay unset: the adapter passes `--ignore-user-config`, so choosing a
     default here would override the model's own with a number nobody picked."""
-    config = load_consult_config(base_config() | {"consult": {"agents": {"a": agent()}}})
+    config = load_consult_config({"consult": {"agents": {"a": agent()}}})
     assert config.agents["a"].reasoning_effort is None
 
 
 def test_an_omitted_capability_scores_zero():
-    config = load_consult_config(base_config() | {"consult": {"agents": {"a": agent(scores={"coding": 50})}}})
+    config = load_consult_config({"consult": {"agents": {"a": agent(scores={"coding": 50})}}})
     assert config.agents["a"].score_for("coding") == 50
     assert config.agents["a"].score_for("research") == 0
 
 
 def test_the_host_runtime_is_excluded_from_the_eligible_set():
-    config = load_consult_config(base_config() | {"consult": consult_block()})
+    config = load_consult_config({"consult": consult_block()})
     assert [a.agent_id for a in config.eligible("claude")] == ["codex-sol"]
     assert [a.agent_id for a in config.eligible("codex")] == ["claude-opus"]
 
@@ -100,7 +100,7 @@ def test_the_host_runtime_is_excluded_from_the_eligible_set():
 def test_a_disabled_agent_is_never_eligible():
     block = consult_block()
     block["agents"]["codex-sol"]["enabled"] = False
-    config = load_consult_config(base_config() | {"consult": block})
+    config = load_consult_config({"consult": block})
     assert config.eligible("claude") == []
 
 
@@ -170,12 +170,11 @@ def test_every_content_field_is_required_even_when_empty():
     assert content.sources == []
 
 
-def test_the_commented_consult_block_in_the_example_config_still_loads(tmp_path):
-    """The example is documentation that can rot. Uncomment it and it must validate,
-    or the first thing a new user copies is a startup error."""
-    text = (Path(__file__).parent.parent / "config.example.yaml").read_text()
-    block = "consult:" + text.split("# consult:", 1)[1]
-    doc = yaml.safe_load("\n".join(re.sub(r"^# ?", "", line) for line in block.splitlines()))
+def test_the_example_config_still_loads(tmp_path):
+    """The example is documentation that can rot. It must validate as written, or the
+    first thing a new user copies is a startup error."""
+    doc = yaml.safe_load((Path(__file__).parent.parent / "config.example.yaml").read_text())
+    validate_config(doc)
     # The example names a real path in `$HOME`, and the autouse isolation fixture can
     # only replace the *default*. Left alone, this test reads whatever agents the
     # developer running it has saved from their own dashboard -- and fails on a
@@ -183,4 +182,5 @@ def test_the_commented_consult_block_in_the_example_config_still_loads(tmp_path)
     doc["consult"]["managed_agents_path"] = str(tmp_path / "agents.yaml")
     config = load_consult_config(doc)
     assert sorted(config.agents) == ["claude-opus", "codex-sol", "gemini-reviewer"]
+    assert config.review.reviewers == ["codex-sol"]
     assert config.dashboard.enabled is False

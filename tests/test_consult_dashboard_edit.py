@@ -20,7 +20,7 @@ from orchestrator_mcp.consult.contract import Runtime
 from orchestrator_mcp.consult.dashboard import MODEL_PRESETS
 from orchestrator_mcp.contract import ConfigError
 
-from .conftest import agent, base_config, consult_block
+from .conftest import agent, consult_block
 from .test_consult_dashboard import config, consult, serve  # noqa: F401 -- fixtures
 
 
@@ -49,8 +49,7 @@ def editable(tmp_path):
 
     def build(**overrides):
         consult_config = load_consult_config(
-            base_config()
-            | {
+                        {
                 "consult": consult_block(
                     database_path=str(tmp_path / "consultations.sqlite3"),
                     managed_agents_path=str(path),
@@ -268,8 +267,7 @@ async def test_what_was_saved_is_what_the_server_loads_next_boot(serve, editable
     get.post("/agents", form(_token=get.token))
 
     reloaded = load_consult_config(
-        base_config()
-        | {"consult": consult_block(managed_agents_path=str(editable.path))}
+                {"consult": consult_block(managed_agents_path=str(editable.path))}
     )
     saved = reloaded.agents["codex-luna"]
     assert saved.model == "gpt-5.6-luna"
@@ -609,7 +607,7 @@ def source_config(path, agents: dict) -> None:
     """Write the `config.yaml` the dashboard re-reads, with `agents` in its consult
     block. Not the same file as `editable.path` -- this is the operator's own, which
     this page never writes and only ever reads ids out of."""
-    path.write_text(yaml.safe_dump(base_config() | {"consult": consult_block(agents=agents)}))
+    path.write_text(yaml.safe_dump({"consult": consult_block(agents=agents)}))
 
 
 async def test_an_id_added_to_config_yaml_after_boot_still_blocks_the_write(
@@ -697,7 +695,7 @@ async def test_a_config_yaml_that_really_has_no_agents_is_taken_at_its_word(
     config, not a truncated read, so an empty `agents:` under a real `consult:` must not
     be second-guessed into refusing a save."""
     source = tmp_path / "config.yaml"
-    source.write_text(yaml.safe_dump(base_config() | {"consult": {"timeout_s": 60}}))
+    source.write_text(yaml.safe_dump({"consult": {"timeout_s": 60}}))
     get, _ = serve(editable(), source)
 
     status, _, location = get.post("/agents", form(_token=get.token, id="codex-sol"))

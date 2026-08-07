@@ -83,8 +83,9 @@ async def test_a_missing_executable_is_a_transport_error():
 
 
 async def test_our_api_keys_do_not_travel_to_a_consulted_cli(monkeypatch):
-    """This server holds provider keys for the LiteLLM path. A consulted CLI
-    authenticates with its own saved credentials and must not see ours."""
+    """The agent that starts this server may have provider keys in its environment.
+    A consulted CLI authenticates with its own saved credentials and must not
+    inherit them."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-oai-secret")
     monkeypatch.setenv("ORCHESTRATOR_CONFIG", "/private/config.yaml")

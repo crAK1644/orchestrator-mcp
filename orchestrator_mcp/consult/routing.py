@@ -1,7 +1,7 @@
 """Deterministic agent selection.
 
-Nothing here is adaptive: same config, same request, same winner, every time. The
-LiteLLM path can afford to shuffle deployments because they are interchangeable
+Nothing here is adaptive: same config, same request, same winner, every time. A
+load balancer can afford to shuffle deployments because they are interchangeable
 endpoints; a consultation is bound to one agent for its whole life, so the choice
 has to be reproducible and explainable after the fact.
 

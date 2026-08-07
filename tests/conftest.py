@@ -1,8 +1,4 @@
-"""Shared helpers for the consult-era tests.
-
-`test_orchestrator.py` at the repo root keeps its own copies untouched -- it is the
-compatibility suite, and a shared helper it did not have before is a change to it.
-"""
+"""Shared helpers for the consult tests."""
 
 from __future__ import annotations
 
@@ -11,23 +7,6 @@ from typing import Any
 import pytest
 
 from orchestrator_mcp.consult.config import HOST_RUNTIME_ENV
-
-
-def deployment(capability: str, mock: str = "hi", model: str = "openai/gpt-4o") -> dict[str, Any]:
-    return {
-        "model_name": capability,
-        "litellm_params": {"model": model, "api_key": "sk-test", "mock_response": mock},
-    }
-
-
-def base_config(*deployments: dict[str, Any]) -> dict[str, Any]:
-    """A 0.1.2-shaped config: no `consult:` block anywhere in it."""
-    deployments = deployments or (deployment("fast"),)
-    return {
-        "capabilities": {d["model_name"]: f"{d['model_name']} work" for d in deployments},
-        "model_list": list(deployments),
-        "router_settings": {"num_retries": 0},
-    }
 
 
 def agent(

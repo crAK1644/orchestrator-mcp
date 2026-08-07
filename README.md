@@ -9,7 +9,7 @@ Use Codex from Claude Code, or Claude Code from Codex, through the subscriptions
 
 If you pay for more than one AI subscription, Orchestrator MCP helps you use each model for what it does best. It runs the installed Codex or Claude Code CLI under your existing login, routes the work automatically, prevents an agent from consulting itself, and keeps a record of every consultation.
 
-**No provider API key is required for this setup.** Authentication stays inside the Codex and Claude Code command-line apps on your computer. Orchestrator only checks whether they are signed in — it never reads, stores, or returns a credential. The optional direct routing path described later is the only part that talks to a provider endpoint, and therefore the only part that needs a key.
+**No provider API key is required, anywhere.** Authentication stays inside the Codex and Claude Code command-line apps on your computer. Orchestrator only checks whether they are signed in — it never reads, stores, or returns a credential, and there is no code path in it that talks to a provider endpoint.
 
 With Orchestrator MCP, your agent can:
 
@@ -113,14 +113,16 @@ The project is published to PyPI as `orchestrator-mcp-server`. The shorter PyPI 
 
 ## What it does
 
-Orchestrator has two independent paths. They can be used together or one at a time.
+Orchestrator has two paths, and both of them reach a model through a CLI you have already logged into. There is no API key anywhere.
 
 | Path | Talks to | Needs an API key | Tools |
 |---|---|---|---|
 | Consultation | The Codex or Claude Code CLI on your computer, under its own login | No | `orchestrator_consult`, `orchestrator_list_consult_agents`, `orchestrator_get_consultation` |
-| Direct routing | A model endpoint through LiteLLM | Yes, unless the endpoint is local and unauthenticated | `orchestrator_ask`, `orchestrator_list_capabilities` |
+| Review | The same CLIs, several at once, with the calling agent writing the synthesis | No | `orchestrator_review`, `orchestrator_review_run`, `orchestrator_finalize_review`, and the rest of the review set |
 
-The consultation path is the reason this project exists. The direct routing path is older and optional. Configure the `consult` section only, and the two routing tools are never registered.
+The review path is an opt-in on top of the first: no `review:` block, no review tools.
+
+Direct API routing through LiteLLM was removed in 0.4. A config that still carries `capabilities:`, `model_list:`, `router_settings:` or `limits:` is a boot error that names the block; pin `orchestrator-mcp-server<0.4` if you need that path.
 
 ## The consultation path
 
@@ -301,43 +303,6 @@ To re-review, plan a new review with `parent_review_id` set to the original and 
   hash-verified original goal and context to reviewers and their CLI histories while
   the database continues to receive only the redacted copy.
 
-## The direct routing path
-
-`orchestrator_ask` and `orchestrator_list_capabilities` route a request to a model deployment through LiteLLM. This is separate from the consultation path and, for any hosted provider, it is the part that needs an API key.
-
-The `orchestrator_ask` tool routes a named capability, such as `coding` or `research`, to the deployment assigned to it. LiteLLM handles load balancing, retries, cooldowns, and fallbacks. A deployment can be a local model or another endpoint already configured for LiteLLM.
-
-What you send:
-
-| Field | Required | Meaning |
-|---|---|---|
-| `capability` | yes | One of your configured capability names, advertised as a fixed list. |
-| `prompt` | yes | The task or question. |
-| `context` | no | Source material. When set, the model is told to answer only from it and to say so otherwise. |
-| `system` | no | Extra instructions placed before the conversation. Orchestrator's own instructions are always applied last, so they cannot be turned off from here. |
-| `response_schema` | no | A JSON Schema, as an object or as a JSON string. The reply is validated against it locally. |
-| `temperature` | 0.2 | Forced to 0 whenever `response_schema` is set. |
-| `max_output_tokens` | from `limits` | Per-request override. |
-
-What you get back:
-
-| Field | Meaning |
-|---|---|
-| `ok` | False exactly when `error` is set. A failed call carries neither `content` nor `data`. |
-| `content` | The answer text. Null when `response_schema` was used. |
-| `data` | The validated structured answer, when `response_schema` was used. |
-| `insufficient_context` | True when the model said the provided context did not answer the question. |
-| `model_used` | Which deployment answered. |
-| `fallback_used` | Whether a fallback capability handled it. |
-| `finish_reason`, `usage`, `latency_ms` | Stop reason, tokens, elapsed time. |
-| `error` | A code and a message. |
-
-Routing error codes: `invalid_request`, `no_deployment`, `upstream_error`, `rate_limited`, `context_exceeded`, `schema_validation_failed`, `timeout`, `content_filtered`, `auth_failed`, `output_truncated`.
-
-`orchestrator_list_capabilities` returns each configured capability with its description, the deployments behind it, and the capabilities it falls back to.
-
-You can leave `capabilities` and `model_list` out of `config.yaml` if you only want subscription-based consultations. In that setup, Orchestrator only shows the three consultation tools.
-
 ## Dashboard and consultation history
 
 The dashboard is off by default because it can display every stored consultation.
@@ -406,26 +371,11 @@ Important sections:
 | Section | Purpose |
 |---|---|
 | `consult` | Configures logged-in CLI agents, history, and the dashboard. |
-| `capabilities` | Names and explains the work types available to `orchestrator_ask`. |
-| `model_list` | Connects each capability to one or more LiteLLM models. |
-| `router_settings` | Controls retries, cooldowns, and fallbacks. |
-| `limits` | Sets request size, output, repair, and timeout limits for `orchestrator_ask`. Consultations have their own caps and their own `timeout_s`. |
+| `consult.agents` | The CLIs to route to: runtime, command, model, and per-capability scores. |
+| `consult.review` | Who reviews. Absent means the review tools are not advertised at all. |
+| `consult.dashboard` | The local history page. Off unless you turn it on. |
 
-Several deployments may use the same capability name. LiteLLM will balance requests between them.
-
-You may configure only `ask`, only `consult`, or both. If `consult` is missing, the consultation tools are not shown. If `capabilities` and `model_list` are both missing, the model tools are not shown.
-
-The default `limits` block, which applies to `ask` only:
-
-| Setting | Key | Default |
-|---|---|---:|
-| Prompt | `max_prompt_chars` | 100,000 characters |
-| Context | `max_context_chars` | 400,000 characters |
-| System instructions | `max_system_chars` | 10,000 characters |
-| JSON Schema | `max_schema_chars` | 20,000 characters |
-| Output | `max_output_tokens` | 4,096 tokens |
-| Whole request | `request_timeout_s` | 120 seconds |
-| Schema repair attempts | `schema_repair_attempts` | 1 |
+`consult` is the only top-level section. A config that still carries `capabilities`, `model_list`, `router_settings`, or `limits` was written for the direct routing path removed in 0.4, and the server refuses to start on it rather than quietly advertising fewer tools than the file asks for.
 
 Invalid configuration is rejected when the server starts instead of failing during a request.
 
@@ -435,11 +385,10 @@ Orchestrator MCP checks request and response structure. It does not know whether
 
 It does enforce these rules:
 
-- Unknown capabilities and oversized requests are rejected before contacting a provider.
-- Structured replies are checked locally against your JSON Schema.
+- Unknown capabilities and oversized requests are rejected before any CLI is started.
 - Truncated, filtered, malformed, and failed answers are returned as errors, not partial answers.
 - Errors use stable codes such as `connection_required`, `timeout`, and `session_busy`.
-- The response always identifies the model and whether a fallback was used.
+- The response always identifies which agent and model answered.
 - Consulted agents run in answer-only mode and may not act on your computer.
 - A consulted agent cannot route work back to the same agent runtime.
 - Login credentials are not read or stored. Authentication stays in the vendor's CLI.
@@ -447,7 +396,7 @@ It does enforce these rules:
 Important limits:
 
 - Treat caller-provided JSON Schemas as trusted input. A complex regular expression can use a large amount of CPU.
-- Provider error text is shortened and common secret formats are redacted, but unusual secrets may still appear. Do not forward errors to an untrusted place.
+- CLI error text is shortened and common secret formats are redacted, but unusual secrets may still appear. Do not forward errors to an untrusted place.
 - The consultation database may contain full prompts and answers. Keep it private or disable full-content storage.
 
 ## System requirements
@@ -457,7 +406,6 @@ Important limits:
 - Homebrew or [`uv`](https://docs.astral.sh/uv/)
 - An MCP client that supports stdio, such as Claude Code or Codex
 - The Codex or Claude Code CLI installed and signed in
-- For optional direct routing: a model endpoint configured through LiteLLM
 
 ## Testing
 
@@ -468,18 +416,18 @@ uv sync
 uv run pytest -q
 ```
 
-The tests use fake providers and CLI agents. They do not need a network connection or spend money.
-
-To test your real model configuration:
-
-```bash
-uv run python smoke_live.py
-```
+The tests use fake CLI agents. They do not need a network connection or spend money.
 
 To test real Codex and Claude Code consultations:
 
 ```bash
 ORCHESTRATOR_HOST_RUNTIME=claude uv run python smoke_consult_live.py
+```
+
+And a real review, end to end:
+
+```bash
+ORCHESTRATOR_HOST_RUNTIME=claude uv run python smoke_review_live.py
 ```
 
 The smoke tests make real requests and may use paid capacity from your configured services. Do not run them in CI unless that is intentional.
@@ -489,11 +437,9 @@ The smoke tests make real requests and may use paid capacity from your configure
 | Problem | What to do |
 |---|---|
 | `config not found: config.yaml` | Set `ORCHESTRATOR_CONFIG` to an absolute path. MCP clients may start the server from a different directory. |
-| Startup names a missing capability | Make sure every capability has a deployment and every fallback names a real capability. |
-| `no_deployment` | All deployments are unavailable or cooling down. Check the provider and `cooldown_time`. |
-| `output_truncated` | Raise `max_output_tokens`. |
-| `schema_validation_failed` | Simplify the schema or use a model with stronger structured-output support. |
-| `timeout` on a local model | Increase `request_timeout_s`; model loading is included in the time limit. |
+| Startup names a block removed in 0.4 | Delete `capabilities`, `model_list`, `router_settings`, and `limits`; they configured the direct routing path. |
+| `no_agent_available` | Every configured agent scores 0 for the capability, is disabled, or shares the caller's runtime. |
+| `timeout` on a long review | Raise `consult.timeout_s`; a reviewer thinking at `xhigh` over a real diff can need far more than the 180s default. |
 | `consult` is missing | Add the `consult` section and check that the client loaded the correct config file. |
 | Host runtime error at startup | Set `ORCHESTRATOR_HOST_RUNTIME` to `claude`, `codex`, or `antigravity` in the MCP client's environment. |
 | `agent_not_installed` | Use an absolute path in the agent's `command`; GUI apps may have a smaller `PATH` than your shell. |
@@ -504,12 +450,6 @@ The smoke tests make real requests and may use paid capacity from your configure
 ## Bug reports
 
 [Open an issue](https://github.com/crAK1644/orchestrator-mcp/issues) and include the returned response envelope. Remove paths, credentials, and other private information before attaching your configuration.
-
-For routing or retry problems, a LiteLLM debug log is useful:
-
-```bash
-LITELLM_LOG=DEBUG uv run python smoke_live.py 2>debug.log
-```
 
 ## Contributing
 
@@ -541,7 +481,7 @@ Deliberately out of scope for now:
 - **Redaction covers this database only.** Credential-shaped values are replaced before every insert, and detection is best-effort — a secret with no recognizable shape survives it. Material sent to a reviewer also lands in that reviewer's own CLI history (Codex writes `~/.codex/sessions/`, and the others keep their own logs). Nothing here can reach those files.
 - **No automatic restart.** Both processes read the configuration once, at startup.
 - **No multi-user or shared state.** One SQLite file, local to your computer.
-- **No semantic intent routing**, streaming tool results, automatic PII removal, or shared Redis state on the routing path. LiteLLM can provide some of these through its own configuration and callbacks.
+- **No direct API routing.** Every model is reached through a CLI you have logged into yourself. There is no provider SDK, no API key, and no endpoint to configure; the LiteLLM path that offered that was removed in 0.4.
 
 ## License and support
 
@@ -549,7 +489,6 @@ This project uses the [MIT License](LICENSE).
 
 - [GitHub issues](https://github.com/crAK1644/orchestrator-mcp/issues)
 - [PyPI releases](https://pypi.org/project/orchestrator-mcp-server/)
-- [LiteLLM routing documentation](https://docs.litellm.ai/docs/routing)
 - [Model Context Protocol](https://modelcontextprotocol.io)
 
-Built with [LiteLLM](https://github.com/BerriAI/litellm), [Pydantic](https://docs.pydantic.dev), and the [Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk).
+Built with [Pydantic](https://docs.pydantic.dev) and the [Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk).

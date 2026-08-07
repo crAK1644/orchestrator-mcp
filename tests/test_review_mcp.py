@@ -13,7 +13,7 @@ import pytest
 
 from orchestrator_mcp.server import build_server
 
-from .conftest import base_config, consult_block
+from .conftest import consult_block
 
 REVIEW_TOOLS = {
     "orchestrator_review",
@@ -33,7 +33,7 @@ REVIEW_TOOLS = {
 
 
 def config(tmp_path, **overrides):
-    return base_config() | {
+    return {
         "consult": consult_block(
             database_path=str(tmp_path / "consultations.sqlite3"), **overrides
         )

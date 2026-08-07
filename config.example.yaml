@@ -1,149 +1,92 @@
 # Orchestrator MCP config.
 #
-# A capability is just a LiteLLM `model_name` alias group. Several deployments can
-# share one name; the Router load-balances, retries, and cools down across them.
-# Pointing a capability at your own deployment is an entry in `model_list` -- there
-# is no code to change.
+# There is one block, and it routes to an *agent runtime* -- a Codex, Claude Code,
+# or Antigravity CLI installed on this machine, running under its own account -- so
+# Claude Code can consult GPT and Codex can consult Claude without either one
+# holding the other's API key. No provider SDK, no API key, no network of our own.
 #
-# This file is LiteLLM's own config schema, so `litellm --config config.yaml` also
-# runs on it unchanged.
-#
-# Everything down to `limits:` configures `ask`, and all of it is optional. Delete it
-# and keep only the `consult:` block at the bottom and you get a working server that
-# needs no API key at all, because a CLI agent carries its own account. That shape is
-# supported, not degraded -- `ask` simply is not advertised. What is *not* accepted is
-# half of it: `capabilities:` without `model_list:`, or the reverse, is a mistake worth
-# hearing about at boot.
-
-capabilities:
-  coding: "Writing, refactoring, reviewing, and debugging code."
-  research: "Open-ended research, synthesis, and long-context reading."
-  fast: "Cheap, low-latency answers. Classification, extraction, short replies."
-
-model_list:
-  # --- coding -------------------------------------------------------------
-  - model_name: coding
-    litellm_params:
-      model: anthropic/claude-sonnet-4-5
-      api_key: os.environ/ANTHROPIC_API_KEY
-
-  # Bring your own: same capability, your deployment. Delete or edit freely.
-  # - model_name: coding
-  #   litellm_params:
-  #     model: openai/qwen-coder
-  #     api_base: http://vllm.internal:8000/v1
-  #     api_key: os.environ/LOCAL_VLLM_KEY
-
-  # --- research -----------------------------------------------------------
-  - model_name: research
-    litellm_params:
-      model: openai/gpt-4o
-      api_key: os.environ/OPENAI_API_KEY
-
-  # --- fast ---------------------------------------------------------------
-  - model_name: fast
-    litellm_params:
-      model: anthropic/claude-haiku-4-5-20251001
-      api_key: os.environ/ANTHROPIC_API_KEY
-
-router_settings:
-  num_retries: 2
-  cooldown_time: 60
-  fallbacks:
-    - coding: [research]
-    - research: [coding]
-
-limits:
-  max_prompt_chars: 100000
-  max_context_chars: 400000
-  max_system_chars: 10000     # caller instructions reach the prompt verbatim
-  max_schema_chars: 20000     # so does `response_schema`
-  max_output_tokens: 4096
-  request_timeout_s: 120
-  schema_repair_attempts: 1
-
-# --- consult: the second path, optional ------------------------------------
-#
-# Everything above routes to a *model* over HTTP. This block routes to an *agent
-# runtime* -- a Codex, Claude Code, or Antigravity CLI installed on this machine,
-# running under its own account -- so Claude Code can consult GPT and Codex can
-# consult Claude without either one holding the other's API key.
-#
-# Delete the whole block and the server is exactly what it was: `ask` and
-# `list_capabilities`, nothing else advertised.
-#
-# One environment variable is required alongside it: ORCHESTRATOR_HOST_RUNTIME,
-# set to `codex`, `claude`, or `antigravity` to say which runtime this installation
+# One environment variable is required alongside it: ORCHESTRATOR_HOST_RUNTIME, set
+# to `codex`, `claude`, or `antigravity` to say which runtime this installation
 # *is*. It is never a tool argument, because an agent that could name the host
 # runtime could route the work straight back to itself. Missing it is a startup
 # error.
-#
-# consult:
-#   # Every prompt and every answer is stored here verbatim. Directory 0700, file
-#   # 0600, and nothing from a subprocess environment or a login command has a
-#   # column to land in.
-#   database_path: ~/.orchestrator-mcp/consultations.sqlite3
-#   # Agents added from the dashboard live here, not in this file -- so a save cannot
-#   # reformat your config or drop these comments. The two sets are merged at boot;
-#   # an id in both is a startup error rather than one of them quietly losing.
-#   managed_agents_path: ~/.orchestrator-mcp/agents.yaml
-#   timeout_s: 180            # per consultation turn, subprocess included
-#   store_full_content: true  # false stores metadata and routing only
-#   web_turn_limit: 8         # web mode: assistant turns allowed; the one that spends
-#                             # the last of them still answers, the next is killed
-#   protocol_version: consult-v1
-#
-#   agents:
-#     codex-sol:              # the id callers name in `target_agent`
-#       runtime: codex        # codex | claude
-#       command: codex        # resolved on PATH; an absolute path works too, which is
-#                             # what the ChatGPT desktop app needs -- it bundles the CLI
-#                             # at /Applications/ChatGPT.app/Contents/Resources/codex
-#                             # and never puts it on PATH
-#       model: gpt-5.6-sol    # verified against what the CLI reports it used
-#       reasoning_effort: xhigh   # codex only: low|medium|high|xhigh|max. Not
-#                                 # inherited from ~/.codex/config.toml -- the adapter
-#                                 # passes `--ignore-user-config` on purpose, so unset
-#                                 # means the model's own default, not yours.
-#       priority: 10          # ascending: lower wins a tie
-#       web_search: true      # required before `source_mode: web` will route here
-#       scores:               # 0..100 per capability; omitted means 0, i.e. never
-#         coding: 95          # the vocabulary is fixed: coding, research,
-#         research: 85        # writing, reasoning, review
-#         reasoning: 90
-#
-#     claude-opus:
-#       runtime: claude
-#       command: claude
-#       model: claude-opus-4-6
-#       priority: 20
-#       web_search: true
-#       scores:
-#         writing: 95
-#         review: 90
-#
-#     gemini-reviewer:        # experimental; see docs/antigravity-spike.md
-#       runtime: antigravity
-#       command: agy          # installs to ~/.local/bin/agy, which is often not on
-#                             # PATH for a server started by a desktop app -- an
-#                             # absolute path is the safe answer
-#       model: gemini-3.1-pro-high  # a slug from `agy models`; the reasoning level is
-#                             # part of the name, so `reasoning_effort` is refused here
-#                             # -- passing both is an error from the CLI itself
-#       priority: 30
-#       web_search: false     # web mode is not offered by this runtime yet
-#       scores:
-#         reasoning: 90
-#         review: 85
-#
-#   # A local page over the stored consultations, loopback only, started separately
-#   # with `orchestrator-mcp-dashboard`. Off unless you turn it on: it serves every
-#   # prompt and answer in the database.
-#   dashboard:
-#     enabled: false
-#     # A second opt-in, because a viewer and an editor are different things to agree
-#     # to. On, the page can add, change and delete agents in `managed_agents_path`
-#     # above -- and nothing else. It never edits this file and never runs a command.
-#     editable: false
-#     host: 127.0.0.1
-#     port: 8765
+
+consult:
+  # Every prompt and every answer is stored here, credential-shaped values redacted
+  # first. Directory 0700, file 0600, and nothing from a subprocess environment or a
+  # login command has a column to land in.
+  database_path: ~/.orchestrator-mcp/consultations.sqlite3
+  # Agents added from the dashboard live here, not in this file -- so a save cannot
+  # reformat your config or drop these comments. The two sets are merged at boot;
+  # an id in both is a startup error rather than one of them quietly losing.
+  managed_agents_path: ~/.orchestrator-mcp/agents.yaml
+  timeout_s: 180            # per consultation turn, subprocess included. A reviewer
+                            # thinking at `xhigh` over a real diff needs far more --
+                            # 1800 is not unreasonable.
+  store_full_content: true  # false stores metadata and routing only
+  web_turn_limit: 8         # web mode: assistant turns allowed; the one that spends
+                            # the last of them still answers, the next is killed
+  protocol_version: consult-v1
+
+  agents:
+    codex-sol:              # the id callers name in `target_agent`
+      runtime: codex        # codex | claude | antigravity
+      command: codex        # resolved on PATH; an absolute path works too, which is
+                            # what the ChatGPT desktop app needs -- it bundles the CLI
+                            # at /Applications/ChatGPT.app/Contents/Resources/codex
+                            # and never puts it on PATH
+      model: gpt-5.6-sol    # verified against what the CLI reports it used
+      reasoning_effort: xhigh   # codex only: low|medium|high|xhigh|max. Not
+                                # inherited from ~/.codex/config.toml -- the adapter
+                                # passes `--ignore-user-config` on purpose, so unset
+                                # means the model's own default, not yours.
+      priority: 10          # ascending: lower wins a tie
+      web_search: true      # required before `source_mode: web` will route here
+      scores:               # 0..100 per capability; omitted means 0, i.e. never
+        coding: 95          # the vocabulary is fixed: coding, research,
+        research: 85        # writing, reasoning, review
+        reasoning: 90
+        review: 95
+
+    claude-opus:
+      runtime: claude
+      command: claude
+      model: claude-opus-4-6
+      priority: 20
+      web_search: true
+      scores:
+        writing: 95
+        review: 90
+
+    gemini-reviewer:        # experimental; see docs/antigravity-spike.md
+      runtime: antigravity
+      command: agy          # installs to ~/.local/bin/agy, which is often not on
+                            # PATH for a server started by a desktop app -- an
+                            # absolute path is the safe answer
+      model: gemini-3.1-pro-high  # a slug from `agy models`; the reasoning level is
+                            # part of the name, so `reasoning_effort` is refused here
+                            # -- passing both is an error from the CLI itself
+      priority: 30
+      web_search: false     # web mode is not offered by this runtime yet
+      scores:
+        reasoning: 90
+        review: 85
+
+  # Who reviews. Named agents rather than a capability score, because a review is
+  # only worth comparing with the last one if the same models wrote both. Delete the
+  # block and the `orchestrator_review` tools are simply not advertised.
+  review:
+    reviewers: [codex-sol]                    # exactly one, for `mode: standard`
+    deep_reviewers: [codex-sol, claude-opus]  # 1 to 5, for `mode: deep`
+
+  # A local page over the stored consultations, loopback only, started separately
+  # with `orchestrator-mcp-dashboard`. Off unless you turn it on: it serves every
+  # prompt and answer in the database.
+  dashboard:
+    enabled: false
+    # A second opt-in, because a viewer and an editor are different things to agree
+    # to. On, the page can add, change and delete agents in `managed_agents_path`
+    # above -- and nothing else. It never edits this file and never runs a command.
+    editable: false
+    host: 127.0.0.1
+    port: 8765
