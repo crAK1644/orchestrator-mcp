@@ -50,8 +50,19 @@ def managed_path(block: dict[str, Any]) -> Path:
 def read_managed(path: Path) -> dict[str, Any]:
     """The agent mappings in the managed file. A missing file is no agents, not an
     error: the dashboard has simply never been used here."""
+    return read_managed_document(path)["agents"]
+
+
+def read_managed_document(path: Path) -> dict[str, Any]:
+    """Both blocks the dashboard owns -- `agents` and `review` -- from a single read.
+
+    One read and not two, which is the whole reason this exists next to
+    `read_managed`. `write_managed` replaces the file atomically, so it is a reader
+    opening it twice that can straddle a save: agents from the old file, reviewers
+    from the new one, a combination nobody ever saved and no validator would catch.
+    """
     if not path.exists():
-        return {}
+        return {"agents": {}, "review": None}
 
     try:
         document = yaml.safe_load(path.read_text()) or {}
@@ -70,10 +81,14 @@ def read_managed(path: Path) -> dict[str, Any]:
     agents = document.get("agents") or {}
     if not isinstance(agents, dict):
         raise ConfigError(f"`agents:` in {path} must be a mapping of agent id to settings")
-    return agents
+
+    review = document.get("review")
+    if review is not None and not isinstance(review, dict):
+        raise ConfigError(f"`review:` in {path} must be a mapping")
+    return {"agents": agents, "review": review}
 
 
-def write_managed(path: Path, agents: dict[str, Any]) -> None:
+def write_managed(path: Path, agents: dict[str, Any], review: dict[str, Any] | None = None) -> None:
     """Replace the managed file atomically.
 
     Same posture as the consultation store: the file is `0600`, and the directory is
@@ -89,9 +104,17 @@ def write_managed(path: Path, agents: dict[str, Any]) -> None:
     A temp file in the same directory and `os.replace` so a reader mid-save sees the
     old file or the new one, never half of either -- the reader here being a server
     starting up while someone clicks Save.
+
+    Both blocks are written together, so saving reviewers cannot drop the agents or
+    the other way round. `review=None` writes no key, which keeps a file that has only
+    ever held agents byte-identical to what earlier versions wrote. An explicit empty
+    mapping is preserved so validation, rather than truthiness, decides its meaning.
     """
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    body = yaml.safe_dump({"agents": agents}, sort_keys=True, default_flow_style=False)
+    document: dict[str, Any] = {"agents": agents}
+    if review is not None:
+        document["review"] = review
+    body = yaml.safe_dump(document, sort_keys=True, default_flow_style=False)
 
     handle = tempfile.NamedTemporaryFile(
         "w", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False

@@ -1,8 +1,4 @@
-"""Shared helpers for the consult-era tests.
-
-`test_orchestrator.py` at the repo root keeps its own copies untouched -- it is the
-compatibility suite, and a shared helper it did not have before is a change to it.
-"""
+"""Shared helpers for the consult tests."""
 
 from __future__ import annotations
 
@@ -11,23 +7,6 @@ from typing import Any
 import pytest
 
 from orchestrator_mcp.consult.config import HOST_RUNTIME_ENV
-
-
-def deployment(capability: str, mock: str = "hi", model: str = "openai/gpt-4o") -> dict[str, Any]:
-    return {
-        "model_name": capability,
-        "litellm_params": {"model": model, "api_key": "sk-test", "mock_response": mock},
-    }
-
-
-def base_config(*deployments: dict[str, Any]) -> dict[str, Any]:
-    """A 0.1.2-shaped config: no `consult:` block anywhere in it."""
-    deployments = deployments or (deployment("fast"),)
-    return {
-        "capabilities": {d["model_name"]: f"{d['model_name']} work" for d in deployments},
-        "model_list": list(deployments),
-        "router_settings": {"num_retries": 0},
-    }
 
 
 def agent(
@@ -70,7 +49,19 @@ def _no_real_managed_file(tmp_path, monkeypatch):
     monkeypatch.setattr("orchestrator_mcp.consult.managed.DEFAULT_MANAGED_PATH", path)
     # The pydantic default is bound at class definition, so patching the module name
     # alone would leave a directly-constructed `ConsultConfig` pointed at the real one.
+    # `model_fields` is not enough either: pydantic compiles the default into the
+    # validator, so the FieldInfo has to be patched *and* the validator rebuilt.
+    # Without the rebuild this fixture ran green for months while the suite wrote the
+    # developer's own `~/.orchestrator-mcp/agents.yaml`.
     monkeypatch.setattr(ConsultConfig.model_fields["managed_agents_path"], "default", path)
+    ConsultConfig.model_rebuild(force=True)
+    # Not decoration: the two lines above are the only thing standing between a test
+    # run and a real config file, and both of them are pydantic internals that a
+    # version bump can quietly turn into no-ops.
+    assert ConsultConfig(agents={"probe": agent()}).managed_agents_path == path
+    yield
+    monkeypatch.undo()
+    ConsultConfig.model_rebuild(force=True)
 
 
 @pytest.fixture

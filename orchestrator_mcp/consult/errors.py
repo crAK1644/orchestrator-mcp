@@ -1,9 +1,8 @@
 """Failure codes for the consultation path.
 
-Separate from `ErrorCode` in the LiteLLM path on purpose: the failures are
-different in kind. A consultation talks to a locally installed agent runtime, so
-"not installed" and "logged out" are the common cases, and neither has an
-equivalent on an HTTP endpoint.
+A consultation talks to a locally installed agent runtime, so "not installed" and
+"logged out" are the common cases -- neither of which has an equivalent on an HTTP
+endpoint, which is why this vocabulary is its own and not a provider's.
 """
 
 from __future__ import annotations
@@ -24,6 +23,9 @@ class ConsultErrorCode(str, Enum):
     PROTOCOL_VALIDATION_FAILED = "protocol_validation_failed"
     WEB_SEARCH_UNAVAILABLE = "web_search_unavailable"
     TRANSPORT_ERROR = "transport_error"
+    # No attempt was made. A reviewer reserved before its batch and never launched
+    # has this rather than `TRANSPORT_ERROR`, which claims a transport failed.
+    NOT_STARTED = "not_started"
     TIMEOUT = "timeout"
     INVALID_REQUEST = "invalid_request"
     NO_AGENT_AVAILABLE = "no_agent_available"

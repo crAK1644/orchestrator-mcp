@@ -8,13 +8,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import tempfile
+from pathlib import Path
+
+from orchestrator_mcp.consult.config import HOST_RUNTIME_ENV
 
 from .test_existing_contract import SNAPSHOT, advertised, snapshot_config
 
 
 def main() -> None:
+    # Both of these come from fixtures under pytest. The runtime decides which agent
+    # is excluded from its own routing; the managed path keeps a developer's real
+    # `~/.orchestrator-mcp/agents.yaml` out of the snapshot they are regenerating.
+    os.environ[HOST_RUNTIME_ENV] = "claude"
+    with tempfile.TemporaryDirectory() as scratch:
+        config = snapshot_config()
+        config["consult"]["managed_agents_path"] = str(Path(scratch) / "agents.yaml")
+        advertised_tools = asyncio.run(advertised(config))
     SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
-    SNAPSHOT.write_text(json.dumps(asyncio.run(advertised(snapshot_config())), indent=2) + "\n")
+    SNAPSHOT.write_text(json.dumps(advertised_tools, indent=2) + "\n")
     print(f"wrote {SNAPSHOT}")
 
 

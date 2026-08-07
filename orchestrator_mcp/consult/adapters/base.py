@@ -7,9 +7,10 @@ each adapter because getting any of them wrong in one place would be enough:
 over stdin, which removes both the injection surface and the argv length ceiling
 -- a document-mode context is routinely longer than `ARG_MAX`.
 
-A curated environment, not `os.environ`. This server is configured with API keys
-for the LiteLLM path, and a consulted CLI has no business seeing them; it
-authenticates with its own saved credentials, which is what `HOME` is for.
+A curated environment, not `os.environ`. The agent that started this server may
+well have provider API keys in its own environment, and a consulted CLI has no
+business seeing them; it authenticates with its own saved credentials, which is
+what `HOME` is for.
 
 Children run in their own process group, and a timeout kills the group. A CLI
 that has spawned its own helpers would otherwise leave them running after we stop
@@ -56,8 +57,8 @@ _CHUNK = 64 * 1024
 
 # Passed through to a consulted CLI. `HOME` because that is where its own saved
 # credentials live, the rest because a process without them misbehaves in ways
-# that are tedious to diagnose. Notably absent: every `*_API_KEY` this server
-# holds for the LiteLLM path.
+# that are tedious to diagnose. Notably absent: every `*_API_KEY` that happened to
+# be in the environment this server was started from.
 PASSTHROUGH_ENV = ("HOME", "PATH", "LANG", "LC_ALL", "TMPDIR", "TERM", "USER", "SHELL")
 
 

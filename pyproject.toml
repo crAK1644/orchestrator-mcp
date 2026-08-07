@@ -3,13 +3,13 @@
 # else, so the distribution carries the `-server` suffix. The import package,
 # the repo, and the config env var are unchanged.
 name = "orchestrator-mcp-server"
-version = "0.3.0"
+version = "0.4.0"
 description = "Use Codex from Claude Code, or Claude Code from Codex, through the subscriptions you already have."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Ayberk Karataban" }]
-keywords = ["mcp", "llm", "router", "litellm", "orchestrator", "claude", "codex"]
+keywords = ["mcp", "llm", "orchestrator", "claude", "codex", "code-review"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -21,10 +21,8 @@ dependencies = [
     # 2.0 renamed the server API (`mcp.server.MCPServer`) and switched tool objects
     # to snake_case; 1.x will not import.
     "mcp>=2.0,<3",
-    "litellm>=1.55.0",
     "pydantic>=2.9",
     "pyyaml>=6.0",
-    "jsonschema>=4.23",
 ]
 
 [project.urls]

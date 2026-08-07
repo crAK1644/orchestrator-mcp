@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""A runnable tour of both paths, with no API key, no login, and no network.
+"""A runnable tour of the consult path, with no API key, no login, and no network.
 
     uv run python demo.py
 
-`ask` is driven by LiteLLM's own `mock_response`, so the router, the envelope, the
-grounding directive and the structured-output path all run for real against a
-deployment that answers from the config instead of from a provider. `consult` is
-driven by a fake `claude` executable this script writes into a temp directory and
-puts on PATH -- the adapter builds its own argv, spawns a real process, and parses
-what comes back, exactly as it would with the CLI installed.
+`consult` is driven by a fake `claude` executable this script writes into a temp
+directory and puts on PATH -- the adapter builds its own argv, spawns a real
+process, and parses what comes back, exactly as it would with the CLI installed.
 
-What this proves is this server's logic. What it cannot prove is your providers or
-your CLIs; `smoke_live.py` and `smoke_consult_live.py` are for that, and they spend
+What this proves is this server's logic. What it cannot prove is your CLIs;
+`smoke_consult_live.py` and `smoke_review_live.py` are for that, and they spend
 real money.
 """
 
@@ -19,95 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 import tempfile
 import textwrap
 from pathlib import Path
 
-from mcp.server.mcpserver.exceptions import ToolError
-
 from orchestrator_mcp.server import build_server
-
-logging.disable(logging.INFO)  # LiteLLM narrates every call otherwise.
-
-# --- the ask path -----------------------------------------------------------
-
-ASK_CONFIG = {
-    "capabilities": {
-        "fast": "Cheap, low-latency answers.",
-        "coding": "Code, review, and debugging.",
-    },
-    "model_list": [
-        {
-            "model_name": "fast",
-            "litellm_params": {
-                "model": "openai/gpt-4o-mini",
-                "api_key": "sk-not-a-real-key",
-                # Answers from the config. No key is read and no request leaves.
-                "mock_response": "Ankara.",
-            },
-        },
-        {
-            "model_name": "coding",
-            "litellm_params": {
-                "model": "openai/gpt-4o",
-                "api_key": "sk-not-a-real-key",
-                "mock_response": json.dumps(
-                    {"insufficient_context": False, "answer": {"bug": "off-by-one", "line": 42}}
-                ),
-            },
-        },
-    ],
-}
-
-SCHEMA = {
-    "type": "object",
-    "properties": {"bug": {"type": "string"}, "line": {"type": "integer"}},
-    "required": ["bug", "line"],
-    "additionalProperties": False,
-}
-
-
-async def ask_path() -> None:
-    server = build_server(ASK_CONFIG)
-    banner("1. ask -- one envelope for every outcome")
-
-    result = await server.call_tool("ask", {"capability": "fast", "prompt": "Capital of Turkey?"})
-    show("a plain answer", result.structured_content)
-
-    # `context` switches on the grounding directive: answer only from this material,
-    # and say so when it does not support an answer. The stub replies the same either
-    # way -- what runs for real here is the prompt assembly, with our directive last.
-    result = await server.call_tool(
-        "ask",
-        {
-            "capability": "fast",
-            "prompt": "What is the population?",
-            "context": "Ankara is the capital of Turkey.",
-        },
-    )
-    show("grounded in supplied material", result.structured_content)
-
-    result = await server.call_tool(
-        "ask",
-        {"capability": "coding", "prompt": "Find the bug.", "response_schema": SCHEMA},
-    )
-    show("structured: validated into `data`, `content` stays null", result.structured_content)
-
-    # A capability nobody configured never reaches the tool body: the advertised schema
-    # types `capability` as an enum, so the protocol layer refuses it before any
-    # provider is chosen. That is a protocol error, not an envelope.
-    try:
-        await server.call_tool("ask", {"capability": "research", "prompt": "hi"})
-    except ToolError as exc:
-        print(f"— a capability that does not exist\n  refused by the schema: {exc}\n")
-
-    result = await server.call_tool("list_capabilities", {})
-    show("what the caller can see", result.structured_content)
-
-
-# --- the consult path -------------------------------------------------------
 
 # Stands in for an installed, logged-in Claude Code. It answers in the shape the
 # protocol requires and echoes back whichever session id it was handed, which is
@@ -148,18 +62,21 @@ print(json.dumps({
 
 
 def consult_config(root: Path) -> dict:
-    return ASK_CONFIG | {
+    return {
         "consult": {
             "database_path": str(root / "consultations.sqlite3"),
+            # Into the temp directory, so a real `agents.yaml` sitting in the working
+            # directory is not merged in and this tour stays the same everywhere.
+            "managed_agents_path": str(root / "agents.yaml"),
             "timeout_s": 60,
             "agents": {
                 "claude-opus": {
                     "runtime": "claude",
                     "command": "claude",
                     "model": "opus",
-                    # Consult has its own fixed capability vocabulary -- coding,
-                    # research, writing, reasoning, review -- separate from the
-                    # `capabilities:` you name for `ask`.
+                    # Consult has a fixed capability vocabulary -- coding, research,
+                    # writing, reasoning, review -- and an agent scores itself
+                    # against it.
                     "scores": {"coding": 90, "review": 70},
                 },
                 # Scores higher, and still never wins: ORCHESTRATOR_HOST_RUNTIME is
@@ -177,7 +94,7 @@ def consult_config(root: Path) -> dict:
 
 
 async def consult_path(root: Path) -> None:
-    banner("2. consult -- a second agent, over its own account")
+    banner("consult -- a second agent, over its own account")
 
     bindir = root / "bin"
     bindir.mkdir()
@@ -191,11 +108,11 @@ async def consult_path(root: Path) -> None:
 
     server = build_server(consult_config(root))
 
-    result = await server.call_tool("list_consult_agents", {})
+    result = await server.call_tool("orchestrator_list_consult_agents", {})
     show("who is configured, and whether they are reachable", result.structured_content)
 
     result = await server.call_tool(
-        "consult",
+        "orchestrator_consult",
         {
             "capability": "coding",
             "prompt": "Should each consumer get its own queue?",
@@ -209,7 +126,7 @@ async def consult_path(root: Path) -> None:
     print(f"  keep this: consultation_id = {consultation_id}\n")
 
     result = await server.call_tool(
-        "consult",
+        "orchestrator_consult",
         {
             "capability": "coding",
             "prompt": "Does that still hold at ten consumers?",
@@ -218,7 +135,9 @@ async def consult_path(root: Path) -> None:
     )
     show("the same conversation, resumed", result.structured_content)
 
-    result = await server.call_tool("get_consultation", {"consultation_id": consultation_id})
+    result = await server.call_tool(
+        "orchestrator_get_consultation", {"consultation_id": consultation_id}
+    )
     stored = result.structured_content
     print(f"  stored: {len(stored['turns'])} turns, status {stored['status']}, bound to "
           f"`{stored['target_agent_id']}` ({stored['target_model']}) "
@@ -252,25 +171,22 @@ def _trim(payload: dict) -> dict:
 
 
 async def main() -> None:
-    await ask_path()
     with tempfile.TemporaryDirectory(prefix="orchestrator-demo-") as scratch:
         await consult_path(Path(scratch))
 
     banner("that was all of it, with no key and no login")
     print(textwrap.dedent("""\
-        Both paths ran for real: the router, the envelope, the schema validation, the
-        subprocess transport, the session binding and the SQLite store. Only the two
-        things this machine cannot supply were stubbed -- the provider's reply, and
-        the consulted CLI.
+        It ran for real: the routing, the envelope, the subprocess transport, the
+        session binding and the SQLite store. The one thing this machine cannot
+        supply was stubbed -- the consulted CLI.
 
         To point it at your own setup:
-          * copy `config.example.yaml` to `config.yaml`, drop the `mock_response`
-            lines, and reference your key as `os.environ/YOUR_KEY_NAME`
-          * for consult, install the other agent's CLI and log into it yourself
+          * copy `config.example.yaml` to `config.yaml` and name the agents you have
+          * install the other agent's CLI and log into it yourself
             (`codex login`, `claude auth login`), then set
             ORCHESTRATOR_HOST_RUNTIME to whichever agent is calling
-          * `uv run python smoke_live.py` and `smoke_consult_live.py` do the same
-            tour against the real thing, and cost real money
+          * `uv run python smoke_consult_live.py` and `smoke_review_live.py` do the
+            same tour against the real thing, and cost real money
     """))
 
 

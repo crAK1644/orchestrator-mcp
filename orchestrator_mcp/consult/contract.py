@@ -1,7 +1,6 @@
 """Request/response contract for the consultation path.
 
-The same discipline as the LiteLLM path in `orchestrator_mcp.contract`: one
-envelope for every outcome, a failure never carries an answer, and the models
+One envelope for every outcome, a failure never carries an answer, and the models
 here are what the advertised MCP schema is derived from.
 
 `ConsultationContent` does double duty -- it is both what we validate a reply
@@ -223,9 +222,8 @@ class ConsultationRecord(BaseModel):
 def _agent_enum(agent_ids: list[str]):
     """Advertise `target_agent` as the configured ids, or null.
 
-    Same reason as `_always_an_enum` on the LiteLLM path: a calling model reads the
-    enum out of the tool schema, and one that cannot name an unconfigured agent
-    cannot ask for one. Written flat rather than as an `anyOf`, which is what a
+    A calling model reads the enum out of the tool schema, and one that cannot name
+    an unconfigured agent cannot ask for one. Written flat rather than as an `anyOf`, which is what a
     nullable `Literal` would otherwise produce, because a plain enum survives
     translation into a function-calling definition far more widely.
     """

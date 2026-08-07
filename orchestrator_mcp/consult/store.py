@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import UUID
 
+from ..contract import scrub_json
 from .contract import ConsultRoute, SourceMode
 from .errors import ConsultErrorCode
 from .routing import RoutingDecision
@@ -108,7 +109,67 @@ MIGRATIONS: list[str] = [
         holder          TEXT NOT NULL,
         expires_at      REAL NOT NULL
     );
+    """,
     """
+    CREATE TABLE reviews (
+        id                     TEXT PRIMARY KEY,
+        parent_review_id       TEXT REFERENCES reviews(id) DEFERRABLE INITIALLY DEFERRED,
+        mode                   TEXT NOT NULL,
+        status                 TEXT NOT NULL,
+        outcome                TEXT,
+        goal                   TEXT,
+        context                TEXT,
+        material_json          TEXT NOT NULL,
+        material_sha256        TEXT NOT NULL,
+        raw_sha256             TEXT NOT NULL,
+        reviewer_snapshot_json TEXT NOT NULL,
+        confirm_token_sha      TEXT,
+        secret_hits_json       TEXT NOT NULL,
+        web_requested          INTEGER NOT NULL DEFAULT 0,
+        host_findings_json     TEXT,
+        summary_json           TEXT,
+        fix_rounds_json        TEXT,
+        created_at             TEXT NOT NULL,
+        updated_at             TEXT NOT NULL
+    );
+
+    CREATE TABLE review_consultations (
+        review_id       TEXT NOT NULL REFERENCES reviews(id),
+        agent_id        TEXT NOT NULL,
+        consultation_id TEXT REFERENCES consultations(id),
+        status          TEXT NOT NULL,
+        findings_json   TEXT,
+        answer          TEXT,
+        error_code      TEXT,
+        created_at      TEXT NOT NULL,
+        PRIMARY KEY (review_id, agent_id)
+    );
+
+    CREATE TABLE review_leases (
+        review_id  TEXT PRIMARY KEY,
+        holder     TEXT NOT NULL,
+        expires_at REAL NOT NULL
+    );
+
+    CREATE TABLE review_delete_confirmations (
+        token_sha       TEXT PRIMARY KEY,
+        review_ids_json TEXT NOT NULL,
+        displayed_count INTEGER NOT NULL,
+        created_at      TEXT NOT NULL,
+        expires_at      REAL NOT NULL
+    );
+    """,
+    """
+    ALTER TABLE reviews ADD COLUMN secrets_mode TEXT;
+    ALTER TABLE review_consultations ADD COLUMN findings_parsed INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE review_consultations ADD COLUMN findings_truncated INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX reviews_parent_review_id_idx ON reviews(parent_review_id);
+    CREATE INDEX review_consultations_consultation_id_idx
+        ON review_consultations(consultation_id);
+    """,
+    """
+    ALTER TABLE review_consultations ADD COLUMN sources_json TEXT;
+    """,
 ]
 
 DEFAULT_PROFILE = "default"
@@ -321,10 +382,13 @@ class ConsultStore:
                     origin_runtime,
                     route.agent_id,
                     route.runtime,
-                    route.model,
+                    # Free-form strings from configuration and from the host. Scrubbed
+                    # at the insert like every other text column; the resume check in
+                    # `ConsultService` compares against the scrubbed copy.
+                    scrub_json(route.model),
                     capability,
                     None,
-                    conversation_label,
+                    scrub_json(conversation_label),
                     protocol_version,
                     config_hash,
                     "open",
@@ -508,8 +572,12 @@ class ConsultStore:
         authenticated: bool | None,
         detail: str | None = None,
     ) -> None:
-        # `detail` is ours to write -- a short explanation like "not on PATH". The
-        # output of a login command never reaches this argument.
+        # `detail` is ours to write -- a short explanation like "not on PATH". But it
+        # is built from an `AdapterError`, and what an adapter puts in one is the
+        # adapter's decision: one that starts quoting a failing argv or a stderr line
+        # would carry a credential here without this call changing at all. Scrubbed at
+        # the insert, so the guarantee belongs to the column rather than to whichever
+        # adapter wrote the message.
         await self._run(
             lambda: self._db.execute(
                 "INSERT INTO agent_status_checks (agent_id, installed, authenticated, detail, "
@@ -518,7 +586,7 @@ class ConsultStore:
                     agent_id,
                     None if installed is None else int(installed),
                     None if authenticated is None else int(authenticated),
-                    detail,
+                    scrub_json(detail),
                     _now(),
                 ),
             )

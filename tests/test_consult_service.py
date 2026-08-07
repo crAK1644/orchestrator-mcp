@@ -327,3 +327,9 @@ async def test_listing_can_skip_the_status_checks(service_factory):
     service = await service_factory()
     listing = await service.list_agents(check=False)
     assert all(a.installed is None for a in listing.agents)
+
+
+async def test_a_filtered_listing_refuses_unknown_agent_ids(service_factory):
+    service = await service_factory()
+    with pytest.raises(ValueError, match="unknown agent id"):
+        await service.list_agents(check=False, agent_ids=["nobody"])

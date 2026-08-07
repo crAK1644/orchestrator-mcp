@@ -42,15 +42,25 @@ import yaml
 from pydantic import ValidationError
 
 from ..contract import ConfigError
+from ..review.contract import Severity
 from .adapters import adapter_for
 from .adapters.base import AdapterError, resolve_command
 from .adapters.codex_cli import rate_limit as codex_rate_limit
-from .config import AgentConfig, ConsultConfig, load_consult_config
+from .config import (
+    MAX_DEEP_REVIEWERS,
+    AgentConfig,
+    ConsultConfig,
+    ReviewConfig,
+    load_consult_config,
+)
 from .contract import Capability, Runtime
-from .managed import read_managed, write_managed
+from .managed import read_managed, read_managed_document, write_managed
 
 CAPABILITIES = get_args(Capability)
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Worst first, and taken from the contract rather than retyped, so a severity added
+# there cannot end up rendered in whatever order SQLite returned it.
+SEVERITIES = get_args(Severity)
 
 # Slugs each runtime is known to take, offered as a `datalist` rather than a `select`:
 # the field stays free text, because a model that ships tomorrow has to be typeable
@@ -102,34 +112,233 @@ MAX_BODY_BYTES = 64 * 1024
 ALLOWED_HOSTS = ("127.0.0.1", "localhost", "::1", "[::1]")
 
 STYLE = """
-:root { color-scheme: light dark; }
-body { font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; margin: 2rem auto; max-width: 76rem;
-       padding: 0 1rem; }
-h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
-table { border-collapse: collapse; width: 100%; margin: .5rem 0 1.5rem; }
-th, td { border-bottom: 1px solid #8883; padding: .35rem .5rem; text-align: left;
-         vertical-align: top; }
-th { font-weight: 600; opacity: .7; font-size: .85rem; }
-code, pre { font-family: ui-monospace, monospace; font-size: .85rem; }
-pre { background: #8881; padding: .6rem .8rem; border-radius: 4px; overflow-x: auto;
-      white-space: pre-wrap; word-break: break-word; max-height: 26rem; }
-.meta { opacity: .65; font-size: .85rem; }
-.bad { color: #c0392b; font-weight: 600; }
-.ok { color: #1e8449; }
-a { color: inherit; }
-label { display: block; margin: .6rem 0; }
-label > span { display: block; font-size: .85rem; opacity: .7; margin-bottom: .15rem; }
-input[type=text], input[type=number], select { font: inherit; padding: .3rem .4rem;
-       min-width: 18rem; max-width: 100%; }
-input[type=number] { min-width: 5rem; }
-fieldset { border: 1px solid #8883; border-radius: 4px; margin: 1rem 0; padding: .5rem 1rem 1rem; }
-legend { font-size: .85rem; opacity: .7; padding: 0 .3rem; }
-.scores label { display: inline-block; margin-right: 1rem; }
-button { font: inherit; padding: .35rem .9rem; border-radius: 4px; cursor: pointer; }
-.banner { border: 1px solid #8884; border-left: 3px solid currentColor; border-radius: 4px;
-       padding: .6rem .8rem; margin: 1rem 0; }
-.banner.warn { color: #b9770e; } .banner.done { color: #1e8449; }
-.error { color: #c0392b; margin: .5rem 0; }
+:root {
+  color-scheme: light dark;
+  --ink: #101418;
+  --panel: #ffffff;
+  --panel-raised: #f8fafb;
+  --paper: #f3f5f7;
+  --text: #17212b;
+  --muted: #697785;
+  --rule: #d8dee4;
+  --rule-strong: #bac4ce;
+  --signal: #1677e8;
+  --signal-soft: #e8f2ff;
+  --good: #16805a;
+  --good-soft: #e7f5ef;
+  --bad: #c34646;
+  --bad-soft: #fcecec;
+  --warn: #9a6512;
+  --warn-soft: #fff3dc;
+  --shadow: 0 12px 36px #1d29331a;
+  font-synthesis: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --panel: #171c21;
+    --panel-raised: #1c2228;
+    --paper: #101418;
+    --text: #edf2f6;
+    --muted: #8b98a5;
+    --rule: #2b333b;
+    --rule-strong: #3b4650;
+    --signal: #63a8ff;
+    --signal-soft: #182c42;
+    --good: #65c9a3;
+    --good-soft: #17332a;
+    --bad: #ff8f8f;
+    --bad-soft: #3a2224;
+    --warn: #e7b35f;
+    --warn-soft: #382d1e;
+    --shadow: 0 14px 40px #00000038;
+  }
+}
+* { box-sizing: border-box; }
+html { background: var(--paper); }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--text);
+  font: 13px/1.48 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-rendering: optimizeLegibility;
+}
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 13.5rem minmax(0, 1fr); }
+.rail {
+  position: sticky; top: 0; height: 100vh; align-self: start;
+  display: flex; flex-direction: column; padding: 1.2rem .8rem;
+  background: var(--ink); color: #edf2f6; border-right: 1px solid #2b333b;
+}
+.brand { display: flex; align-items: center; gap: .7rem; padding: .25rem .45rem 1.25rem; }
+.brand-mark {
+  display: grid; place-items: center; width: 2rem; height: 2rem;
+  border: 1px solid #50606f; border-radius: 6px;
+  color: #fff; font: 700 .66rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: -.04em;
+}
+.brand-copy strong {
+  display: block; font: 700 .91rem/1.1 "Arial Narrow", "Avenir Next Condensed", ui-sans-serif, sans-serif;
+  letter-spacing: .015em;
+}
+.brand-copy span { display: block; margin-top: .22rem; color: #8b98a5; font-size: .67rem; }
+.rail-label { margin: .45rem .55rem .35rem; color: #74818d; font-size: .63rem; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; }
+.rail nav { display: grid; gap: .18rem; }
+.rail nav a {
+  display: flex; align-items: center; gap: .65rem; min-height: 2.15rem;
+  padding: .42rem .55rem; color: #aeb9c3; text-decoration: none;
+  border: 1px solid transparent; border-radius: 5px;
+}
+.rail nav a::before { content: ""; width: .36rem; height: .36rem; border: 1px solid #5f6b76; border-radius: 50%; }
+.rail nav a:hover { color: #fff; background: #ffffff0a; }
+.rail nav a[aria-current=page] { color: #fff; background: #ffffff0d; border-color: #ffffff12; }
+.rail nav a[aria-current=page]::before { background: var(--signal); border-color: var(--signal); box-shadow: 0 0 0 3px #63a8ff20; }
+.rail-foot { margin-top: auto; padding: .75rem .55rem 0; border-top: 1px solid #2b333b; color: #7f8c97; font-size: .66rem; }
+main { min-width: 0; width: 100%; max-width: 96rem; padding: 2rem 2.35rem 4rem; }
+.page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.5rem; margin-bottom: 1.15rem; }
+.page-heading-copy { min-width: 0; }
+.eyebrow { margin: 0 0 .38rem; color: var(--signal); font-size: .66rem; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+h1, h2, h3, h4 { color: var(--text); font-family: "Arial Narrow", "Avenir Next Condensed", ui-sans-serif, sans-serif; }
+h1 { margin: 0; font-size: clamp(1.55rem, 2.5vw, 2rem); line-height: 1.08; letter-spacing: -.025em; }
+h2 { margin: 2.2rem 0 .7rem; font-size: 1rem; line-height: 1.2; letter-spacing: .01em; }
+h3 { margin: 0; font-size: .95rem; }
+h4 { margin: 1rem 0 .45rem; font-size: .82rem; }
+p { margin: .6rem 0; }
+a { color: inherit; text-decoration-color: color-mix(in srgb, currentColor 45%, transparent); text-underline-offset: .18em; }
+a:hover { color: var(--signal); text-decoration-color: currentColor; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--signal); outline-offset: 2px;
+}
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82rem; }
+code { font-variant-ligatures: none; }
+.meta { color: var(--muted); font-size: .76rem; }
+.context-line {
+  display: flex; flex-wrap: wrap; gap: .35rem .8rem; margin: .85rem 0 0;
+  color: var(--muted); font-size: .72rem;
+}
+.context-line > span { min-width: 0; overflow-wrap: anywhere; }
+.back-link { display: inline-flex; align-items: center; gap: .35rem; margin-bottom: 1.2rem; color: var(--muted); font-size: .76rem; text-decoration: none; }
+.back-link:hover { color: var(--signal); }
+.monitor-strip {
+  display: grid; grid-template-columns: repeat(4, minmax(8rem, 1fr));
+  margin: 1.25rem 0 1.5rem; border: 1px solid var(--rule); border-radius: 7px;
+  background: var(--panel); box-shadow: var(--shadow); overflow: hidden;
+}
+.monitor-strip > div { min-width: 0; padding: .72rem .85rem; border-right: 1px solid var(--rule); }
+.monitor-strip > div:last-child { border-right: 0; }
+.monitor-strip dt { color: var(--muted); font-size: .63rem; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+.monitor-strip dd { margin: .25rem 0 0; font: 650 1rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--rule); }
+.section-heading h2 { margin-bottom: .58rem; }
+.section-heading a { color: var(--muted); font-size: .72rem; }
+.section-heading + .table-shell, .section-heading + .empty-state { margin-top: .7rem; }
+.table-shell { width: 100%; overflow-x: auto; border: 1px solid var(--rule); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: .56rem .68rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--rule); }
+tr:last-child td { border-bottom: 0; }
+th {
+  color: var(--muted); background: var(--panel-raised); font-size: .62rem;
+  font-weight: 800; letter-spacing: .09em; text-transform: uppercase; white-space: nowrap;
+}
+tbody tr { transition: background-color 100ms ease; }
+tbody tr:hover { background: color-mix(in srgb, var(--signal) 4%, transparent); }
+.data-table td { vertical-align: middle; }
+.primary-cell { min-width: 13rem; }
+.primary-cell > a, .primary-cell > strong { display: block; font-weight: 680; text-decoration: none; }
+.primary-cell .meta { display: block; margin-top: .12rem; }
+.route-cell { min-width: 11rem; }
+.route-cell .meta { display: block; margin-top: .12rem; }
+.capabilities { display: flex; flex-wrap: wrap; gap: .25rem; max-width: 24rem; }
+.tag { display: inline-flex; align-items: center; min-height: 1.25rem; padding: .08rem .35rem; border: 1px solid var(--rule); border-radius: 4px; color: var(--muted); background: var(--panel-raised); font-size: .67rem; white-space: nowrap; }
+.status { display: inline-flex; align-items: center; gap: .35rem; min-height: 1.35rem; padding: .08rem .42rem; border: 1px solid var(--rule); border-radius: 999px; font-size: .68rem; font-weight: 700; white-space: nowrap; }
+.status::before { content: ""; width: .32rem; height: .32rem; border-radius: 50%; background: currentColor; }
+.status + .meta { display: block; margin-top: .18rem; }
+.status--good { color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, var(--rule)); background: var(--good-soft); }
+.status--bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--rule)); background: var(--bad-soft); }
+.status--active { color: var(--signal); border-color: color-mix(in srgb, var(--signal) 35%, var(--rule)); background: var(--signal-soft); }
+.status--muted { color: var(--muted); background: var(--panel-raised); }
+.bad { color: var(--bad); font-weight: 680; }
+.ok { color: var(--good); }
+.empty-state { padding: 1.1rem; border: 1px dashed var(--rule-strong); border-radius: 7px; color: var(--muted); background: var(--panel); }
+.rate-limit { display: flex; align-items: center; gap: .55rem; margin: .65rem 0 0; color: var(--muted); font-size: .72rem; }
+.rate-limit::before { content: "budget"; padding: .06rem .32rem; border: 1px solid var(--rule); border-radius: 3px; font-size: .58rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.detail-header { padding-bottom: 1rem; border-bottom: 1px solid var(--rule); }
+.detail-title { display: flex; align-items: center; flex-wrap: wrap; gap: .7rem; }
+.detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 17rem; gap: 1.2rem; align-items: start; }
+.detail-aside { position: sticky; top: 1rem; padding: .8rem; border: 1px solid var(--rule); border-radius: 7px; background: var(--panel); }
+.detail-aside dl { margin: 0; display: grid; gap: .7rem; }
+.detail-aside dt { color: var(--muted); font-size: .62rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.detail-aside dd { margin: .12rem 0 0; overflow-wrap: anywhere; }
+.route-trace { position: relative; margin: .5rem 0 1rem; padding-left: 1.2rem; }
+.route-trace::before { content: ""; position: absolute; left: .28rem; top: .7rem; bottom: .7rem; width: 1px; background: var(--rule-strong); }
+.route-step { position: relative; margin: 0 0 .55rem; padding: .62rem .72rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); }
+.route-step::before { content: ""; position: absolute; left: -1.13rem; top: .9rem; width: .43rem; height: .43rem; border: 2px solid var(--paper); border-radius: 50%; background: var(--signal); box-shadow: 0 0 0 1px var(--signal); }
+.route-step p { margin: 0; }
+.route-exclusions { margin: .5rem 0 0; padding: .45rem .6rem; border-top: 1px solid var(--rule); color: var(--muted); }
+.route-exclusions ul { margin: .35rem 0 0; padding-left: 1.1rem; }
+.turn { margin: .65rem 0; border: 1px solid var(--rule); border-radius: 7px; background: var(--panel); overflow: hidden; }
+.turn-head { display: flex; justify-content: space-between; gap: 1rem; padding: .68rem .78rem; border-bottom: 1px solid var(--rule); background: var(--panel-raised); }
+.turn-stats { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .3rem .75rem; color: var(--muted); font: .68rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.turn-body { padding: .25rem .78rem .7rem; }
+.payload-block { margin-top: .7rem; }
+.payload-block > .meta { margin: 0 0 .3rem; font-size: .64rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+pre { margin: 0; padding: .7rem .78rem; max-height: 28rem; overflow: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--rule); border-radius: 5px; background: var(--paper); color: var(--text); }
+details { margin: .55rem 0; border: 1px solid var(--rule); border-radius: 5px; background: var(--panel); }
+summary { cursor: pointer; padding: .48rem .62rem; color: var(--muted); font-size: .72rem; font-weight: 700; }
+details > pre, details > p, details > table { margin: 0 .62rem .62rem; }
+.form-shell { max-width: 52rem; }
+.form-section { margin: 1rem 0; padding: 1rem; border: 1px solid var(--rule); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
+.form-section-title { margin: 0 0 .85rem; padding-bottom: .55rem; border-bottom: 1px solid var(--rule); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem 1rem; }
+label { display: block; margin: 0; }
+label > span { display: block; margin-bottom: .28rem; color: var(--text); font-size: .72rem; font-weight: 700; }
+.help { display: block; margin-top: .3rem; color: var(--muted); font-size: .68rem; font-weight: 450; line-height: 1.4; }
+input[type=text], input[type=number], select {
+  width: 100%; min-height: 2.2rem; padding: .38rem .5rem;
+  border: 1px solid var(--rule-strong); border-radius: 5px; background: var(--paper); color: var(--text); font: inherit;
+}
+input[readonly] { color: var(--muted); background: var(--panel-raised); }
+input[type=checkbox] { accent-color: var(--signal); }
+.choice-row { display: flex; flex-wrap: wrap; gap: .45rem 1rem; }
+.choice-row label, .scores label { display: inline-flex; align-items: center; gap: .38rem; min-height: 1.7rem; font-size: .73rem; }
+fieldset { min-width: 0; margin: 0; padding: .72rem .8rem; border: 1px solid var(--rule); border-radius: 6px; }
+legend { padding: 0 .3rem; color: var(--muted); font-size: .68rem; font-weight: 700; }
+.form-actions { display: flex; align-items: center; gap: .7rem; margin-top: 1rem; }
+button, .button { display: inline-flex; align-items: center; justify-content: center; min-height: 2.15rem; padding: .4rem .8rem; border: 1px solid var(--signal); border-radius: 5px; background: var(--signal); color: #071421; font: 750 .75rem/1 ui-sans-serif, sans-serif; cursor: pointer; text-decoration: none; }
+button:hover, .button:hover { filter: brightness(1.06); color: #071421; }
+button.danger { border-color: var(--bad); background: transparent; color: var(--bad); }
+.banner { padding: .68rem .78rem; margin: 1rem 0; border: 1px solid var(--rule); border-left: 3px solid currentColor; border-radius: 5px; background: var(--panel); }
+.banner.warn { color: var(--warn); background: var(--warn-soft); }
+.banner.done { color: var(--good); background: var(--good-soft); }
+.error { padding: .65rem .75rem; color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 38%, var(--rule)); border-radius: 5px; background: var(--bad-soft); }
+@media (max-width: 880px) {
+  .app-shell { grid-template-columns: 1fr; }
+  .rail { position: static; width: 100%; height: auto; padding: .55rem .7rem; }
+  .brand { padding: .15rem .35rem .55rem; }
+  .brand-mark { width: 1.65rem; height: 1.65rem; }
+  .brand-copy span, .rail-label, .rail-foot { display: none; }
+  .rail nav { display: flex; overflow-x: auto; }
+  .rail nav a { flex: 0 0 auto; min-height: 1.9rem; }
+  main { padding: 1.3rem 1rem 3rem; }
+  .detail-grid { grid-template-columns: 1fr; }
+  .detail-aside { position: static; order: -1; }
+}
+@media (max-width: 640px) {
+  .page-heading { align-items: flex-start; flex-direction: column; gap: .7rem; }
+  .monitor-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .monitor-strip > div:nth-child(2) { border-right: 0; }
+  .monitor-strip > div:nth-child(-n+2) { border-bottom: 1px solid var(--rule); }
+  .form-grid { grid-template-columns: 1fr; }
+  .turn-head { flex-direction: column; }
+  .turn-stats { justify-content: flex-start; }
+  .table-shell--cards { overflow: visible; border: 0; background: transparent; box-shadow: none; }
+  .table-shell--cards .data-table, .table-shell--cards tbody { display: block; }
+  .table-shell--cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .table-shell--cards tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: .55rem; padding: .55rem .68rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--panel); box-shadow: var(--shadow); }
+  .table-shell--cards td { display: block; padding: .28rem 0; border: 0; min-width: 0; overflow-wrap: anywhere; }
+  .table-shell--cards td::before { content: attr(data-label); display: block; margin-bottom: .12rem; color: var(--muted); font-size: .57rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+  .table-shell--cards td.primary-cell { grid-column: 1 / -1; padding-bottom: .45rem; border-bottom: 1px solid var(--rule); margin-bottom: .18rem; }
+  .table-shell--cards td.route-cell { min-width: 0; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
 """
 
 
@@ -187,6 +396,12 @@ class ConsultDashboard:
             return HTTPStatus.OK, self.index()
         if path.startswith("/consultation/"):
             return self.consultation(unquote(path.removeprefix("/consultation/")))
+        if path == "/reviews":
+            return HTTPStatus.OK, self.reviews_page()
+        if path == "/reviewers":
+            return self._if_editable(lambda: (HTTPStatus.OK, self.reviewers_page(query)))
+        if path.startswith("/reviews/"):
+            return self.review(unquote(path.removeprefix("/reviews/")))
         if path == "/agents":
             return self._if_editable(lambda: (HTTPStatus.OK, self.agents_page(query)))
         if path == "/agents/new":
@@ -212,17 +427,52 @@ class ConsultDashboard:
         return render()
 
     def index(self) -> str:
-        link = (
-            " &middot; <a href='/agents'>configure agents</a>"
+        actions = (
+            "<div class=form-actions><a class=button href='/agents'>Configure agents</a>"
+            "<a href='/reviewers'>Configure reviewers</a></div>"
             if self.config.dashboard.editable
             else ""
         )
         return _document(
             "Consultations",
-            f"<h1>Consult Protocol v1</h1><p class=meta>orchestrator-mcp-server {_e(self.version)}"
-            f" &middot; {_e(str(self.config.database_path))}{link}</p>"
-            f"<h2>Agents</h2>{self._agents_table()}{self._rate_limit_line()}"
-            f"<h2>Consultations</h2>{self._consultations_table()}",
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Consult Protocol v1</p><h1>Operations monitor</h1>"
+            "<p class=context-line>"
+            f"<span>orchestrator-mcp-server {_e(self.version)}</span>"
+            f"<span>{_e(str(self.config.database_path))}</span></p></div>{actions}</header>"
+            f"{self._monitor_strip()}"
+            "<section><div class=section-heading><h2>Consultations</h2>"
+            "<span class=meta>Newest 200</span></div>"
+            f"{self._consultations_table()}</section>"
+            f"{self._reviews_section()}"
+            "<section><div class=section-heading><h2>Agents</h2>"
+            f"<span class=meta>{len(self.config.agents)} configured</span></div>"
+            f"{self._agents_table()}{self._rate_limit_line()}</section>",
+            editable=self.config.dashboard.editable,
+        )
+
+    def _monitor_strip(self) -> str:
+        rows = self._query(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN status NOT IN ('complete', 'failed', 'cancelled') THEN 1 ELSE 0 END) "
+            "AS active, "
+            "SUM(CASE WHEN status IN ('failed', 'cancelled') THEN 1 ELSE 0 END) AS stopped, "
+            "(SELECT COUNT(*) FROM consultation_turns WHERE error_code IS NOT NULL) AS failures "
+            "FROM consultations"
+        )
+        stats = rows[0] if rows else None
+        total = int(stats["total"] or 0) if stats else 0
+        active = int(stats["active"] or 0) if stats else 0
+        stopped = int(stats["stopped"] or 0) if stats else 0
+        failures = int(stats["failures"] or 0) if stats else 0
+        enabled = sum(agent.enabled for agent in self.config.agents.values())
+        return (
+            "<dl class=monitor-strip aria-label='Current operating state'>"
+            f"<div><dt>Consultations</dt><dd>{total}</dd></div>"
+            f"<div><dt>Active</dt><dd>{active}</dd></div>"
+            f"<div><dt>Stopped / failed turns</dt><dd>{stopped} / {failures}</dd></div>"
+            f"<div><dt>Agents enabled</dt><dd>{enabled} / {len(self.config.agents)}</dd></div>"
+            "</dl>"
         )
 
     def _agents_table(self) -> str:
@@ -236,27 +486,29 @@ class ConsultDashboard:
         rows = []
         for agent_id, agent in sorted(self.config.agents.items()):
             status = latest.get(agent_id)
-            scores = ", ".join(f"{k} {v}" for k, v in sorted(agent.scores.items())) or "--"
+            scores = "".join(
+                f"<span class=tag>{_e(k)} {v}</span>" for k, v in sorted(agent.scores.items())
+            ) or "<span class=meta>none</span>"
             rows.append(
                 "<tr>"
-                f"<td><code>{_e(agent_id)}</code></td>"
-                f"<td>{_e(agent.runtime)}</td>"
-                f"<td><code>{_e(agent.model)}</code></td>"
-                f"<td>{agent.priority}</td>"
-                f"<td>{'yes' if agent.enabled else 'no'}</td>"
-                f"<td>{_e(scores)}</td>"
-                f"<td>{'yes' if agent.web_search else 'no'}</td>"
-                f"<td>{_status_cell(status)}</td>"
+                f"<td class=primary-cell data-label=Agent><strong><code>{_e(agent_id)}</code></strong>"
+                f"<span class=meta>{_e(agent.runtime)} &middot; <code>{_e(agent.model)}</code></span></td>"
+                f"<td data-label=Availability>{_status_cell(status)}"
+                f"<span class=meta>{'enabled' if agent.enabled else 'disabled'}</span></td>"
+                f"<td data-label=Routing><span class=meta>priority {agent.priority}</span>"
+                f"<div class=capabilities>{scores}</div></td>"
+                f"<td data-label=Web>{'yes' if agent.web_search else 'no'}</td>"
                 # Text to copy, never a button: logging a runtime in is the operator's
                 # action on their own account, and this server has no part in it.
-                f"<td><code>{_e(adapter_for(agent, self.config).connect_command(agent))}</code></td>"
+                f"<td data-label='Connect with'><code>"
+                f"{_e(adapter_for(agent, self.config).connect_command(agent))}</code></td>"
                 "</tr>"
             )
-        head = (
-            "<tr><th>agent<th>runtime<th>model<th>priority<th>enabled<th>scores"
-            "<th>web<th>last status<th>connect with</tr>"
+        head = "<thead><tr><th>Agent<th>Availability<th>Routing<th>Web<th>Connect with</tr></thead>"
+        return (
+            "<div class='table-shell table-shell--cards'>"
+            f"<table class=data-table>{head}<tbody>{''.join(rows)}</tbody></table></div>"
         )
-        return f"<table>{head}{''.join(rows)}</table>"
 
     def _rate_limit_line(self) -> str:
         """What is left of the Codex subscription window, when anything knows.
@@ -275,7 +527,7 @@ class ConsultDashboard:
         when = _resets(limit.get("resets_at"))
         plan = f" &middot; {_e(str(limit['plan_type']))} plan" if limit.get("plan_type") else ""
         return (
-            f"<p class=meta>codex usage: {limit['used_percent']:.0f}%{window} used{when}{plan}"
+            f"<p class=rate-limit>codex usage: {limit['used_percent']:.0f}%{window} used{when}{plan}"
             # Said plainly because it is: this is whatever the last consultation was
             # told, not a number this page went and asked for.
             " &middot; as of the last consultation</p>"
@@ -285,33 +537,40 @@ class ConsultDashboard:
         rows = self._query(
             "SELECT c.id, c.created_at, c.updated_at, c.target_agent_id, c.target_model, "
             "c.capability, c.conversation_label, c.status, "
+            "(SELECT t.user_prompt FROM consultation_turns t WHERE t.consultation_id = c.id "
+            " ORDER BY t.sequence_number LIMIT 1) AS first_prompt, "
             "(SELECT COUNT(*) FROM consultation_turns t WHERE t.consultation_id = c.id) AS turns, "
             "(SELECT COUNT(*) FROM consultation_turns t WHERE t.consultation_id = c.id "
             " AND t.error_code IS NOT NULL) AS failures "
             "FROM consultations c ORDER BY c.created_at DESC LIMIT 200"
         )
         if not rows:
-            return "<p class=meta>No consultations recorded yet.</p>"
+            return (
+                "<div class=empty-state><strong>No consultations recorded yet.</strong> "
+                "New consultations will appear here with their route and current state.</div>"
+            )
 
         body = "".join(
             "<tr>"
-            f"<td><a href='/consultation/{_e(row['id'])}'><code>{_e(row['id'][:8])}</code></a></td>"
-            f"<td class=meta>{_e(row['created_at'])}</td>"
-            f"<td><code>{_e(row['target_agent_id'])}</code></td>"
-            f"<td><code>{_e(row['target_model'])}</code></td>"
-            f"<td>{_e(row['capability'])}</td>"
-            f"<td>{_e(row['conversation_label'] or '')}</td>"
-            f"<td>{row['turns']}</td>"
-            f"<td class={'bad' if row['failures'] else 'ok'}>{row['failures']}</td>"
-            f"<td>{_e(row['status'])}</td>"
+            f"<td class=primary-cell data-label=Consultation>"
+            f"<a href='/consultation/{_e(row['id'])}'>"
+            f"{_e(row['conversation_label'] or _short(row['first_prompt'], 72) or 'Untitled consultation')}</a>"
+            f"<span class=meta><code>{_e(row['id'][:8])}</code> &middot; {_e(row['capability'])}</span></td>"
+            f"<td class=route-cell data-label=Route><code>{_e(row['target_agent_id'])}</code>"
+            f"<span class=meta><code>{_e(row['target_model'])}</code></span></td>"
+            f"<td class=meta data-label=Started>{_e(row['created_at'])}</td>"
+            f"<td data-label=Activity>{row['turns']} turn{'s' if row['turns'] != 1 else ''}"
+            f"<span class={'bad' if row['failures'] else 'meta'}> &middot; "
+            f"{row['failures']} failed</span></td>"
+            f"<td data-label=State>{_status_word(row['status'])}</td>"
             "</tr>"
             for row in rows
         )
-        head = (
-            "<tr><th>id<th>started<th>agent<th>model<th>capability<th>label"
-            "<th>turns<th>failed<th>status</tr>"
+        head = "<thead><tr><th>Consultation<th>Route<th>Started<th>Activity<th>State</tr></thead>"
+        return (
+            "<div class='table-shell table-shell--cards'>"
+            f"<table class=data-table>{head}<tbody>{body}</tbody></table></div>"
         )
-        return f"<table>{head}{body}</table>"
 
     def consultation(self, consultation_id: str) -> tuple[int, str]:
         rows = self._query("SELECT * FROM consultations WHERE id = ?", (consultation_id,))
@@ -322,22 +581,30 @@ class ConsultDashboard:
         consultation = rows[0]
         return HTTPStatus.OK, _document(
             f"Consultation {consultation_id[:8]}",
-            f"<p><a href='/'>&larr; all consultations</a></p>"
+            "<a class=back-link href='/'>&larr; Operations monitor</a>"
+            "<header class=detail-header><p class=eyebrow>Consultation trace</p>"
+            "<div class=detail-title>"
             f"<h1>{_e(consultation['capability'])} &rarr; "
             f"<code>{_e(consultation['target_agent_id'])}</code></h1>"
-            f"<p class=meta>{_e(consultation['id'])} &middot; "
-            f"model <code>{_e(consultation['target_model'])}</code> &middot; "
-            f"runtime {_e(consultation['target_runtime'])} &middot; "
-            f"asked by {_e(consultation['origin_runtime'])} &middot; "
-            f"{_e(consultation['protocol_version'])} &middot; "
-            f"config {_e(consultation['config_hash'])} &middot; "
-            f"{_e(consultation['created_at'])}</p>"
+            f"{_status_word(consultation['status'])}</div>"
+            f"<p class=context-line><span><code>{_e(consultation['id'])}</code></span>"
+            f"<span>{_e(consultation['created_at'])}</span></p></header>"
+            "<div class=detail-grid><div>"
+            f"<h2>Routing</h2>{self._routing(consultation_id)}"
+            f"<h2>Turns</h2>{self._turns(consultation_id)}</div>"
+            "<aside class=detail-aside aria-label='Consultation metadata'><dl>"
+            f"<div><dt>Agent</dt><dd><code>{_e(consultation['target_agent_id'])}</code></dd></div>"
+            f"<div><dt>Model</dt><dd><code>{_e(consultation['target_model'])}</code></dd></div>"
+            f"<div><dt>Runtime</dt><dd>{_e(consultation['target_runtime'])}</dd></div>"
+            f"<div><dt>Asked by</dt><dd>{_e(consultation['origin_runtime'])}</dd></div>"
+            f"<div><dt>Protocol</dt><dd>{_e(consultation['protocol_version'])}</dd></div>"
+            f"<div><dt>Config</dt><dd><code>{_e(consultation['config_hash'])}</code></dd></div>"
             # The native session id is not shown: it is the consulted CLI's handle on
             # a live session, and a page has no use for it.
-            f"<p class=meta>native session "
-            f"{'bound' if consultation['native_session_id'] else 'not bound'}</p>"
-            f"<h2>Routing</h2>{self._routing(consultation_id)}"
-            f"<h2>Turns</h2>{self._turns(consultation_id)}",
+            f"<div><dt>Native session</dt><dd>"
+            f"{'bound' if consultation['native_session_id'] else 'not bound'}</dd></div>"
+            "</dl></aside></div>",
+            editable=self.config.dashboard.editable,
         )
 
     def _routing(self, consultation_id: str) -> str:
@@ -357,14 +624,18 @@ class ConsultDashboard:
                 for item in excluded
             )
             body += (
-                f"<p>selected <code>{_e(row['selected_agent'] or 'none')}</code>"
-                f"{' (explicitly named)' if row['explicit'] else ' (by score)'}"
+                "<article class=route-step>"
+                f"<p><span class=meta>{_e(row['capability'])} route</span><br>"
+                f"selected <code>{_e(row['selected_agent'] or 'none')}</code> "
+                f"<span class=meta>{'explicitly named' if row['explicit'] else 'by score'}</span>"
                 + (f" &middot; <span class=bad>{_e(row['error_code'])}</span>"
                    if row["error_code"] else "")
                 + "</p>"
-                + (f"<p class=meta>not considered:</p><ul>{reasons}</ul>" if reasons else "")
+                + ("<div class=route-exclusions><span>Not considered</span>"
+                   f"<ul>{reasons}</ul></div>" if reasons else "")
+                + "</article>"
             )
-        return body
+        return f"<div class=route-trace>{body}</div>"
 
     def _turns(self, consultation_id: str) -> str:
         rows = self._query(
@@ -378,24 +649,358 @@ class ConsultDashboard:
         for row in rows:
             cost = f"${row['cost_usd']:.5f}" if row["cost_usd"] is not None else "--"
             header = (
+                "<div class=turn-head>"
                 f"<h3>Turn {row['sequence_number']} &middot; {_e(row['source_mode'])}</h3>"
-                f"<p class=meta>{row['latency_ms']} ms &middot; "
-                f"{row['input_tokens']} in / {row['output_tokens']} out &middot; {cost} &middot; "
-                f"{_e(row['created_at'])}"
+                f"<div class=turn-stats><span>{row['latency_ms']} ms</span>"
+                f"<span>{row['input_tokens']} in / {row['output_tokens']} out</span>"
+                f"<span>{cost}</span><span>{_e(row['created_at'])}</span>"
                 + (f" &middot; <span class=bad>{_e(row['error_code'])}</span>"
                    if row["error_code"] else "")
-                + "</p>"
+                + "</div></div>"
             )
             sections.append(
-                header
+                "<article class=turn>" + header + "<div class=turn-body>"
                 + _block("Prompt", row["user_prompt"])
                 + _block("Context", row["context"])
                 + _block("Compiled prompt", row["compiled_prompt"])
                 + _block("Answer", _pretty(row["validated_response_json"]))
                 + _block("Raw output", row["raw_output"])
+                + "</div></article>"
             )
         return "".join(sections)
 
+    # --- reviews -------------------------------------------------------------
+
+    def _reviews_ready(self) -> bool:
+        """Whether the migration that creates `reviews` has run yet.
+
+        This connection is `mode=ro` and could not create the table if it wanted to, so
+        a server that has not been restarted since this version shipped leaves every
+        review query raising `no such table` -- on a page whose whole job is to stay
+        readable. Probing `sqlite_master` turns that into a sentence about restarting.
+        """
+        return bool(
+            self._query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reviews'")
+        )
+
+    def _reviews_missing(self) -> str:
+        """Why there is no review table to read, or "" when there is one.
+
+        Two different absences, and telling someone to restart is only the answer to
+        one of them: a database that does not exist yet is a server that has never
+        consulted anything, and no restart will conjure a review into it.
+        """
+        if self._reviews_ready():
+            return ""
+        if not Path(self.config.database_path).exists():
+            return "No reviews recorded yet."
+        return NOT_MIGRATED
+
+    def _review_rows(self, limit: int) -> list[sqlite3.Row]:
+        return self._query(
+            "SELECT r.id, r.created_at, r.mode, r.status, r.outcome, r.goal, "
+            "r.parent_review_id, "
+            "(SELECT COUNT(*) FROM review_consultations c WHERE c.review_id = r.id) "
+            "  AS reviewers, "
+            "(SELECT COUNT(*) FROM review_consultations c WHERE c.review_id = r.id "
+            " AND c.error_code IS NOT NULL) AS failures "
+            "FROM reviews r ORDER BY r.created_at DESC LIMIT ?",
+            (limit,),
+        )
+
+    def _reviews_section(self) -> str:
+        """The newest few on the index -- and nothing at all where reviews are unused.
+
+        An install with no `review:` block and no review history gets no empty section
+        advertising a feature it has not configured. One that *has* configured reviews
+        gets the un-migrated notice, because there the missing table is news.
+        """
+        missing = self._reviews_missing()
+        if missing:
+            return (
+                "<section><div class=section-heading><h2>Reviews</h2></div>"
+                f"<div class=empty-state>{_e(missing)}</div></section>"
+                if self.config.review is not None
+                else ""
+            )
+        rows = self._review_rows(10)
+        if not rows and self.config.review is None:
+            return ""
+        more = "<a href='/reviews'>All reviews</a>" if rows else ""
+        return (
+            "<section><div class=section-heading><h2>Reviews</h2>"
+            f"{more}</div>{self._reviews_table(rows)}</section>"
+        )
+
+    def _reviews_table(self, rows: list[sqlite3.Row]) -> str:
+        if not rows:
+            return "<div class=empty-state>No reviews recorded yet.</div>"
+        body = "".join(
+            "<tr>"
+            f"<td class=primary-cell data-label=Review>"
+            f"<a href='/reviews/{_e(row['id'])}'>{_e(_short(row['goal'], 90) or 'Untitled review')}</a>"
+            f"<span class=meta><code>{_e(row['id'][:8])}</code> &middot; {_e(row['mode'])}"
+            f"{' &middot; recheck' if row['parent_review_id'] else ''}</span></td>"
+            f"<td data-label=State>{_status_word(row['status'])}</td>"
+            f"<td data-label=Outcome>{_e(row['outcome'] or '--')}</td>"
+            f"<td data-label=Coverage>{row['reviewers']} reviewer{'s' if row['reviewers'] != 1 else ''}"
+            f"<span class={'bad' if row['failures'] else 'meta'}> &middot; {row['failures']} failed</span></td>"
+            f"<td class=meta data-label=Started>{_e(row['created_at'])}</td>"
+            "</tr>"
+            for row in rows
+        )
+        head = "<thead><tr><th>Review<th>State<th>Outcome<th>Coverage<th>Started</tr></thead>"
+        return (
+            "<div class='table-shell table-shell--cards'>"
+            f"<table class=data-table>{head}<tbody>{body}</tbody></table></div>"
+        )
+
+    def reviews_page(self) -> str:
+        head = (
+            "<a class=back-link href='/'>&larr; Operations monitor</a>"
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Independent review</p><h1>Reviews</h1>"
+            "<p class=context-line><span>Recent review runs and rechecks</span></p>"
+            "</div></header>"
+        )
+        missing = self._reviews_missing()
+        if missing:
+            return _document(
+                "Reviews", f"{head}<div class=empty-state>{_e(missing)}</div>",
+                editable=self.config.dashboard.editable,
+            )
+        return _document(
+            "Reviews", head + self._reviews_table(self._review_rows(200)),
+            editable=self.config.dashboard.editable,
+        )
+
+    def review(self, review_id: str) -> tuple[int, str]:
+        missing = self._reviews_missing()
+        if missing:
+            return HTTPStatus.NOT_FOUND, _document(
+                "Reviews",
+                f"<h1>Reviews</h1><p class=meta>{_e(missing)}</p>"
+                "<p><a href='/'>Back</a></p>",
+            )
+        rows = self._query("SELECT * FROM reviews WHERE id = ?", (review_id,))
+        if not rows:
+            return HTTPStatus.NOT_FOUND, _document(
+                "Not found", "<p>No such review.</p><p><a href='/reviews'>Back</a></p>"
+            )
+        review = rows[0]
+        reviewers = self._query(
+            "SELECT * FROM review_consultations WHERE review_id = ? ORDER BY agent_id",
+            (review_id,),
+        )
+        findings = [
+            finding
+            for row in reviewers
+            for finding in _findings_of(row)
+        ]
+        parent = (
+            f" &middot; recheck of <a href='/reviews/{_e(review['parent_review_id'])}'>"
+            f"<code>{_e(review['parent_review_id'][:8])}</code></a>"
+            if review["parent_review_id"]
+            else ""
+        )
+        return HTTPStatus.OK, _document(
+            f"Review {review_id[:8]}",
+            "<a class=back-link href='/reviews'>&larr; All reviews</a>"
+            "<header class=detail-header><p class=eyebrow>Independent review trace</p>"
+            "<div class=detail-title>"
+            f"<h1>{_e(review['mode'])} review</h1>{_status_word(review['status'])}</div>"
+            f"<p class=context-line><span><code>{_e(review['id'])}</code></span>"
+            f"<span>outcome {_e(review['outcome'] or '--')}</span>"
+            f"<span>{_e(review['created_at'])}</span><span>updated {_e(review['updated_at'])}</span>"
+            f"<span>web {'requested' if review['web_requested'] else 'off'}</span>"
+            f"<span>{_secret_line(review['secret_hits_json'])}{parent}</span></p></header>"
+            f"{_material(review['material_json'])}"
+            # The stored copies, which are the redacted ones -- what a reviewer was
+            # sent is not kept anywhere this page can reach.
+            f"{_block('Goal (as stored)', review['goal'])}"
+            f"{_block('Context (as stored)', review['context'])}"
+            f"{_host_findings(review['host_findings_json'])}"
+            f"<h2>Reviewers</h2>{_reviewer_table(reviewers)}"
+            f"<h2>Findings</h2>{_findings_table(findings)}"
+            f"<h2>Synthesis</h2>{_synthesis(review['summary_json'])}"
+            f"<h2>Answers</h2>{_answers(reviewers)}"
+            f"{_fix_rounds(review['fix_rounds_json'])}"
+            f"{self._rechecks(review_id)}",
+            editable=self.config.dashboard.editable,
+        )
+
+    def _rechecks(self, review_id: str) -> str:
+        rows = self._query(
+            "SELECT id, created_at, status, outcome FROM reviews "
+            "WHERE parent_review_id = ? ORDER BY created_at",
+            (review_id,),
+        )
+        if not rows:
+            return ""
+        items = "".join(
+            f"<li><a href='/reviews/{_e(row['id'])}'><code>{_e(row['id'][:8])}</code></a> "
+            f"&mdash; {_status_word(row['status'])} "
+            f"<span class=meta>{_e(row['outcome'] or '')} {_e(row['created_at'])}</span></li>"
+            for row in rows
+        )
+        return f"<h2>Rechecks</h2><ul>{items}</ul>"
+
+    # --- configuring reviewers -----------------------------------------------
+
+    def _review_in_config(self) -> bool:
+        """Whether the operator's own file defines `review:`.
+
+        A `review:` block in both files is a startup error, not a merge -- the same
+        rule the agents follow -- so this page has to refuse the save rather than write
+        a file the next boot rejects. Read off disk for the reason `_written_ids`
+        gives: what that file said at boot is not what it says now.
+
+        A file this cannot read falls back to "yes, it is written there" whenever a
+        review block is configured at all. That over-refuses in one case (the block
+        came from the managed file and `config.yaml` has since become unreadable) and
+        under-refuses in none -- and a `config.yaml` that cannot be read is a server
+        that will not start either way. When no config path was supplied there is no
+        operator-owned file to inspect, so the answer is false.
+        """
+        if self.config_path is None:
+            return False
+        try:
+            document = yaml.safe_load(self.config_path.read_text()) or {}
+            consult = document.get("consult")
+            if not isinstance(consult, dict):
+                return self.config.review is not None
+            return "review" in consult
+        except (OSError, UnicodeDecodeError, AttributeError, yaml.YAMLError):
+            return self.config.review is not None
+
+    def _reviewable(self) -> dict[str, AgentConfig]:
+        """The agents this page can see, whichever file they live in.
+
+        `self.config.agents` alone is the boot snapshot, and an agent added through
+        this dashboard a minute ago is not in it -- refusing that one would refuse
+        exactly what the form is for.
+        """
+        managed, written = self._split_agents()
+        return written | managed
+
+    def reviewers_page(self, query: str = "") -> str:
+        params = parse_qs(query)
+        notice = (
+            "<p class='banner done'>Saved. It takes effect when the MCP server next "
+            "starts.</p>"
+            if params.get("saved")
+            else ""
+        )
+        return self.reviewers_form(notice=notice)
+
+    def reviewers_form(self, values: dict[str, str] | None = None,
+                       error: str = "", notice: str = "") -> str:
+        """Who reviews: one agent for `review`, one to five for `deep_review`."""
+        agents = self._reviewable()
+        current = self.config.review or ReviewConfig.model_construct(
+            reviewers=[], deep_reviewers=[]
+        )
+        chosen = values or {
+            **({"reviewer": current.reviewers[0]} if current.reviewers else {}),
+            **{f"deep.{aid}": "on" for aid in current.deep_reviewers},
+        }
+
+        if self._review_in_config():
+            return _document(
+                "Reviewers",
+                "<a class=back-link href='/'>&larr; Operations monitor</a>"
+                "<header class=page-heading><div class=page-heading-copy>"
+                "<p class=eyebrow>Review configuration</p><h1>Reviewers</h1>"
+                "</div></header><div class=empty-state>"
+                f"<p>The <code>review:</code> block is defined in {_e(self._config_name)}. "
+                "Edit it there, or delete it from that file first -- the server refuses "
+                "to start with both.</p>"
+                f"{_reviewer_summary(current)}</div>",
+            )
+
+        offered = sorted(agents.items())
+        options = "".join(
+            f"<option value='{_e(aid)}'"
+            f"{' selected' if chosen.get('reviewer') == aid else ''}"
+            f"{' disabled' if _not_reviewable(agent, aid) else ''}>{_e(aid)}"
+            f"{_e(_why_not(agent, aid))}</option>"
+            for aid, agent in offered
+        )
+        boxes = "".join(
+            f"<label><input type=checkbox name='deep.{_e(aid)}'"
+            f"{' checked' if chosen.get(f'deep.{aid}') else ''}"
+            f"{' disabled' if _not_reviewable(agent, aid) else ''}> "
+            f"<code>{_e(aid)}</code> <span class=meta>{_e(agent.runtime)} "
+            f"{_e(agent.model)}{_e(_why_not(agent, aid))}</span></label>"
+            for aid, agent in offered
+        ) or "<p class=meta>No agents configured yet.</p>"
+
+        return _document(
+            "Reviewers",
+            "<a class=back-link href='/'>&larr; Operations monitor</a>"
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Review configuration</p><h1>Reviewers</h1>"
+            f"<p class=context-line><span>{_e(str(self.config.managed_agents_path))}</span></p>"
+            "</div></header><div class=form-shell>"
+            f"{notice}{self._restart_banner()}"
+            + (f"<p class=error>{_e(error)}</p>" if error else "")
+            + "<form method=post action='/reviewers'>"
+            f"<input type=hidden name=_token value='{_e(self.token)}'>"
+            "<section class=form-section><h2 class=form-section-title>Standard review</h2>"
+            "<label><span>Reviewer</span>"
+            f"<select name=reviewer><option value=''>none</option>{options}</select>"
+            "<small class=help>A standard review asks one agent. Use deep review for independent comparison.</small>"
+            "</label></section>"
+            "<section class=form-section><h2 class=form-section-title>Deep review</h2>"
+            f"<fieldset><legend>Select 1 to {MAX_DEEP_REVIEWERS} independent reviewers</legend>"
+            f"<div class=choice-row>{boxes}</div></fieldset>"
+            "<p class=help>Reviewers do not see one another's answers. An agent must be enabled and "
+            "offered <code>review</code> work before it can be selected.</p></section>"
+            "<div class=form-actions><button type=submit>Save reviewers</button>"
+            "<a href='/'>Cancel</a></div></form></div>",
+        )
+
+    def save_reviewers(self, form: dict[str, str]) -> tuple[int, str, str | None]:
+        reviewer = (form.get("reviewer") or "").strip()
+        deep = [
+            key.removeprefix("deep.")
+            for key in form
+            if key.startswith("deep.") and key.removeprefix("deep.").strip()
+        ]
+        agents = self._reviewable()
+
+        def refuse(message: str, status: int = HTTPStatus.OK) -> tuple[int, str, str | None]:
+            return status, self.reviewers_form(values=form, error=message), None
+
+        if self._review_in_config():
+            # Not back into the form: `reviewers_form` renders the read-only page in
+            # this case, and it would swallow the message explaining the refusal.
+            return HTTPStatus.CONFLICT, _document(
+                "Not saved",
+                f"<h1>Not saved</h1><p><code>review:</code> is defined in "
+                f"{_e(self._config_name)}. Delete it there first -- the server refuses "
+                "to start with the block in both files.</p>"
+                "<p><a href='/reviewers'>Back</a></p>",
+            ), None
+        for agent_id in sorted({reviewer, *deep} - {""}):
+            problem = _not_reviewable(agents.get(agent_id), agent_id)
+            if problem:
+                return refuse(problem)
+        try:
+            block = ReviewConfig(
+                reviewers=[reviewer] if reviewer else [], deep_reviewers=sorted(deep)
+            )
+        except ValidationError as exc:
+            return refuse(_first_error(exc))
+
+        def store(document: dict[str, Any]) -> tuple[int, str] | None:
+            document["review"] = block.model_dump(mode="json")
+            return None
+
+        problem = self._rewrite_document(store)
+        if problem:
+            return refuse(problem[1], problem[0])
+        return HTTPStatus.SEE_OTHER, "", "/reviewers?saved=1"
 
     # --- configuring agents --------------------------------------------------
 
@@ -467,24 +1072,39 @@ class ConsultDashboard:
 
         Returns None when it wrote, or a status and a message when it did not.
         """
+        return self._rewrite_document(lambda document: change(document["agents"]))
+
+    def _rewrite_document(
+        self, change: Callable[[dict[str, Any]], tuple[int, str] | None]
+    ) -> tuple[int, str] | None:
+        """`_rewrite` over the whole managed document, agents and reviewers together.
+
+        Both keys are read once and written once, so an agent save cannot drop the
+        reviewer block it never looked at, and a reviewer save cannot drop an agent.
+        """
         with self._writing:
             try:
-                agents = read_managed(self.config.managed_agents_path)
+                document = read_managed_document(self.config.managed_agents_path)
             except (ConfigError, OSError) as exc:
                 return HTTPStatus.CONFLICT, str(exc)
-            refusal = change(agents)
+            refusal = change(document)
             if refusal is not None:
                 return refusal
+            agents = document["agents"]
             # What is about to be written has to be something the server can boot on.
             # The form cannot produce a bad entry, but it can be asked to save alongside
             # one a hand-edit left there -- and writing that back is this process
             # putting its name on a file that will refuse the next start. Both halves of
             # the boot rules here, unlike the page, which wants only the first.
-            unbootable = self._unbootable(agents) or self._duplicate_of_written(agents)
+            unbootable = (
+                self._unbootable(agents)
+                or self._unbootable_review(document["review"], agents)
+                or self._duplicate_of_written(agents)
+            )
             if unbootable:
                 return HTTPStatus.CONFLICT, unbootable
             try:
-                write_managed(self.config.managed_agents_path, agents)
+                write_managed(self.config.managed_agents_path, agents, document["review"])
             except OSError as exc:
                 # A readable file in a directory this user cannot write to. The read
                 # above says nothing about that, so the failure lands here and has to
@@ -602,6 +1222,29 @@ class ConsultDashboard:
                 return f"`{agent_id}` in this file is not a mapping of settings."
         return None
 
+    def _unbootable_review(self, review: Any, agents: dict[str, Any]) -> str | None:
+        """Why the managed review block would stop the next server boot."""
+        # Empty is absent, the same way `_merged_review` reads it.
+        if not review:
+            return None
+        try:
+            block = ReviewConfig(**review)
+        except (ValidationError, TypeError) as exc:
+            message = _first_error(exc) if isinstance(exc, ValidationError) else str(exc)
+            return f"`review:` in this file is not valid: {message}"
+        available = {
+            agent_id: agent
+            for agent_id, agent in self.config.agents.items()
+            if not agent.managed
+        }
+        for agent_id, data in agents.items():
+            available[agent_id] = AgentConfig(agent_id=agent_id, **_settings(data))
+        for where in ("reviewers", "deep_reviewers"):
+            for agent_id in getattr(block, where):
+                if problem := _not_reviewable(available.get(agent_id), agent_id):
+                    return f"`review:` in this file is not valid: {problem}"
+        return None
+
     def _restart_banner(self) -> str:
         """Say whether the running MCP server is on a different configuration.
 
@@ -638,22 +1281,24 @@ class ConsultDashboard:
         managed, written = self._split_agents()
         rows = "".join(
             "<tr>"
-            f"<td><code>{_e(aid)}</code></td>"
-            f"<td>{_e(agent.runtime)}</td>"
-            f"<td><code>{_e(agent.model)}</code></td>"
-            f"<td>{_e(agent.reasoning_effort or '--')}</td>"
-            f"<td>{'yes' if agent.enabled else 'no'}</td>"
-            f"<td>{_e(', '.join(f'{k} {v}' for k, v in sorted(agent.scores.items())) or '--')}</td>"
-            f"<td><a href='/agents/{_e(aid)}'>edit</a> &middot; "
+            f"<td class=primary-cell data-label=Agent><strong><code>{_e(aid)}</code></strong>"
+            f"<span class=meta>{_e(agent.runtime)} &middot; <code>{_e(agent.model)}</code></span></td>"
+            f"<td data-label=Effort>{_e(agent.reasoning_effort or '--')}</td>"
+            f"<td data-label=State>{_status_word('active' if agent.enabled else 'disabled')}</td>"
+            f"<td data-label=Capabilities><div class=capabilities>"
+            f"{''.join(f'<span class=tag>{_e(k)} {v}</span>' for k, v in sorted(agent.scores.items())) or '<span class=meta>none</span>'}"
+            f"</div></td>"
+            f"<td data-label=Actions><a href='/agents/{_e(aid)}'>edit</a> &middot; "
             f"{_delete_form(aid, self.token)}</td>"
             "</tr>"
             for aid, agent in sorted(managed.items())
         )
         managed_table = (
-            "<table><tr><th>agent<th>runtime<th>model<th>effort<th>enabled<th>scores"
-            f"<th></tr>{rows}</table>"
+            "<div class='table-shell table-shell--cards'><table class=data-table>"
+            "<thead><tr><th>Agent<th>Effort<th>State<th>Capabilities<th>Actions</tr></thead>"
+            f"<tbody>{rows}</tbody></table></div>"
             if rows
-            else "<p class=meta>No agents configured here yet.</p>"
+            else "<div class=empty-state>No agents configured here yet.</div>"
         )
 
         read_only = ""
@@ -672,11 +1317,14 @@ class ConsultDashboard:
 
         return _document(
             "Agents",
-            "<p><a href='/'>&larr; consultations</a></p><h1>Agents</h1>"
-            f"<p class=meta>{_e(str(self.config.managed_agents_path))}</p>"
+            "<a class=back-link href='/'>&larr; Operations monitor</a>"
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Routing configuration</p><h1>Agents</h1>"
+            f"<p class=context-line><span>{_e(str(self.config.managed_agents_path))}</span></p>"
+            "</div><a class=button href='/agents/new'>Add an agent</a></header>"
             f"{notice}{self._restart_banner()}"
             f"{managed_table}"
-            "<p><a href='/agents/new'>Add an agent</a></p>"
+            "<p><a href='/reviewers'>Configure reviewers</a></p>"
             f"{read_only}",
         )
 
@@ -737,8 +1385,12 @@ class ConsultDashboard:
 
         return _document(
             "Edit agent" if editing else "New agent",
-            "<p><a href='/agents'>&larr; agents</a></p>"
+            "<a class=back-link href='/agents'>&larr; Agents</a>"
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Routing configuration</p>"
             f"<h1>{'Edit' if editing else 'New'} agent</h1>"
+            "<p class=context-line><span>Choose where this runtime can receive work.</span></p>"
+            "</div></header><div class=form-shell>"
             + (f"<p class=error>{_e(error)}</p>" if error else "")
             + "<form method=post action='/agents'>"
             f"<input type=hidden name=_token value='{_e(self.token)}'>"
@@ -746,33 +1398,36 @@ class ConsultDashboard:
             # new agent that happens to be typed with the same id. `readonly` above is
             # the browser's half of that and is not a check.
             + (f"<input type=hidden name=_editing value='{_e(v.get('id', ''))}'>" if editing else "")
-            + f"<label><span>agent id</span><input type=text name=id required "
-            f"value='{_e(v.get('id', ''))}'{' readonly' if editing else ''}></label>"
-            f"<label><span>runtime</span><select name=runtime>{runtimes}</select></label>"
-            "<label><span>command &mdash; a name on PATH, or an absolute path. The Codex "
-            "CLI ships inside ChatGPT.app and is not on PATH.</span>"
-            f"<input type=text name=command required value='{_e(v.get('command', ''))}'></label>"
-            "<label><span>model &mdash; pick one of the known slugs or type any other. "
-            "On antigravity the reasoning level is part of the name; on codex and claude "
-            "it is the next field.</span>"
-            f"<input type=text name=model required list=model-presets "
-            f"value='{_e(v.get('model', ''))}'></label>"
+            + "<section class=form-section><h2 class=form-section-title>Identity</h2>"
+            "<div class=form-grid>"
+            f"<label><span>Agent ID</span><input type=text name=id required "
+            f"value='{_e(v.get('id', ''))}'{' readonly' if editing else ''}>"
+            "<small class=help>Stable name used in routing records and URLs.</small></label>"
+            f"<label><span>Runtime</span><select name=runtime>{runtimes}</select></label>"
+            "<label><span>Command</span>"
+            f"<input type=text name=command required value='{_e(v.get('command', ''))}'>"
+            "<small class=help>A name on PATH or an absolute path. The bundled Codex CLI is not on PATH.</small></label>"
+            "<label><span>Model</span>"
+            f"<input type=text name=model required list=model-presets value='{_e(v.get('model', ''))}'>"
+            "<small class=help>Choose a known slug or enter a newer one directly.</small></label>"
             f"<datalist id=model-presets>{models}</datalist>"
-            "<label><span>reasoning effort &mdash; codex only; unset means the model's "
-            "own default, which is not what your ~/.codex/config.toml says. Antigravity "
-            "carries the level in the model slug instead</span>"
-            f"<select name=reasoning_effort><option value=''>unset</option>{efforts}</select></label>"
-            f"<label><span>priority &mdash; lower wins a tie</span>"
-            f"<input type=number name=priority min=0 value='{_e(v.get('priority', '100'))}'></label>"
-            f"<label><input type=checkbox name=enabled{' checked' if v.get('enabled') else ''}> "
-            "enabled</label>"
-            f"<label><input type=checkbox name=web_search"
-            f"{' checked' if v.get('web_search') else ''}> web search &mdash; required "
-            "before a web-mode consultation will route here</label>"
-            "<fieldset class=scores><legend>capabilities &mdash; the work this agent is "
-            "offered. Unticked means never route it here; between two agents ticked for "
-            f"the same capability, the lower priority wins</legend>{scores}</fieldset>"
-            "<button type=submit>Save</button></form>",
+            "<label><span>Reasoning effort</span>"
+            f"<select name=reasoning_effort><option value=''>unset</option>{efforts}</select>"
+            "<small class=help>Codex only. Antigravity carries the level in the model slug.</small></label>"
+            f"<label><span>Priority</span><input type=number name=priority min=0 "
+            f"value='{_e(v.get('priority', '100'))}'>"
+            "<small class=help>Lower priority wins when scores tie.</small></label>"
+            "</div></section>"
+            "<section class=form-section><h2 class=form-section-title>Routing</h2>"
+            "<div class=choice-row>"
+            f"<label><input type=checkbox name=enabled{' checked' if v.get('enabled') else ''}> enabled</label>"
+            f"<label><input type=checkbox name=web_search{' checked' if v.get('web_search') else ''}> "
+            "web search</label></div>"
+            "<p class=help>Web search must be enabled before a web-mode consultation can route here.</p>"
+            "<fieldset class=scores><legend>Capabilities offered to this agent</legend>"
+            f"{scores}</fieldset></section>"
+            f"<div class=form-actions><button type=submit>{'Save changes' if editing else 'Add agent'}</button>"
+            "<a href='/agents'>Cancel</a></div></form></div>",
         )
 
     def save(self, form: dict[str, str]) -> tuple[int, str, str | None]:
@@ -968,7 +1623,7 @@ def _delete_form(agent_id: str, token: str) -> str:
         "<form method=post action='/agents/delete' style='display:inline'>"
         f"<input type=hidden name=_token value='{_e(token)}'>"
         f"<input type=hidden name=id value='{_e(agent_id)}'>"
-        "<button type=submit>delete</button></form>"
+        "<button class=danger type=submit>delete</button></form>"
     )
 
 
@@ -983,7 +1638,10 @@ def _e(value: object) -> str:
 def _block(label: str, value: str | None) -> str:
     if not value:
         return ""
-    return f"<p class=meta>{_e(label)}</p><pre>{_e(value)}</pre>"
+    return (
+        "<section class=payload-block>"
+        f"<p class=meta>{_e(label)}</p><pre>{_e(value)}</pre></section>"
+    )
 
 
 def _pretty(value: str | None) -> str | None:
@@ -1027,21 +1685,355 @@ def _resets(when: object) -> str:
 
 
 def _status_cell(row: sqlite3.Row | None) -> str:
+    """The newest recorded check, said as one.
+
+    "Last checked" and not a bare timestamp, because this page runs no subprocess: the
+    row is whatever the last preflight wrote, and a week-old one read as a fresh probe
+    is how an agent looks ready long after its login expired. `orchestrator_test_reviewers` is the
+    tool that actually asks.
+    """
     if row is None:
-        return "<span class=meta>never checked</span>"
+        return "<span class='status status--muted'>never checked</span>"
+    when = f"<span class=meta>last checked {_e(row['checked_at'])}</span>"
     if row["installed"] and row["authenticated"]:
-        return f"<span class=ok>ready</span> <span class=meta>{_e(row['checked_at'])}</span>"
+        return f"<span class='status status--good'>ready</span>{when}"
     label = "not installed" if not row["installed"] else "not connected"
-    detail = f" &middot; {_e(row['detail'])}" if row["detail"] else ""
-    return f"<span class=bad>{label}</span><span class=meta>{detail}</span>"
+    detail = f"<span class=meta>{_e(row['detail'])}</span>" if row["detail"] else ""
+    return f"<span class='status status--bad'>{label}</span>{detail}{when}"
 
 
-def _document(title: str, body: str) -> str:
+# --- reviews ----------------------------------------------------------------
+
+NOT_MIGRATED = (
+    "This database has no review tables yet. This page opens it read-only and cannot "
+    "create them -- restart the MCP server and it will add them at startup."
+)
+
+
+def _short(value: object, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _status_word(status: object) -> str:
+    """A status, coloured only where the colour says something.
+
+    `complete` is the only finished-well state; `failed` and `cancelled` are the two
+    a reader should not skim past. Everything between them is in progress and gets no
+    colour, because "running" is not news.
+    """
+    text = _e(status)
+    if status == "complete":
+        return f"<span class='status status--good'>{text}</span>"
+    if status in ("failed", "cancelled"):
+        return f"<span class='status status--bad'>{text}</span>"
+    if status in ("open", "running", "active", "awaiting_synthesis"):
+        return f"<span class='status status--active'>{text}</span>"
+    return f"<span class='status status--muted'>{text}</span>"
+
+
+def _loads(value: object, fallback: Any) -> Any:
+    """Stored JSON, or the fallback. A column this page cannot parse is a row it still
+    has to render -- half a review is worth more than a traceback."""
+    if not value:
+        return fallback
+    try:
+        return json.loads(str(value))
+    except ValueError:
+        return fallback
+
+
+def _secret_line(secret_hits_json: object) -> str:
+    hits = _loads(secret_hits_json, [])
+    if not isinstance(hits, list) or not hits:
+        return ""
+    where = ", ".join(
+        f"{_e(hit.get('field'))} line {_e(hit.get('line'))}"
+        for hit in hits
+        if isinstance(hit, dict)
+    )
+    # Positions, never values -- which is also all that was ever stored.
+    return f" &middot; <span class=bad>{len(hits)} secret-shaped</span> ({where})"
+
+
+def _material(material_json: object) -> str:
+    """The manifest the host declared. Not proof: this server never read those files,
+    so what it says is a disclosure the caller put on the record, not a measurement."""
+    items = _loads(material_json, [])
+    if not isinstance(items, list) or not items:
+        return ""
+    listed = "".join(
+        f"<li><code>{_e(item.get('label'))}</code> "
+        f"<span class=meta>{_e(item.get('kind'))} {_e(item.get('locator'))} &middot; "
+        f"{_e(item.get('chars'))} chars</span></li>"
+        for item in items
+        if isinstance(item, dict)
+    )
+    return f"<p class=meta>material, as declared by the caller:</p><ul>{listed}</ul>"
+
+
+def _host_findings(host_findings_json: object) -> str:
+    findings = _loads(host_findings_json, [])
+    if not isinstance(findings, list) or not findings:
+        return ""
+    listed = "".join(f"<li>{_e(item)}</li>" for item in findings)
+    return (
+        "<h2>The host's own reading</h2>"
+        "<p class=meta>Formed before any reviewer was asked, and shown to none of "
+        f"them.</p><ul>{listed}</ul>"
+    )
+
+
+def _fix_rounds(fix_rounds_json: object) -> str:
+    """What the host says it did about the findings, in the order it said so.
+
+    Reported, not verified: nothing in this server edits a file or runs a command,
+    so a round is an account of one. The heading says so rather than letting a
+    table of outcomes read like a record of work this machine watched happen.
+    """
+    rounds = _loads(fix_rounds_json, [])
+    if not isinstance(rounds, list) or not rounds:
+        return ""
+    rows = "".join(
+        f"<tr><td>{_e(item.get('recorded_at', ''))}</td>"
+        f"<td>{_e(item.get('outcome', ''))}</td>"
+        f"<td><code>{_e(', '.join(str(f) for f in item.get('finding_ids', [])))}</code></td>"
+        f"<td>{_e(item.get('notes', ''))}</td></tr>"
+        for item in rounds
+        if isinstance(item, dict)
+    )
+    return (
+        "<h2>Fix rounds</h2>"
+        "<p class=meta>As reported by the host AI. Nothing here edits files or runs "
+        "commands, so these are claims about work done elsewhere.</p>"
+        "<table><tr><th>Recorded</th><th>Outcome</th><th>Findings</th><th>Notes</th></tr>"
+        f"{rows}</table>"
+    )
+
+
+def _findings_of(row: sqlite3.Row) -> list[dict[str, Any]]:
+    findings = _loads(row["findings_json"], [])
+    return [item for item in findings if isinstance(item, dict)] if isinstance(
+        findings, list
+    ) else []
+
+
+def _reviewer_table(rows: list[sqlite3.Row]) -> str:
+    if not rows:
+        return "<p class=meta>No reviewer has been asked yet.</p>"
+    body = "".join(
+        "<tr>"
+        f"<td><code>{_e(row['agent_id'])}</code></td>"
+        f"<td>{_status_word(row['status'])}</td>"
+        f"<td>{len(_findings_of(row))}</td>"
+        f"<td class=bad>{_e(row['error_code'] or '')}</td>"
+        + (
+            f"<td><a href='/consultation/{_e(row['consultation_id'])}'>"
+            f"<code>{_e(str(row['consultation_id'])[:8])}</code></a></td>"
+            if row["consultation_id"]
+            else "<td class=meta>--</td>"
+        )
+        + f"<td class=meta>{_e(row['created_at'])}</td></tr>"
+        for row in rows
+    )
+    head = "<tr><th>reviewer<th>status<th>findings<th>error<th>consultation<th>answered</tr>"
+    return f"<table>{head}{body}</table>"
+
+
+def _findings_table(findings: list[dict[str, Any]]) -> str:
+    """Every reviewer's findings in one table, worst first.
+
+    Sorted by severity and not by reviewer on purpose: a lone Critical from one model
+    is exactly the row that must not be buried under another model's Minors.
+    """
+    if not findings:
+        return "<p class=meta>No findings recorded.</p>"
+    order = {severity: rank for rank, severity in enumerate(SEVERITIES)}
+    body = "".join(
+        "<tr>"
+        f"<td>{_severity(finding.get('severity'))}</td>"
+        f"<td><code>{_e(finding.get('location') or '')}</code></td>"
+        f"<td><code>{_e(finding.get('agent_id') or '')}</code></td>"
+        f"<td>{_e(finding.get('why') or '')}</td>"
+        f"<td>{_e(finding.get('fix') or '')}</td>"
+        "</tr>"
+        for finding in sorted(
+            findings, key=lambda f: order.get(f.get("severity"), len(order))
+        )
+    )
+    return (
+        "<table><tr><th>severity<th>location<th>reviewer<th>why<th>fix</tr>"
+        f"{body}</table>"
+    )
+
+
+def _severity(severity: object) -> str:
+    if severity == "critical":
+        return f"<span class=bad>{_e(severity)}</span>"
+    return _e(severity)
+
+
+def _synthesis(summary_json: object) -> str:
+    """The host AI's conclusion, in the four columns the review format promises:
+    problem, seriousness, who agreed, and what to do."""
+    summary = _loads(summary_json, None)
+    if not isinstance(summary, dict):
+        return (
+            "<p class=meta>Not written yet. Reviewers replying is not a finished "
+            "review -- the conclusion arrives with <code>finalize_review</code>.</p>"
+        )
+    rows = "".join(
+        "<tr>"
+        f"<td>{_e(finding.get('problem') or '')}</td>"
+        f"<td>{_severity(finding.get('severity'))}</td>"
+        f"<td><code>{_e(', '.join(finding.get('agreed_by') or []) or '--')}</code>"
+        + (
+            f"<br><span class=meta>disagreed: "
+            f"{_e(', '.join(finding.get('disagreed_by') or []))}</span>"
+            if finding.get("disagreed_by")
+            else ""
+        )
+        + f"</td><td>{_e(finding.get('proposed_action') or '')}</td></tr>"
+        for finding in summary.get("combined_findings") or []
+        if isinstance(finding, dict)
+    )
+    table = (
+        "<table><tr><th>problem<th>seriousness<th>reviewers agreeing"
+        f"<th>proposed action</tr>{rows}</table>"
+        if rows
+        else ""
+    )
+    return (
+        f"<p>{_e(summary.get('summary') or '')}</p>{table}"
+        f"<p><strong>Recommendation.</strong> {_e(summary.get('recommendation') or '')}</p>"
+        + _list("Agreements", summary.get("agreements"))
+        + _list("Disagreements", summary.get("disagreements"))
+        + _list("Options", summary.get("options"))
+        + _list("Checked", summary.get("checked"))
+        + _list("Not checked", summary.get("not_checked"))
+        + _citations(summary.get("citations"))
+    )
+
+
+def _list(label: str, items: object) -> str:
+    if not isinstance(items, list) or not items:
+        return ""
+    listed = "".join(f"<li>{_e(item)}</li>" for item in items)
+    return f"<p class=meta>{_e(label)}</p><ul>{listed}</ul>"
+
+
+def _citations(sources: object) -> str:
+    """Web-mode citations, carried through the synthesis rather than dropped in it.
+
+    The URL is text, never a link: it came out of a model, and this page does not
+    offer one-click navigation to somewhere a model named.
+    """
+    if not isinstance(sources, list) or not sources:
+        return ""
+    listed = "".join(
+        f"<li>{_e(source.get('title') or '')} "
+        f"<code>{_e(source.get('locator') or '')}</code></li>"
+        for source in sources
+        if isinstance(source, dict)
+    )
+    return f"<p class=meta>Citations</p><ul>{listed}</ul>"
+
+
+def _answers(rows: list[sqlite3.Row]) -> str:
+    """Each reviewer's answer as it arrived, folded away.
+
+    Folded because the point of the page above is the comparison; the original is
+    what you open when the comparison looks wrong.
+    """
+    sections = [
+        f"<details><summary><code>{_e(row['agent_id'])}</code> "
+        f"&middot; {_status_word(row['status'])}</summary>"
+        f"<pre>{_e(row['answer'])}</pre></details>"
+        for row in rows
+        if row["answer"]
+    ]
+    if not sections:
+        return (
+            "<p class=meta>Nothing stored. Either no reviewer answered, or "
+            "<code>store_full_content</code> is off.</p>"
+        )
+    return "".join(sections)
+
+
+def _not_reviewable(agent: AgentConfig | None, agent_id: str) -> str | None:
+    """Why this agent cannot be named a reviewer, or None.
+
+    The three rules `ConsultConfig.check_reviewer` applies at boot, restated against
+    the agents this page can see. Restated rather than called, because that method
+    reads the boot snapshot, and an agent added through this dashboard a minute ago
+    is not in it -- refusing that one would refuse the very thing the form is for.
+    """
+    if agent is None:
+        return f"`{agent_id}` is not a configured agent."
+    if not agent.enabled:
+        return f"`{agent_id}` is disabled. Enable it, or name another."
+    if agent.score_for("review") <= 0:
+        return (
+            f"`{agent_id}` is not offered `review` work. Tick `review` in its "
+            "capabilities, or name another."
+        )
+    return None
+
+
+def _why_not(agent: AgentConfig, agent_id: str) -> str:
+    problem = _not_reviewable(agent, agent_id)
+    return f" -- {problem}" if problem else ""
+
+
+def _reviewer_summary(review: ReviewConfig) -> str:
+    return (
+        f"<p>review: <code>{_e(', '.join(review.reviewers) or 'none')}</code><br>"
+        f"deep review: <code>{_e(', '.join(review.deep_reviewers) or 'none')}</code></p>"
+    )
+
+
+def _navigation(title: str, editable: bool = False) -> str:
+    section = (
+        "reviewers" if title == "Reviewers"
+        else "reviews" if title.startswith("Review")
+        else "agents" if "agent" in title.lower()
+        else "monitor"
+    )
+    # Editing pages already passed the editable guard, so they retain their local
+    # navigation even when rendered from an error path that did not pass the flag on.
+    show_admin = editable or section in ("agents", "reviewers")
+    items = [
+        ("monitor", "/", "Monitor"),
+        ("reviews", "/reviews", "Reviews"),
+    ]
+    if show_admin:
+        items.extend(
+            (("agents", "/agents", "Agents"), ("reviewers", "/reviewers", "Reviewers"))
+        )
+    links = "".join(
+        f"<a href='{href}'{' aria-current=page' if key == section else ''}>{label}</a>"
+        for key, href, label in items
+    )
+    admin_label = "<p class=rail-label>Configure</p>" if show_admin else ""
+    return (
+        "<aside class=rail>"
+        "<div class=brand><span class=brand-mark>O/M</span>"
+        "<span class=brand-copy><strong>orchestrator-mcp</strong>"
+        "<span>local control surface</span></span></div>"
+        "<p class=rail-label>Operate</p><nav aria-label=Primary>"
+        f"{links}</nav>{admin_label}"
+        "<p class=rail-foot>Loopback interface<br>Stored content stays local</p>"
+        "</aside>"
+    )
+
+
+def _document(title: str, body: str, *, editable: bool = False) -> str:
     return (
         "<!doctype html><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         f"<title>{_e(title)} &middot; orchestrator-mcp</title>"
-        f"<style>{STYLE}</style>{body}"
+        f"<style>{STYLE}</style><body><div class=app-shell>{_navigation(title, editable)}"
+        f"<main id=main>{body}</main></div></body>"
     )
 
 
@@ -1106,6 +2098,8 @@ class _Handler(BaseHTTPRequestHandler):
             status, body, location = self.dashboard.save(form)
         elif path == "/agents/delete":
             status, body, location = self.dashboard.delete(form)
+        elif path == "/reviewers":
+            status, body, location = self.dashboard.save_reviewers(form)
         else:
             status, body, location = (
                 HTTPStatus.NOT_FOUND,
@@ -1203,8 +2197,8 @@ def build_httpd(config: ConsultConfig, config_path: Path | None = None) -> Threa
 
 def main() -> int:
     # Imported here rather than at module scope: `load_config` lives in the module
-    # that builds the LiteLLM router, and a dashboard should not pay for that import
-    # to print a usage error.
+    # that builds the whole MCP surface, and a dashboard should not pay for that
+    # import to print a usage error.
     import os
 
     from ..server import CONFIG_ENV, DEFAULT_CONFIG, load_config
