@@ -11,8 +11,11 @@ questions only an installed, logged-in binary can:
   * does a real run actually come back matching the consultation contract
   * does `--session-id` / `thread.started` really give a session that resumes
   * do the isolation flags hold: no tools, no MCP, no shell
+  * on antigravity, does a prompt too large for one argv value survive being split
+    across turns and reassembled -- the one question the stub cannot answer, because
+    the stub is not the thing doing the reassembling
 
-It needs both CLIs installed and logged in. Nothing here writes to the store; it
+It needs the CLIs installed and logged in. Nothing here writes to the store; it
 drives the adapters directly, so a failure points at the transport and not at the
 service on top of it.
 """
@@ -23,6 +26,7 @@ import asyncio
 import sys
 
 from orchestrator_mcp.consult.adapters import adapter_for
+from orchestrator_mcp.consult.adapters.antigravity_cli import MAX_ARG_BYTES
 from orchestrator_mcp.consult.config import load_consult_config
 from orchestrator_mcp.consult.contract import SourceMode
 from orchestrator_mcp.consult.prompts import compile_prompt
@@ -77,6 +81,26 @@ async def checks(agent, adapter):
         bool(result.content.uncertainties),
         f"uncertainties={result.content.uncertainties} answer={result.content.answer[:80]!r}",
     )
+
+    if agent.runtime == "antigravity":
+        # The one thing only a live run can answer for this runtime. Its prompt travels
+        # in argv, which Linux caps at 128 KiB per value, so anything larger is split
+        # across turns and reassembled by the model -- and a reassembly that silently
+        # drops the middle is worse than a refusal, because it answers anyway.
+        filler = "Routine background material that carries no instructions. "
+        padding = filler * (MAX_ARG_BYTES // len(filler))
+        buried = compile_prompt(
+            "research",
+            SourceMode.DOCUMENT,
+            "Quote the DOCKET line from the supplied context exactly, and nothing else.",
+            f"{padding}\nDOCKET: violet-anvil-3391\n{padding}",
+        )
+        chunked = await adapter.start(agent, buried, SourceMode.DOCUMENT)
+        yield (
+            "a chunked prompt survives being split and reassembled",
+            "violet-anvil-3391" in chunked.content.answer,
+            f"context={len(buried.full_text)}B answer={chunked.content.answer[:80]!r}",
+        )
 
     if not agent.web_search:
         return

@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import os
 import stat
+from typing import get_args
 
 import pytest
 import yaml
 
 from orchestrator_mcp.consult.config import load_consult_config
+from orchestrator_mcp.consult.contract import Runtime
+from orchestrator_mcp.consult.dashboard import MODEL_PRESETS
 from orchestrator_mcp.contract import ConfigError
 
 from .conftest import agent, base_config, consult_block
@@ -101,6 +104,25 @@ async def test_the_form_offers_every_capability_and_every_reasoning_level(serve,
         assert f"score.{capability}" in body
     for level in ("low", "medium", "high", "xhigh", "max"):
         assert f">{level}<" in body
+
+
+async def test_the_form_suggests_a_model_for_every_runtime_without_closing_the_field(  # noqa: F811
+    serve, editable
+):
+    """A `datalist`, not a `select`. Presets save the operator from remembering that the
+    antigravity slugs carry their reasoning level, but a slug that ships tomorrow has to
+    be typeable today rather than wait for this list to catch up."""
+    get, _ = serve(editable())
+    _, body = get("/agents/new")
+
+    assert "<datalist id=model-presets>" in body
+    assert "list=model-presets" in body
+    # Every runtime the contract offers has something to pick, so adding one to the
+    # literal without adding its models leaves a runtime selectable and unguessable.
+    for runtime in get_args(Runtime):
+        assert MODEL_PRESETS.get(runtime), f"no model presets for runtime `{runtime}`"
+        for slug in MODEL_PRESETS[runtime]:
+            assert f"value='{slug}' label='{runtime}'" in body
 
 
 async def test_an_agent_from_config_yaml_is_shown_but_not_editable(serve, editable):  # noqa: F811
@@ -287,6 +309,54 @@ async def test_editing_an_agent_shows_what_is_stored_and_replaces_it(serve, edit
 
     get.post("/agents", form(_token=get.token, _editing="codex-luna", model="gpt-5.6-sol"))
     assert written(editable.path)["codex-luna"]["model"] == "gpt-5.6-sol"
+
+
+async def test_a_capability_is_a_tick_rather_than_a_number_to_choose(serve, editable):  # noqa: F811
+    """Which work the agent is offered, not how good it is at it. The number the router
+    ranks on still exists, but nobody is asked to invent one: ties go to `priority`."""
+    get, _ = serve(editable())
+    _, body = get("/agents/new")
+
+    for capability in ("coding", "research", "writing", "reasoning", "review"):
+        assert f"type=checkbox name='score.{capability}' value='100'" in body
+    assert "type=number name='score." not in body
+    assert " checked> coding" not in body, "a new agent is offered nothing until asked"
+
+    get.post("/agents", form(_token=get.token, **{"score.coding": "100"}))
+    assert written(editable.path)["codex-luna"]["scores"] == {"coding": 100, "review": 95}
+
+
+async def test_a_hand_written_score_survives_a_save_that_was_not_about_it(  # noqa: F811
+    serve, editable
+):
+    """The tick carries the stored number back out in the checkbox's own `value`, so
+    `review: 95` -- written by hand to break a tie -- is not flattened to 100 by an
+    operator who opened this form to change the model."""
+    get, _ = serve(editable())
+    get.post("/agents", form(_token=get.token))
+
+    get, _ = serve(editable())
+    _, body = get("/agents/codex-luna")
+    assert "type=checkbox name='score.review' value='95' checked" in body
+    assert "name='score.coding' value='100'> coding" in body, "untouched, so not ticked"
+
+    # What the browser submits from that page: the ticked box sends its own value.
+    get.post("/agents", form(_token=get.token, _editing="codex-luna", model="gpt-5.6-sol"))
+    stored = written(editable.path)["codex-luna"]
+    assert stored["scores"] == {"review": 95} and stored["model"] == "gpt-5.6-sol"
+
+
+async def test_a_score_of_zero_on_disk_comes_back_unticked(serve, editable):  # noqa: F811
+    """`0` and absent mean the same thing to the router -- ineligible -- so they have to
+    look the same on the form. A ticked box that submits `0` would read as offered and
+    route nowhere."""
+    editable.path.parent.mkdir(parents=True)
+    stored = agent("codex", "gpt-5.6-luna") | {"scores": {"review": 0}}
+    editable.path.write_text(yaml.safe_dump({"agents": {"zeroed": stored}}))
+
+    get, _ = serve(editable())
+    _, body = get("/agents/zeroed")
+    assert "name='score.review' value='100'> review" in body
 
 
 async def test_a_save_leaves_the_agents_it_did_not_touch_alone(serve, editable):  # noqa: F811

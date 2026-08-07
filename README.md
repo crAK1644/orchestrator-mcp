@@ -124,11 +124,25 @@ The consultation path is the reason this project exists. The direct routing path
 
 ## The consultation path
 
-The `consult` tool starts the Codex or Claude Code command-line app already installed and signed in on your computer. Claude Code can ask Codex, and Codex can ask Claude Code, using the subscriptions already connected to those CLIs.
+The `consult` tool starts the Codex or Claude Code command-line app already installed and signed in on your computer. Claude Code can ask Codex, and Codex can ask Claude Code, using the subscriptions already connected to those CLIs. A third runtime, `antigravity`, is available as an experiment; see below for what it does not guarantee.
 
 The consulted agent can answer, but it cannot change files, run commands, use MCP tools, or start subagents. Orchestrator also removes agents that use the same runtime as the caller, which prevents consultation loops.
 
-`ORCHESTRATOR_HOST_RUNTIME` tells Orchestrator which agent is making the request. It must be `claude` or `codex`. The server excludes that runtime from the available targets, so a host can never consult itself. The value comes from the environment only; a calling model cannot set it as a tool argument.
+`ORCHESTRATOR_HOST_RUNTIME` tells Orchestrator which agent is making the request. It must be `claude`, `codex`, or `antigravity`. The server excludes that runtime from the available targets, so a host can never consult itself. The value comes from the environment only; a calling model cannot set it as a tool argument.
+
+### The `antigravity` runtime (experimental)
+
+Google's Antigravity CLI (`agy`) can be configured as a consult target. It authenticates the same way as the other two: through its own login, cached in your operating system's keyring. Orchestrator never reads, copies, refreshes, or stores that credential, and there is no `api_key` or credential path to configure.
+
+Three things about it differ from `codex` and `claude`, and you should know them before enabling it:
+
+- **The isolation guarantee is weaker.** `agy` inherits the MCP servers configured in your own `agy` settings, and Orchestrator has no flag that can switch them off. What actually stops a consulted agent from using them is that `agy` denies tool permissions by default in headless mode — a default that lives in a file you own, not in anything this server controls. Orchestrator refuses the consultation the moment the CLI reports a tool step, so a permitted tool use fails the call rather than passing silently. But that is a detection, not a prevention. If you have loosened `agy`'s headless permissions, do not enable this runtime.
+- **The prompt travels in the argument list, not on standard input.** `agy` reads neither stdin nor a prompt file. Linux caps a single argument at 128 KiB, so a prompt larger than that is split and sent across several turns of one conversation before the question is asked. Nothing is ever run through a shell, and no prompt is written to a file the model reads. But an argument list is public on the machine it runs on: for as long as the process lives, anyone else logged into the same computer can read the whole prompt — including whatever you passed as `context` — out of `ps` or `/proc`. On the other two runtimes the prompt goes to standard input, which is not readable that way. If you consult sensitive material on a shared machine, use `codex` or `claude` for it.
+- **There is no way to check whether it is signed in.** `agy` has no login or status subcommand, so `list_consult_agents` reports it as authenticated with a detail saying that is unverified. A login problem surfaces as a failed consultation, not as a preflight failure.
+
+Pick a Gemini slug if your prompts can exceed 128 KiB. `agy` also offers Claude and open-weight models, and those work normally on anything that fits in one argument — but the split-and-reassemble transport above is, structurally, what a prompt injection looks like: a large padded block with instructions spread across several turns. Live runs of `claude-sonnet-4-6` refused it on those grounds partway through, at a different fragment each time. The consultation fails rather than answering on a prompt with a hole in it, and the error quotes what the model said instead, but it does fail. `gemini-3.6-flash-high` and `gemini-3.1-pro-high` reassemble a 200 KB prompt correctly.
+
+`reasoning_effort` is refused for this runtime because the effort level is part of the model name, and `agy` treats passing both as an error. Web mode is not offered.
 
 ### `consult`
 
@@ -180,7 +194,7 @@ Behaviour worth knowing:
 - A consultation is pinned to the agent, runtime, and model that started it. Naming a different `target_agent` later returns `session_target_mismatch` rather than switching.
 - If the CLI answers as a different model than the one configured, the consultation fails with `configured_model_unavailable` instead of returning an answer from a model nobody chose. For Codex this is checked against the session log the CLI writes under `~/.codex/sessions`, because `codex exec --json` on 0.146 does not name the model anywhere in its output. If neither source names one, the configured name is reported unverified — absent metadata is not treated as evidence of substitution, so a quiet release of either CLI does not become an outage.
 - Two processes cannot advance the same consultation at once. The second gets `session_busy`.
-- Nothing is ever run through a shell. Every CLI call is an argument list, and the prompt is written to the process's standard input.
+- Nothing is ever run through a shell. Every CLI call is an argument list, and the prompt is written to the process's standard input — except on `antigravity`, which does not read standard input and takes the prompt as an argument instead.
 
 ### `list_consult_agents`
 
@@ -196,14 +210,14 @@ Each entry under `consult.agents` accepts:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `runtime` | required | `codex` or `claude`. |
+| `runtime` | required | `codex`, `claude`, or `antigravity`. |
 | `command` | required | Executable name or absolute path. Resolved on `PATH`; an absolute path is safest for GUI-launched clients. |
 | `model` | required | The model to ask for, and the one the answer is checked against. |
 | `priority` | 100 | Lower wins a tie. |
 | `enabled` | true | Set false to keep an agent configured but out of routing. |
 | `scores` | none | 0–100 per capability. Missing means 0, which means not eligible. |
 | `web_search` | false | Allows `source_mode: web` for this agent. Asking for `web` against an agent without it returns `web_search_unavailable` rather than quietly answering without a search. |
-| `reasoning_effort` | unset | `low`, `medium`, `high`, `xhigh`, or `max`. Codex only; setting it on a `claude` agent refuses to start, because that runtime would ignore it silently. |
+| `reasoning_effort` | unset | `low`, `medium`, `high`, `xhigh`, or `max`. Codex only. Setting it on a `claude` agent refuses to start, because that runtime would ignore it silently; on an `antigravity` agent because the effort level belongs in the model name there. |
 
 ### Consultation settings
 
@@ -280,7 +294,9 @@ The dashboard runs as its own process and reads the configuration once, at start
 
 Set `editable: true` and open `/agents`. This is a second flag on purpose: turning the dashboard on gets you a window, and editing is a different thing to agree to.
 
-What the form can change: consult agents only — runtime, command, model, priority, enabled, the five capability scores, web search, and reasoning effort. Nothing else is editable from the browser. `capabilities`, `model_list`, `router_settings`, `limits`, `timeout_s`, `web_turn_limit`, `store_full_content`, and the dashboard's own host and port are config-file settings.
+What the form can change: consult agents only — runtime, command, model, priority, enabled, the five capabilities, web search, and reasoning effort. Nothing else is editable from the browser. `capabilities`, `model_list`, `router_settings`, `limits`, `timeout_s`, `web_turn_limit`, `store_full_content`, and the dashboard's own host and port are config-file settings.
+
+Capabilities are ticks on the form, not the 0–100 numbers the config file holds: the question is which work an agent should be offered, and among agents ticked for the same capability `priority` already decides the order. A newly ticked box saves 100. A score you wrote by hand to break a tie is preserved — the form carries it back out and saves it unchanged, so editing an unrelated field does not flatten it.
 
 Agents you add here are written to `~/.orchestrator-mcp/agents.yaml`, with `0600` permissions in a `0700` directory. The dashboard never writes `config.yaml`. Agents defined there are listed on the page but not editable, and the page says so.
 
@@ -392,7 +408,7 @@ The smoke tests make real requests and may use paid capacity from your configure
 | `schema_validation_failed` | Simplify the schema or use a model with stronger structured-output support. |
 | `timeout` on a local model | Increase `request_timeout_s`; model loading is included in the time limit. |
 | `consult` is missing | Add the `consult` section and check that the client loaded the correct config file. |
-| Host runtime error at startup | Set `ORCHESTRATOR_HOST_RUNTIME` to `claude` or `codex` in the MCP client's environment. |
+| Host runtime error at startup | Set `ORCHESTRATOR_HOST_RUNTIME` to `claude`, `codex`, or `antigravity` in the MCP client's environment. |
 | `agent_not_installed` | Use an absolute path in the agent's `command`; GUI apps may have a smaller `PATH` than your shell. |
 | `connection_required` | Run the login command shown in the error in your own terminal, then try again. |
 | Every consultation starts over | Return the previous `consultation_id` with the next call. |

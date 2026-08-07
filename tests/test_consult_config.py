@@ -182,5 +182,5 @@ def test_the_commented_consult_block_in_the_example_config_still_loads(tmp_path)
     # duplicate id the moment one of them is called `codex-sol`, as the example's is.
     doc["consult"]["managed_agents_path"] = str(tmp_path / "agents.yaml")
     config = load_consult_config(doc)
-    assert sorted(config.agents) == ["claude-opus", "codex-sol"]
+    assert sorted(config.agents) == ["claude-opus", "codex-sol", "gemini-reviewer"]
     assert config.dashboard.enabled is False

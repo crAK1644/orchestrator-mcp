@@ -2,8 +2,18 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
 .env
 dist/
 
 # Real config carries endpoints and key references; only the example is tracked.
 config.yaml
+
+# Nothing below this line is needed to install or run this server. It is the local
+# working surface: editor and agent settings, scraper output, and working notes --
+# spikes, feasibility write-ups, whatever a question needed at the time. Keep them
+# on your own disk. Something here that turns out to belong in the repo goes in with
+# `git add -f`.
+.claude/
+.firecrawl/
+docs/
