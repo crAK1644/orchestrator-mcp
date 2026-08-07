@@ -52,6 +52,42 @@ from .managed import read_managed, write_managed
 CAPABILITIES = get_args(Capability)
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
+# Slugs each runtime is known to take, offered as a `datalist` rather than a `select`:
+# the field stays free text, because a model that ships tomorrow has to be typeable
+# today rather than wait for this list to catch up. Keyed by runtime so the browser can
+# label each suggestion with the runtime it belongs to -- the form is one page of plain
+# HTML with no script in it, so the list cannot filter itself when the runtime changes.
+#
+# On antigravity the reasoning level is part of the slug, which is why those read
+# `-high` / `-low`. On codex and claude it is the separate `reasoning_effort` field, so
+# `gpt-5.6-sol` at `max` is that slug plus that level, not a slug of its own.
+MODEL_PRESETS: dict[str, tuple[str, ...]] = {
+    "codex": ("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5"),
+    "claude": (
+        "claude-fable-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+        # The CLI takes an unversioned alias too, and resolves it to the latest.
+        "fable",
+        "opus",
+        "sonnet",
+    ),
+    "antigravity": (
+        "gemini-3.6-flash-high",
+        "gemini-3.6-flash-medium",
+        "gemini-3.6-flash-low",
+        "gemini-3.5-flash-high",
+        "gemini-3.5-flash-medium",
+        "gemini-3.5-flash-low",
+        "gemini-3.1-pro-high",
+        "gemini-3.1-pro-low",
+        "claude-sonnet-4-6",
+        "claude-opus-4-6-thinking",
+        "gpt-oss-120b-medium",
+    ),
+}
+
 # Conservative on purpose: an agent id ends up in a file name's neighbourhood, in a
 # URL, and in an MCP tool's advertised enum. Nothing here needs to be more exciting.
 AGENT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -696,6 +732,13 @@ class ConsultDashboard:
             f"{' selected' if v.get('runtime') == runtime else ''}>{_e(runtime)}</option>"
             for runtime in get_args(Runtime)
         )
+        # Every runtime's slugs in one list, each labelled with the runtime it is for.
+        # Suggestions, not a closed set: the input keeps taking anything typed into it.
+        models = "".join(
+            f"<option value='{_e(slug)}' label='{_e(runtime)}'>"
+            for runtime in get_args(Runtime)
+            for slug in MODEL_PRESETS.get(runtime, ())
+        )
 
         return _document(
             "Edit agent" if editing else "New agent",
@@ -714,8 +757,12 @@ class ConsultDashboard:
             "<label><span>command &mdash; a name on PATH, or an absolute path. The Codex "
             "CLI ships inside ChatGPT.app and is not on PATH.</span>"
             f"<input type=text name=command required value='{_e(v.get('command', ''))}'></label>"
-            f"<label><span>model</span><input type=text name=model required "
+            "<label><span>model &mdash; pick one of the known slugs or type any other. "
+            "On antigravity the reasoning level is part of the name; on codex and claude "
+            "it is the next field.</span>"
+            f"<input type=text name=model required list=model-presets "
             f"value='{_e(v.get('model', ''))}'></label>"
+            f"<datalist id=model-presets>{models}</datalist>"
             "<label><span>reasoning effort &mdash; codex only; unset means the model's "
             "own default, which is not what your ~/.codex/config.toml says. Antigravity "
             "carries the level in the model slug instead</span>"
