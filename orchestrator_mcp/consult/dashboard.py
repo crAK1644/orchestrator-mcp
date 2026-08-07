@@ -714,12 +714,7 @@ class ConsultDashboard:
         """
         v = values if values is not None else _as_form(agent)
         editing = (agent is not None) if editing is None else editing
-        scores = "".join(
-            f"<label><span>{_e(capability)}</span>"
-            f"<input type=number name='score.{_e(capability)}' min=0 max=100 "
-            f"value='{_e(v.get(f'score.{capability}', ''))}'></label>"
-            for capability in CAPABILITIES
-        )
+        scores = "".join(_score_box(v, capability) for capability in CAPABILITIES)
         efforts = "".join(
             f"<option value='{_e(level)}'"
             f"{' selected' if v.get('reasoning_effort') == level else ''}>{_e(level)}</option>"
@@ -774,8 +769,9 @@ class ConsultDashboard:
             f"<label><input type=checkbox name=web_search"
             f"{' checked' if v.get('web_search') else ''}> web search &mdash; required "
             "before a web-mode consultation will route here</label>"
-            "<fieldset class=scores><legend>scores &mdash; 0 to 100, blank means never "
-            f"route this capability here</legend>{scores}</fieldset>"
+            "<fieldset class=scores><legend>capabilities &mdash; the work this agent is "
+            "offered. Unticked means never route it here; between two agents ticked for "
+            f"the same capability, the lower priority wins</legend>{scores}</fieldset>"
             "<button type=submit>Save</button></form>",
         )
 
@@ -875,6 +871,29 @@ class ConsultDashboard:
 
 
 # --- form translation -------------------------------------------------------
+
+
+def _score_box(values: dict[str, str], capability: str) -> str:
+    """One capability as a yes/no: is this agent offered this kind of work.
+
+    The routing score behind it is a number, but choosing it is a job nobody asked for
+    -- the ranking that number feeds is decided by `priority` for everyone who ticks the
+    same box. So a newly ticked box is 100, and the ordering stays in the field named
+    after it.
+
+    A score already in the config rides back out in the checkbox's own `value`, which is
+    what the browser submits when it is ticked. That is the whole reason it is there: an
+    operator who hand-wrote `research: 70` to break a tie must not lose it by saving an
+    unrelated field on this form.
+    """
+    kept = (values.get(f"score.{capability}") or "").strip()
+    # `> 0` and not merely "is a number": a stored `0` means ineligible, which is what an
+    # unticked box means, so it must not come back ticked.
+    score = int(kept) if kept.isdigit() and int(kept) > 0 else 0
+    return (
+        f"<label><input type=checkbox name='score.{_e(capability)}' "
+        f"value='{score or 100}'{' checked' if score else ''}> {_e(capability)}</label>"
+    )
 
 
 def _as_form(agent: AgentConfig | None) -> dict[str, str]:
