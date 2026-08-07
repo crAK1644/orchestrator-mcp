@@ -317,6 +317,23 @@ async def test_an_oversized_prompt_is_split_across_turns_of_one_conversation(
     assert result.content.answer == "blue"
 
 
+@pytest.mark.parametrize("limit", [1, 2, 3, 4, 5, 7, 11])
+@pytest.mark.parametrize("text", ["a" * 10, "é" * 10, "🙂" * 10, "aé🙂" * 7, "🙂a🙂"])
+def test_the_split_terminates_and_loses_nothing_however_narrow_it_is(text, limit):
+    """The back-off that keeps a fragment from ending mid-character can reach the start
+    of the one it began at -- when a character is wider than the whole limit. That used
+    to emit an empty fragment and advance nothing, which is a loop with no end to it.
+
+    Unreachable at `MAX_ARG_BYTES`, where the limit is 100 KB and the widest character
+    is 4 bytes. Tested at the limits that reach it so lowering that constant is a
+    smaller fragment rather than a hang."""
+    parts = antigravity_cli._fragments(text, limit)
+    assert "".join(parts) == text
+    assert "" not in parts, "an empty part is the shape of the loop that never ended"
+    # One character may exceed the limit -- the only alternative to it is no progress.
+    assert all(len(part.encode()) <= limit or len(part) == 1 for part in parts)
+
+
 async def test_a_fragment_the_agent_never_acknowledged_stops_the_consultation(
     tmp_path, monkeypatch, adapter
 ):

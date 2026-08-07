@@ -373,6 +373,17 @@ def _fragments(text: str, limit: int) -> list[str]:
         # Continuation bytes are `10xxxxxx`; back off until `end` starts a character.
         while end < len(raw) and raw[end] & 0xC0 == 0x80:
             end -= 1
+        if end <= start:
+            # The character at `start` is wider than the whole limit, so backing off
+            # reached `start` and this fragment would be empty -- and an empty fragment
+            # advances nothing, which is a loop that never ends. Emit the character
+            # instead and go over: the alternative to one oversized part is no parts at
+            # all. Unreachable at `MAX_ARG_BYTES`, where the limit is 100 KB and the
+            # widest character is 4 bytes; this is here so lowering that constant is a
+            # smaller fragment rather than a hang.
+            end = start + 1
+            while end < len(raw) and raw[end] & 0xC0 == 0x80:
+                end += 1
         parts.append(raw[start:end].decode())
         start = end
     return parts
