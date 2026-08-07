@@ -633,7 +633,7 @@ def test_bad_config_refuses_to_boot(broken):
 
 async def test_tool_schema_advertises_capabilities_and_caps():
     server = build_server(config(deployment("coding", "hi"), deployment("research", "hi")))
-    ask = next(t for t in await server.list_tools() if t.name == "ask")
+    ask = next(t for t in await server.list_tools() if t.name == "orchestrator_ask")
 
     properties = ask.input_schema["properties"]
     assert properties["capability"]["enum"] == ["coding", "research"]
@@ -658,7 +658,7 @@ async def test_the_handshake_reports_the_installed_version():
 async def test_a_single_capability_still_advertises_an_enum():
     """Pydantic would emit `const` here, which fewer function-calling layers read."""
     server = build_server(config(deployment("fast", "hi")))
-    ask = next(t for t in await server.list_tools() if t.name == "ask")
+    ask = next(t for t in await server.list_tools() if t.name == "orchestrator_ask")
     capability = ask.input_schema["properties"]["capability"]
 
     assert capability["enum"] == ["fast"]
@@ -669,7 +669,7 @@ async def test_a_single_capability_still_advertises_an_enum():
 async def test_the_envelope_is_also_returned_as_text():
     """A client that ignores structured output still gets the whole envelope."""
     server = build_server(config(deployment("fast", "hello")))
-    result = await server.call_tool("ask", {"capability": "fast", "prompt": "q"})
+    result = await server.call_tool("orchestrator_ask", {"capability": "fast", "prompt": "q"})
     assert json.loads(result.content[0].text)["content"] == "hello"
 
 
@@ -688,7 +688,7 @@ async def test_a_schema_string_that_is_not_json_is_rejected():
 
 async def test_call_tool_returns_the_envelope():
     server = build_server(config(deployment("fast", "hello")))
-    result = await server.call_tool("ask", {"capability": "fast", "prompt": "q"})
+    result = await server.call_tool("orchestrator_ask", {"capability": "fast", "prompt": "q"})
     assert result.structured_content["ok"] is True
     assert result.structured_content["content"] == "hello"
 
@@ -701,7 +701,7 @@ async def test_list_capabilities_shows_deployments_and_fallbacks():
             fallbacks=[{"coding": ["research"]}],
         )
     )
-    result = await server.call_tool("list_capabilities", {})
+    result = await server.call_tool("orchestrator_list_capabilities", {})
     coding = next(c for c in result.structured_content["capabilities"] if c["name"] == "coding")
     assert coding["deployments"] == ["openai/gpt-4o"]
     assert coding["fallbacks"] == ["research"]

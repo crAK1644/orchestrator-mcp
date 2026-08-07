@@ -201,7 +201,7 @@ class ReviewStore:
     async def consume_confirm_token(self, review_id: UUID | str, token: str) -> None:
         """Spend the one-time token and start the review, in one statement.
 
-        The status predicate is what makes two simultaneous `review_run` calls launch
+        The status predicate is what makes two simultaneous `orchestrator_review_run` calls launch
         one review instead of two paid ones; nulling the hash is what stops a third
         call replaying the same token later.
         """
@@ -380,7 +380,7 @@ class ReviewStore:
     async def lease(self, review_id: UUID | str, ttl_s: float):
         """Hold a review while its reviewers are actually running.
 
-        Status cannot carry this. `cancel_review` moves a review out of `running`
+        Status cannot carry this. `orchestrator_cancel_review` moves a review out of `running`
         while another process's subprocesses keep going, and a delete that only
         consulted the status would remove the parent out from under a reviewer that
         is about to write its row -- leaving history no later delete can find.
@@ -467,7 +467,7 @@ class ReviewStore:
             if row is None:
                 raise StoreError(
                     ConsultErrorCode.INVALID_REQUEST,
-                    "that confirmation is not outstanding; call `request_delete_all` and "
+                    "that confirmation is not outstanding; call `orchestrator_request_delete_all` and "
                     "confirm the count it reports",
                 )
             db.execute(

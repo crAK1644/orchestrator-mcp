@@ -172,7 +172,7 @@ class ReviewerResult(BaseModel):
 class ReviewPlan(BaseModel):
     """What would be sent, shown before anything is.
 
-    Returned by `review` and by nothing else. `confirm_token` is handed back once
+    Returned by `orchestrator_review` and by nothing else. `confirm_token` is handed back once
     and only its sha256 is stored, so it cannot be replayed and cannot be read out
     of the database.
     """
@@ -244,7 +244,7 @@ class FixRound(BaseModel):
     """One pass of fixing, after the fact. A log entry, not an instruction.
 
     The server records what the host says it did; it does not edit a file, run a
-    command, or check the claim. That is the whole of `apply_fixes` by design --
+    command, or check the claim. That is the whole of `orchestrator_apply_fixes` by design --
     a reviewer's finding is advice, and acting on it stays with the host AI and
     the user watching it.
     """
@@ -258,7 +258,7 @@ class FixRound(BaseModel):
 
 
 class FixPlan(BaseModel):
-    """What `apply_fixes` hands back: the selected findings, and the steps around
+    """What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around
     editing them.
 
     `criticals_omitted` is the field that earns this a tool of its own. A
@@ -280,7 +280,7 @@ FIX_STEPS = [
     "Apply the fixes yourself. This server never edits a file and never runs a "
     "command; a reviewer never sees your repository at all.",
     "Run the project's tests, and say what they did.",
-    "Keep or undo, and record which with `record_fix_round`.",
+    "Keep or undo, and record which with `orchestrator_record_fix_round`.",
     "To re-review, plan a new review with `parent_review_id` set to this one and "
     "the diff as `context`. It gets the same preview and the same approval as any "
     "other review -- a recheck is not exempt from them.",
@@ -326,7 +326,7 @@ class ReviewResponse(BaseModel):
         if self.status == "failed" and any(r.findings for r in self.results):
             raise AssertionError("a failed review carries no findings")
         # `error is None` because a refusal reports where the review actually is: a
-        # second `finalize_review` on a finished review is an error envelope stamped
+        # second `orchestrator_finalize_review` on a finished review is an error envelope stamped
         # `complete`, and it carries the refusal rather than re-sending the synthesis.
         if self.status == "complete" and self.error is None and self.summary is None:
             raise AssertionError("a complete review carries the synthesis that completed it")
@@ -338,7 +338,7 @@ class ReviewResponse(BaseModel):
 
 
 class ReviewListing(BaseModel):
-    """One row of `list_reviews`. Metadata only -- the material is not in it."""
+    """One row of `orchestrator_list_reviews`. Metadata only -- the material is not in it."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -353,7 +353,7 @@ class ReviewListing(BaseModel):
 
 
 class DeleteApproval(BaseModel):
-    """What `request_delete_all` offers: a count, and a token good for exactly the
+    """What `orchestrator_request_delete_all` offers: a count, and a token good for exactly the
     reviews behind it. Confirming deletes that snapshot, not whatever exists by
     then."""
 

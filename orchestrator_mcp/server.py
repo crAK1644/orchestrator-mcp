@@ -142,7 +142,7 @@ def validate_config(config: dict[str, Any]) -> None:
         if not config.get("consult"):
             raise ConfigError(
                 "nothing is configured: give the server `capabilities:` and `model_list:` "
-                "for `ask`, a `consult:` block for consultations, or both"
+                "for `orchestrator_ask`, a `consult:` block for consultations, or both"
             )
         return
 
@@ -332,7 +332,7 @@ def _split_abstention(text: str | None) -> tuple[str | None, bool]:
 
 
 class Orchestrator:
-    """Owns the Router and answers `ask` calls with a validated envelope."""
+    """Owns the Router and answers `orchestrator_ask` calls with a validated envelope."""
 
     def __init__(self, config: dict[str, Any]) -> None:
         validate_config(config)
@@ -345,7 +345,7 @@ class Orchestrator:
         except ValidationError as exc:
             raise ConfigError(f"invalid `limits:` block: {exc}") from exc
 
-        # No capabilities means no `ask`, so there is no Router to build and nothing
+        # No capabilities means no `orchestrator_ask`, so there is no Router to build and nothing
         # for one to route to. `request_model` is what `build_server` reads to decide
         # whether to advertise the tool at all, and None is that answer.
         self.router: Router | None = None
@@ -630,7 +630,7 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
         store = ConsultStore(consult_config.database_path, consult_config.store_full_content)
         _add_consult_tools(server, ConsultService(consult_config, runtime, store=store))
         # Advertised only when reviewers are configured. A server with none should
-        # not offer a `review` tool that can do nothing but refuse.
+        # not offer an `orchestrator_review` tool that can do nothing but refuse.
         if consult_config.review is not None:
             _add_review_tools(server, ReviewService(consult_config, runtime, store=store))
 
@@ -652,9 +652,9 @@ def _add_ask_tools(server: MCPServer, orchestrator: Orchestrator) -> None:
         "`fallback_used`, `usage`, and `error` (a code from a closed set). A failed "
         "call never carries answer text -- check `ok` before reading `content`."
     )
-    server.add_tool(ask, name="ask")
+    server.add_tool(ask, name="orchestrator_ask")
 
-    @server.tool(name="list_capabilities")
+    @server.tool(name="orchestrator_list_capabilities")
     async def list_capabilities() -> CapabilitiesResponse:
         """List configured capabilities: what each is for, the deployments behind it,
         and where it falls back when they are unavailable."""
@@ -686,9 +686,9 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         "error with `required_action` means the agent needs the user to run that "
         "command; nothing else will make it available."
     )
-    server.add_tool(consult, name="consult")
+    server.add_tool(consult, name="orchestrator_consult")
 
-    @server.tool(name="list_consult_agents")
+    @server.tool(name="orchestrator_list_consult_agents")
     async def list_consult_agents() -> ConsultAgentsResponse:
         """List consultable agents: runtime, model, capability scores, and whether each
         is installed and logged in. The host's own runtime is listed but never routed
@@ -696,7 +696,7 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         await service.open()
         return await service.list_agents()
 
-    @server.tool(name="get_consultation")
+    @server.tool(name="orchestrator_get_consultation")
     async def get_consultation(consultation_id: UUID) -> ConsultationRecord:
         """Retrieve a stored consultation: its turns, usage, and why this agent was
         chosen."""
@@ -707,7 +707,7 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
 def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
     """The review surface: a two-call handshake, then synthesis.
 
-    Two tools rather than one that switches on its arguments. A single `review`
+    Two tools rather than one that switches on its arguments. A single `orchestrator_review`
     taking either `(mode, goal, context)` or `(review_id, confirm_token)` is two
     mutually exclusive argument sets in one schema, which a calling model reads as
     "everything is optional" -- the same reasoning as `_agent_enum`.
@@ -718,7 +718,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
     stored record of what was approved against what went out.
     """
 
-    @server.tool(name="review")
+    @server.tool(name="orchestrator_review")
     async def review(
         goal: str,
         mode: ReviewMode = "standard",
@@ -731,7 +731,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
     ) -> ReviewResponse:
         """Plan a review and show what would be sent. **Sends nothing.**
 
-        Show the returned `plan` to the user before calling `review_run`: which
+        Show the returned `plan` to the user before calling `orchestrator_review_run`: which
         reviewers, how much material, whether web access is requested, how many
         requests it will cost, and `secret_hits` -- lines where something
         credential-shaped was found (positions only, never values). Secret detection
@@ -745,7 +745,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         between the preview and the send.
 
         `mode="deep"` asks up to five reviewers and requires your own findings first,
-        passed to `review_run` as `host_findings`. `web=False` unless the user asked
+        passed to `orchestrator_review_run` as `host_findings`. `web=False` unless the user asked
         for web access: reviewers get none by default.
 
         Returns `confirm_token`, which is shown once and can be spent once. Note that
@@ -763,7 +763,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             host_model=host_model,
         )
 
-    @server.tool(name="review_run")
+    @server.tool(name="orchestrator_review_run")
     async def review_run(
         review_id: UUID,
         confirm_token: str,
@@ -785,8 +785,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
 
         Stops at `awaiting_synthesis`: reviewers replying is not a finished review.
         Read every `results[]` entry, write the comparison yourself, and call
-        `finalize_review`. A reviewer that failed leaves the others' answers intact --
-        `retry_review` re-runs only the failures.
+        `orchestrator_finalize_review`. A reviewer that failed leaves the others' answers intact --
+        `orchestrator_retry_review` re-runs only the failures.
         """
         return await service.run(
             review_id,
@@ -796,14 +796,14 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             raw=raw.model_dump(mode="json") if raw else None,
         )
 
-    @server.tool(name="retry_review")
+    @server.tool(name="orchestrator_retry_review")
     async def retry_review(review_id: UUID, agent_ids: list[str] | None = None) -> ReviewResponse:
         """Re-run the reviewers that failed. No new approval is needed: the material
         is unchanged, and the stored hash is what proves it. Reviewers that already
         answered are not asked again and their answers are kept."""
         return await service.retry(review_id, agent_ids)
 
-    @server.tool(name="finalize_review")
+    @server.tool(name="orchestrator_finalize_review")
     async def finalize_review(
         review_id: UUID,
         summary: str,
@@ -842,13 +842,13 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             },
         )
 
-    @server.tool(name="apply_fixes")
+    @server.tool(name="orchestrator_apply_fixes")
     async def apply_fixes(review_id: UUID, finding_ids: list[str]) -> ReviewResponse:
         """Pull up the findings you are about to fix, with the steps around them.
         **Changes nothing** -- no file is edited and no command is run here.
 
         Fixing is yours to do: make a safety point first, apply the changes, run the
-        tests, and keep or undo. Then record what happened with `record_fix_round`.
+        tests, and keep or undo. Then record what happened with `orchestrator_record_fix_round`.
 
         `fix_plan.criticals_omitted` lists Critical findings your selection leaves
         out. Show them to the user rather than skipping past them -- a Critical
@@ -860,7 +860,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.fix_plan(review_id, finding_ids)
 
-    @server.tool(name="record_fix_round")
+    @server.tool(name="orchestrator_record_fix_round")
     async def record_fix_round(
         review_id: UUID,
         finding_ids: list[str],
@@ -879,7 +879,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.record_fix_round(review_id, finding_ids, outcome, notes)
 
-    @server.tool(name="cancel_review")
+    @server.tool(name="orchestrator_cancel_review")
     async def cancel_review(review_id: UUID) -> ReviewResponse:
         """Stop a review. Reviewers that already answered keep their answers.
 
@@ -890,7 +890,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.cancel(review_id)
 
-    @server.tool(name="test_reviewers")
+    @server.tool(name="orchestrator_test_reviewers")
     async def test_reviewers(mode: ReviewMode | None = None) -> ConsultAgentsResponse:
         """Check that the configured reviewers are installed and logged in.
 
@@ -899,19 +899,19 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.test_reviewers(mode)
 
-    @server.tool(name="get_review")
+    @server.tool(name="orchestrator_get_review")
     async def get_review(review_id: UUID) -> ReviewResponse:
         """Retrieve a review: its status, every reviewer's result, and the synthesis
         if one was recorded. Answers are absent when the operator has turned off
         `store_full_content`."""
         return await service.get(review_id)
 
-    @server.tool(name="list_reviews")
+    @server.tool(name="orchestrator_list_reviews")
     async def list_reviews(limit: int = 20) -> list[ReviewListing]:
         """List recent reviews, newest first. Metadata only -- no material."""
         return await service.list(limit)
 
-    @server.tool(name="delete_review")
+    @server.tool(name="orchestrator_delete_review")
     async def delete_review(review_id: UUID) -> DeletionResult:
         """Delete a review, its rechecks, and every consultation under either.
 
@@ -919,12 +919,12 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         in any server process. Cancel it and try again."""
         return DeletionResult(deleted=await service.delete(review_id))
 
-    @server.tool(name="request_delete_all")
+    @server.tool(name="orchestrator_request_delete_all")
     async def request_delete_all() -> DeleteApproval:
         """Ask what deleting all review history would remove.
 
         Deletes nothing. Show the count to the user and pass the token to
-        `delete_all_reviews` only if they agree. The token is bound to exactly the
+        `orchestrator_delete_all_reviews` only if they agree. The token is bound to exactly the
         reviews counted here, so one created in the meantime is not caught by an
         approval that never mentioned it."""
         token, count = await service.request_delete_all()
@@ -932,9 +932,9 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             reviews=count, confirm_token=token, expires_in_s=int(DELETE_CONFIRM_TTL_S)
         )
 
-    @server.tool(name="delete_all_reviews")
+    @server.tool(name="orchestrator_delete_all_reviews")
     async def delete_all_reviews(confirm_token: str) -> DeletionResult:
-        """Delete the reviews `request_delete_all` counted, and only those. Requires
+        """Delete the reviews `orchestrator_request_delete_all` counted, and only those. Requires
         the token from that call; an expired one is refused rather than silently
         widened to whatever exists now."""
         return DeletionResult(deleted=await service.delete_all(confirm_token))

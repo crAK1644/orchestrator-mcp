@@ -39,7 +39,7 @@ async def test_the_advertised_ask_schema_has_not_moved():
 
 
 async def test_a_config_without_consult_exposes_only_the_original_tools():
-    assert set(await advertised(base_config())) == {"ask", "list_capabilities"}
+    assert set(await advertised(base_config())) == {"orchestrator_ask", "orchestrator_list_capabilities"}
 
 
 async def test_a_config_with_only_consult_exposes_no_ask(host_claude):
@@ -47,7 +47,7 @@ async def test_a_config_with_only_consult_exposes_no_ask(host_claude):
     `consult` spawns a CLI that carries its own account. A config that wants the
     second and not the first must not be forced to configure the first."""
     advertised_tools = await advertised({"consult": consult_block()})
-    assert set(advertised_tools) == {"consult", "list_consult_agents", "get_consultation"}
+    assert set(advertised_tools) == {"orchestrator_consult", "orchestrator_list_consult_agents", "orchestrator_get_consultation"}
 
 
 @pytest.mark.parametrize(
@@ -83,12 +83,12 @@ async def test_adding_consult_does_not_touch_the_ask_schema(host_claude):
     before = await advertised(snapshot_config())
     after = await advertised(snapshot_config() | {"consult": consult_block()})
 
-    assert after["ask"] == before["ask"]
-    assert after["list_capabilities"] == before["list_capabilities"]
+    assert after["orchestrator_ask"] == before["orchestrator_ask"]
+    assert after["orchestrator_list_capabilities"] == before["orchestrator_list_capabilities"]
 
 
 async def test_the_ask_envelope_is_unchanged_with_consult_configured(host_claude):
     server = build_server(snapshot_config() | {"consult": consult_block()})
-    result = await server.call_tool("ask", {"capability": "fast", "prompt": "q"})
+    result = await server.call_tool("orchestrator_ask", {"capability": "fast", "prompt": "q"})
     assert result.structured_content["ok"] is True
     assert result.structured_content["content"] == "hi"

@@ -1,5 +1,5 @@
 {
-  "ask": {
+  "orchestrator_ask": {
     "input_schema": {
       "properties": {
         "capability": {
@@ -270,7 +270,7 @@
       "type": "object"
     }
   },
-  "list_capabilities": {
+  "orchestrator_list_capabilities": {
     "input_schema": {
       "properties": {},
       "title": "list_capabilitiesArguments",

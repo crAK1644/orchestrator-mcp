@@ -1361,7 +1361,7 @@ def _status_cell(row: sqlite3.Row | None) -> str:
 
     "Last checked" and not a bare timestamp, because this page runs no subprocess: the
     row is whatever the last preflight wrote, and a week-old one read as a fresh probe
-    is how an agent looks ready long after its login expired. `test_reviewers` is the
+    is how an agent looks ready long after its login expired. `orchestrator_test_reviewers` is the
     tool that actually asks.
     """
     if row is None:

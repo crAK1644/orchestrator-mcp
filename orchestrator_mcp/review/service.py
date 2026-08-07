@@ -326,7 +326,7 @@ class ReviewService:
 
         Stops at `awaiting_synthesis`. External models replying is not a finished
         review -- the host AI's combined conclusion is the product, and
-        `finalize_review` is the only path to `complete`.
+        `orchestrator_finalize_review` is the only path to `complete`.
         """
         started = time.perf_counter()
         return await self._guard(
@@ -624,7 +624,7 @@ class ReviewService:
         """The selected findings and the steps around editing them. Changes nothing.
 
         Two calls rather than one that switches on its arguments, for the same
-        reason `review` and `review_run` are two: "what am I about to do" and "here
+        reason `orchestrator_review` and `orchestrator_review_run` are two: "what am I about to do" and "here
         is what I did" are different moments, and one schema covering both reads to
         a calling model as everything being optional.
         """
@@ -852,7 +852,7 @@ class ReviewService:
     async def _status_of(self, review_id: UUID | str) -> ReviewStatus:
         """Where the review actually is, for the failure envelope.
 
-        Read back rather than assumed: a refused `finalize_review` leaves the review
+        Read back rather than assumed: a refused `orchestrator_finalize_review` leaves the review
         exactly where it was, and reporting `failed` would tell the caller to retry
         something that is still waiting on them.
         """

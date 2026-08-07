@@ -110,8 +110,13 @@ async def main() -> int:
         # The two properties the offline suite asserts, re-checked against the real
         # thing: a spent token cannot be spent again, and reviewers replying is not
         # a finished review.
-        replayed = await service.run(planned.review_id, token)
-        ok = replayed.error is not None
+        # `host_findings` again, or a deep review refuses for the missing opinion and
+        # the check passes without the token ever being looked at.
+        replayed = await service.run(
+            planned.review_id, token,
+            host_findings=["the path from the query string reaches `open` unchecked"],
+        )
+        ok = replayed.error is not None and "token" in (replayed.error.message or "")
         failures += not ok
         print(f"\n  [{'ok' if ok else 'FAIL'}] the token cannot be spent twice"
               f"\n        {replayed.error and replayed.error.message}")

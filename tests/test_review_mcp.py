@@ -16,19 +16,19 @@ from orchestrator_mcp.server import build_server
 from .conftest import base_config, consult_block
 
 REVIEW_TOOLS = {
-    "review",
-    "review_run",
-    "retry_review",
-    "finalize_review",
-    "apply_fixes",
-    "record_fix_round",
-    "cancel_review",
-    "test_reviewers",
-    "get_review",
-    "list_reviews",
-    "delete_review",
-    "request_delete_all",
-    "delete_all_reviews",
+    "orchestrator_review",
+    "orchestrator_review_run",
+    "orchestrator_retry_review",
+    "orchestrator_finalize_review",
+    "orchestrator_apply_fixes",
+    "orchestrator_record_fix_round",
+    "orchestrator_cancel_review",
+    "orchestrator_test_reviewers",
+    "orchestrator_get_review",
+    "orchestrator_list_reviews",
+    "orchestrator_delete_review",
+    "orchestrator_request_delete_all",
+    "orchestrator_delete_all_reviews",
 }
 
 
@@ -72,7 +72,7 @@ async def test_the_consult_tools_are_untouched_by_the_review_block(tmp_path, hos
     plain = await tools(build_server(config(tmp_path)))
     reviewing = await tools(build_server(reviewed(tmp_path)))
 
-    for name in ("consult", "list_consult_agents", "get_consultation"):
+    for name in ("orchestrator_consult", "orchestrator_list_consult_agents", "orchestrator_get_consultation"):
         assert reviewing[name].input_schema == plain[name].input_schema
         assert reviewing[name].description == plain[name].description
 
@@ -81,7 +81,7 @@ async def test_the_consult_tools_are_untouched_by_the_review_block(tmp_path, hos
 
 
 async def test_planning_needs_only_a_goal(tmp_path, host_claude):
-    schema = (await tools(build_server(reviewed(tmp_path))))["review"].input_schema
+    schema = (await tools(build_server(reviewed(tmp_path))))["orchestrator_review"].input_schema
     assert schema["required"] == ["goal"]
     assert set(schema["properties"]["mode"]["enum"]) == {"standard", "deep"}
 
@@ -89,20 +89,20 @@ async def test_planning_needs_only_a_goal(tmp_path, host_claude):
 async def test_running_needs_the_id_and_the_token_together(tmp_path, host_claude):
     """The handshake is the whole point: an id without the token it was issued with
     would let a second call spend an approval it never saw."""
-    schema = (await tools(build_server(reviewed(tmp_path))))["review_run"].input_schema
+    schema = (await tools(build_server(reviewed(tmp_path))))["orchestrator_review_run"].input_schema
     assert set(schema["required"]) == {"review_id", "confirm_token"}
     assert set(schema["properties"]["secrets"]["enum"]) == {"mask", "send_as_is"}
 
 
 async def test_web_access_is_off_unless_it_is_asked_for(tmp_path, host_claude):
-    schema = (await tools(build_server(reviewed(tmp_path))))["review"].input_schema
+    schema = (await tools(build_server(reviewed(tmp_path))))["orchestrator_review"].input_schema
     assert schema["properties"]["web"]["default"] is False
 
 
 async def test_the_synthesis_must_state_its_scope(tmp_path, host_claude):
     """`checked` and `not_checked` are required in the schema, not merely requested
     in the prose. An optional scope is a scope that gets left out."""
-    schema = (await tools(build_server(reviewed(tmp_path))))["finalize_review"].input_schema
+    schema = (await tools(build_server(reviewed(tmp_path))))["orchestrator_finalize_review"].input_schema
     assert {"checked", "not_checked"} <= set(schema["required"])
     assert {"review_id", "summary", "recommendation"} <= set(schema["required"])
 
@@ -110,8 +110,8 @@ async def test_the_synthesis_must_state_its_scope(tmp_path, host_claude):
 async def test_deleting_everything_takes_a_token_it_cannot_invent(tmp_path, host_claude):
     """An omitted argument must never mean "erase all history"."""
     surface = await tools(build_server(reviewed(tmp_path)))
-    assert surface["request_delete_all"].input_schema.get("required", []) == []
-    assert surface["delete_all_reviews"].input_schema["required"] == ["confirm_token"]
+    assert surface["orchestrator_request_delete_all"].input_schema.get("required", []) == []
+    assert surface["orchestrator_delete_all_reviews"].input_schema["required"] == ["confirm_token"]
 
 
 # --- the guardrails a model actually sees -----------------------------------
@@ -120,19 +120,19 @@ async def test_deleting_everything_takes_a_token_it_cannot_invent(tmp_path, host
 @pytest.mark.parametrize(
     "tool, promise",
     [
-        ("review", "Sends nothing"),
-        ("review", "best-effort"),
-        ("review", "reviewer's own CLI history"),
-        ("review_run", "never shown to any reviewer"),
-        ("review_run", "reviewers replying is not a finished review"),
-        ("finalize_review", "single\n        reviewer raised while the others disagree"),
-        ("apply_fixes", "Changes nothing"),
-        ("apply_fixes", "no file is edited and no command is run here"),
-        ("record_fix_round", "A log entry, not an action"),
-        ("test_reviewers", "no project material leaves this machine"),
-        ("cancel_review", "cannot be signalled from here"),
-        ("delete_review", "Refused while a review is running"),
-        ("request_delete_all", "Deletes nothing"),
+        ("orchestrator_review", "Sends nothing"),
+        ("orchestrator_review", "best-effort"),
+        ("orchestrator_review", "reviewer's own CLI history"),
+        ("orchestrator_review_run", "never shown to any reviewer"),
+        ("orchestrator_review_run", "reviewers replying is not a finished review"),
+        ("orchestrator_finalize_review", "single\n        reviewer raised while the others disagree"),
+        ("orchestrator_apply_fixes", "Changes nothing"),
+        ("orchestrator_apply_fixes", "no file is edited and no command is run here"),
+        ("orchestrator_record_fix_round", "A log entry, not an action"),
+        ("orchestrator_test_reviewers", "no project material leaves this machine"),
+        ("orchestrator_cancel_review", "cannot be signalled from here"),
+        ("orchestrator_delete_review", "Refused while a review is running"),
+        ("orchestrator_request_delete_all", "Deletes nothing"),
     ],
 )
 async def test_the_docstring_carries_the_guardrail(tmp_path, host_claude, tool, promise):
