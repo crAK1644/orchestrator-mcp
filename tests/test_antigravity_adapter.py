@@ -737,13 +737,21 @@ async def test_the_deadline_covers_the_whole_consultation_not_each_turn(
 ):
     """A chunked prompt runs several children. Giving each the full `timeout_s` would
     multiply the caller's timeout by the number of fragments -- so no single turn here
-    comes near the budget, and the run still has to end on it."""
-    adapter = AntigravityCliAdapter(timeout_s=2.5)
+    comes near the budget, and the run still has to end on it.
+
+    The turns sleep past the budget between them and not one of them reaches it alone,
+    which is what makes this a statement about the shared deadline. Spending more than
+    the budget has to be what trips it, rather than however long spawning four children
+    happens to take: at 2.5s against four half-second turns it passed on a Mac and not
+    on CI, where processes start faster."""
+    budget, nap = 1.5, 0.5
+    adapter = AntigravityCliAdapter(timeout_s=budget)
     agent_stub.install(
         "agy", tmp_path, monkeypatch,
-        runs=[{"stdout": ack(1), "sleep": 0.5}, {"stdout": ack(2), "sleep": 0.5},
-              {"stdout": ack(3), "sleep": 0.5}, {"stdout": transcript(), "sleep": 0.5}],
+        runs=[{"stdout": ack(1), "sleep": nap}, {"stdout": ack(2), "sleep": nap},
+              {"stdout": ack(3), "sleep": nap}, {"stdout": transcript(), "sleep": nap}],
     )
+    assert nap * 4 > budget > nap, "sleeping alone must exhaust it, and no single turn can"
     with pytest.raises(AdapterError) as exc:
         await adapter.start(agent(), big_prompt(), SourceMode.MODEL)
     assert exc.value.code is ConsultErrorCode.TIMEOUT
