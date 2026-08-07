@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import os
 import stat
+from typing import get_args
 
 import pytest
 import yaml
 
 from orchestrator_mcp.consult.config import load_consult_config
+from orchestrator_mcp.consult.contract import Runtime
+from orchestrator_mcp.consult.dashboard import MODEL_PRESETS
 from orchestrator_mcp.contract import ConfigError
 
 from .conftest import agent, base_config, consult_block
@@ -101,6 +104,25 @@ async def test_the_form_offers_every_capability_and_every_reasoning_level(serve,
         assert f"score.{capability}" in body
     for level in ("low", "medium", "high", "xhigh", "max"):
         assert f">{level}<" in body
+
+
+async def test_the_form_suggests_a_model_for_every_runtime_without_closing_the_field(  # noqa: F811
+    serve, editable
+):
+    """A `datalist`, not a `select`. Presets save the operator from remembering that the
+    antigravity slugs carry their reasoning level, but a slug that ships tomorrow has to
+    be typeable today rather than wait for this list to catch up."""
+    get, _ = serve(editable())
+    _, body = get("/agents/new")
+
+    assert "<datalist id=model-presets>" in body
+    assert "list=model-presets" in body
+    # Every runtime the contract offers has something to pick, so adding one to the
+    # literal without adding its models leaves a runtime selectable and unguessable.
+    for runtime in get_args(Runtime):
+        assert MODEL_PRESETS.get(runtime), f"no model presets for runtime `{runtime}`"
+        for slug in MODEL_PRESETS[runtime]:
+            assert f"value='{slug}' label='{runtime}'" in body
 
 
 async def test_an_agent_from_config_yaml_is_shown_but_not_editable(serve, editable):  # noqa: F811
