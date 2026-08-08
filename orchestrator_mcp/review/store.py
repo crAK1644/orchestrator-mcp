@@ -276,13 +276,13 @@ class ReviewStore:
 
         return await self._run(work)
 
-    async def save_host_findings(self, review_id: UUID | str, findings: Any) -> None:
-        await self._run(
-            lambda: self._db.execute(
-                "UPDATE reviews SET host_findings_json = ?, updated_at = ? WHERE id = ?",
-                (_json_or_none(self._keep(findings)), _now(), str(review_id)),
-            )
-        )
+    # There is deliberately no `save_host_findings`. `consume_confirm_token` above is
+    # the only writer of `host_findings_json`, and it writes them in the same statement
+    # that spends the token and moves the review to `running` -- which is what makes
+    # "the host formed its own findings before it read anyone else's" a fact about the
+    # database rather than a convention. A standalone setter, even an unused one, is a
+    # statement that would let them be written or rewritten afterwards, and the whole
+    # point of deep mode is that they cannot be.
 
     @property
     def keeps_content(self) -> bool:

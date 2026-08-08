@@ -567,29 +567,48 @@ class ReviewService:
                         host_findings=host_findings,
                         secrets_mode=secrets_mode,
                     )
-                current = await self.store.get_review(review.id)
-                if current.status != "running":
-                    raise ValueError(
-                        f"review `{review.id}` became `{current.status}` before its "
-                        "reviewers started"
-                    )
-                # Before a single task starts: a reviewer whose task dies before it can
-                # record anything must read back as `failed`, not as never asked.
-                await self.store.reserve_reviewers(review.id, agent_ids)
-                # Read again, because the reservation above is an await and `cancel`
-                # does not take this lease. Between the check and `create_task` there
-                # must be no suspension point at all, or a cancel landing inside one
-                # sends the material anyway.
-                if (await self.store.get_review(review.id)).status != "running":
-                    raise ValueError(
-                        f"review `{review.id}` was cancelled before its reviewers started"
-                    )
-                tasks = [asyncio.create_task(one(agent_id)) for agent_id in agent_ids]
-                self._tasks[review_key] = tasks
+                # From here on this call owns the run: the lease is held and the token,
+                # if there was one, is spent. Anything that goes wrong now leaves a
+                # review saying `running` with nothing running -- the lease is released
+                # on the way out, so the reviewers that status claims are in flight do
+                # not exist, and the review sits there refusing to be deleted ("still
+                # running; cancel it first") for reviewers that were never started.
+                #
+                # Narrower than the whole block on purpose. A call that lost the race
+                # for the lease, or spent a token that was already spent, does not own
+                # this review and must not touch its status -- doing so is how the
+                # loser of two simultaneous runs failed the winner.
                 try:
-                    done = await asyncio.gather(*tasks, return_exceptions=True)
-                finally:
-                    self._tasks.pop(review_key, None)
+                    current = await self.store.get_review(review.id)
+                    if current.status != "running":
+                        raise ValueError(
+                            f"review `{review.id}` became `{current.status}` before its "
+                            "reviewers started"
+                        )
+                    # Before a single task starts: a reviewer whose task dies before it
+                    # can record anything must read back as `failed`, not as never asked.
+                    await self.store.reserve_reviewers(review.id, agent_ids)
+                    # Read again, because the reservation above is an await and `cancel`
+                    # does not take this lease. Between the check and `create_task` there
+                    # must be no suspension point at all, or a cancel landing inside one
+                    # sends the material anyway.
+                    if (await self.store.get_review(review.id)).status != "running":
+                        raise ValueError(
+                            f"review `{review.id}` was cancelled before its reviewers started"
+                        )
+                    tasks = [asyncio.create_task(one(agent_id)) for agent_id in agent_ids]
+                    self._tasks[review_key] = tasks
+                    try:
+                        done = await asyncio.gather(*tasks, return_exceptions=True)
+                    finally:
+                        self._tasks.pop(review_key, None)
+                except Exception:
+                    # Guarded by `allowed_from`, so this reports only the failure that
+                    # happened here: a cancel that already moved the review is the state
+                    # that wins, and `_settle` has not run, so no reviewer's own outcome
+                    # is overwritten either.
+                    await self.store.transition(review.id, "failed", ("running",))
+                    raise
         finally:
             if owns_batch_marker:
                 batch_done.set()

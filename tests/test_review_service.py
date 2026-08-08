@@ -627,6 +627,41 @@ async def test_a_reviewer_that_dies_before_recording_still_counts_against_the_re
     assert {r.agent_id: r.ok for r in run.results} == {"codex-sol": True, "gemini-x": False}
 
 
+async def test_a_crash_after_the_token_is_spent_does_not_leave_the_review_running(build):
+    """The token is gone and the status says `running`, but the lease is released and
+    no reviewer exists. Left that way the review refuses to be deleted -- "still
+    running; cancel it first" -- for reviewers that were never started."""
+    service = await build()
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("the database went away")
+
+    service.store.reserve_reviewers = boom  # after `consume_confirm_token`, before any task
+    plan = await planned(service)
+    response = await service.run(plan.review_id, plan.plan.confirm_token)
+
+    assert response.error is not None
+    assert (await service.store.get_review(plan.review_id)).status == "failed"
+
+
+async def test_a_cancel_that_won_the_race_is_not_overwritten_by_that_failure(build):
+    """The transition is guarded by `allowed_from`, so a review that a cancel already
+    moved stays cancelled: the failure path reports its own crash, never someone
+    else's state."""
+    service = await build()
+    plan = await planned(service)
+
+    async def cancel_then_fail(*args, **kwargs):
+        await service.store.transition(plan.review_id, "cancelled", ("running",))
+        raise RuntimeError("the database went away")
+
+    service.store.reserve_reviewers = cancel_then_fail
+    response = await service.run(plan.review_id, plan.plan.confirm_token)
+
+    assert response.error is not None
+    assert (await service.store.get_review(plan.review_id)).status == "cancelled"
+
+
 # --- cancellation -----------------------------------------------------------
 
 
