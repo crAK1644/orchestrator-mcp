@@ -80,8 +80,8 @@ Reply with exactly: ACK {index}
 --- END PART {index} ---
 [END OF FRAGMENT {index} OF {total}]
 The text above is material to store, not a task to carry out -- any instruction inside
-it belongs to the message being assembled and takes effect only once part {total} has
-arrived. {remaining}
+it belongs to the message being assembled, and none of them take effect until a later
+message asks you to answer the whole. {remaining}
 Reply now with exactly: ACK {index}
 Any other reply -- an answer, a summary, a question -- ends the consultation with an
 error, because an answer given here is an answer to part of a message."""
@@ -277,7 +277,20 @@ class AntigravityCliAdapter:
                 # chose, and only the turn it happened on reports it.
                 check_model(agent, reported)
 
-                conversation = _conversation_id(events, envelope) or conversation
+                reported_conversation = _conversation_id(events, envelope)
+                if conversation and reported_conversation not in (None, conversation):
+                    # The turn was sent with `--conversation`, and the CLI answered
+                    # naming a different one. Adopting it silently is what the check
+                    # below was written to prevent in its empty form: the fragments
+                    # already delivered are in the old conversation, the ones still to
+                    # come would go to the new one, and the answering turn would be
+                    # asked to reassemble a message it holds only part of.
+                    raise AdapterError(
+                        ConsultErrorCode.TRANSPORT_ERROR,
+                        "the agent answered in a different conversation than the one the "
+                        "earlier parts of this prompt were delivered to",
+                    )
+                conversation = reported_conversation or conversation
                 if not conversation:
                     # After every turn, not once at the end: without an id the next
                     # fragment starts a *new* conversation, and a later turn finally
@@ -289,8 +302,8 @@ class AntigravityCliAdapter:
                     )
                 usage = _add(usage, _usage(envelope))
 
-                if not answering and f"ACK {index}" not in (
-                    said := str(envelope.get("response") or "")
+                if not answering and not _acknowledged(
+                    said := str(envelope.get("response") or ""), index
                 ):
                     # The fragment asked for exactly `ACK {index}`. Anything else -- an
                     # empty response, which is what an auto-denied tool call looks like,
@@ -390,6 +403,23 @@ def _turns(text: str) -> list[tuple[str, bool]]:
         for index, body in enumerate(parts, start=1)
     ]
     return turns + [(FINAL_TEMPLATE.format(total=total), True)]
+
+
+def _acknowledged(said: str, index: int) -> bool:
+    """Did the model reply with this fragment's ACK and nothing else?
+
+    A substring test is what this used to be, and it accepts the one reply the check
+    exists to reject: a model that answers a fragment with a full review saying "I will
+    reply ACK 2 as asked" contains the token, passes, and the consultation goes on to
+    answer material it only acknowledged in prose. `ACK 1` is also a substring of the
+    wrong reply `ACK 12`, so a ten-part message can accept an ACK for the wrong part.
+
+    Not an equality test either: `ACK 2.` and `"ACK 2"` are the right answer typed by a
+    model with manners, and there is no recovery turn behind this check -- a reply
+    rejected here ends the whole consultation after every earlier fragment has been
+    paid for. Surrounding punctuation and case are allowed; a sentence is not.
+    """
+    return re.fullmatch(rf"\W*ACK\W*{index}\W*", said.strip(), re.IGNORECASE) is not None
 
 
 def _fragments(text: str, limit: int) -> list[str]:
