@@ -1186,14 +1186,38 @@ def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, in
     slightly wrong should cost its structure, not its whole answer. A failure
     returns `([], False, 0)` and the prose is still shown.
     """
-    for chunk in _candidates(answer):
+    # Set by a later candidate that was meant to be the block and did not survive
+    # parsing. Once that has happened, an earlier candidate is not a fallback, it is a
+    # different block: the empty shape a reviewer quoted while explaining what it was
+    # asked for. Taking it would report `parsed=True` with no findings and no re-ask,
+    # which is the exact hole this ordering exists to close. Failing costs one cheap
+    # re-ask turn instead, and the prose is returned either way.
+    #
+    # "Meant to be the block" is provenance, not a substring test. A fenced block is:
+    # the reviewer was told to end with one, so a later fence that does not parse, or
+    # parses without a list-valued `findings`, is its attempt at the block going
+    # wrong. Reading it off the text instead -- looking for `"findings"` in the chunk
+    # -- misses every JSON dialect a model reaches for when it goes wrong, single
+    # quotes first among them.
+    broken = False
+    for chunk, fenced in _candidates(answer):
         try:
             payload = json.loads(chunk)
         except (ValueError, RecursionError):
+            # The unfenced candidate is a backwards slice from the last `"findings"`,
+            # so a parse failure there is the block too -- nothing else would have put
+            # the word within reach.
+            broken = True
             continue
         raw = payload.get("findings") if isinstance(payload, dict) else None
         if not isinstance(raw, list):
+            # Except this one: an unfenced slice with no `findings` key of its own is
+            # a mis-slice, not a block. The scan lands on a nested object whenever a
+            # reviewer writes the word in prose after its block.
+            broken = broken or fenced or isinstance(payload, dict) and "findings" in payload
             continue
+        if broken:
+            return [], False, 0
 
         findings = []
         for item in raw:
@@ -1231,29 +1255,42 @@ def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, in
 
 
 def _candidates(answer: str):
-    """Blocks worth trying: every fenced one, then the last `{...}` mentioning
-    findings. `rfind` rather than a forward scan because the reviewer is asked to
-    end with the block, and a forward scan over a megabyte of prose would spend the
-    time on every brace before it."""
+    """Every block that could be the findings object, latest in the answer first.
+
+    Ordering by position, and across both forms rather than fenced-then-unfenced, is
+    load-bearing rather than tidy: the caller takes the first candidate that works,
+    so in document order a reviewer quoting the required shape early -- an empty
+    `{"findings": []}` in its prose -- would win over the real block at the end. That
+    parses, so the result is not `findings_parsed=False`; it is a review claiming
+    zero findings while its Criticals sit in the text above, and `missing_criticals`
+    then has nothing to catch. A fenced-first order loses the same way whenever the
+    quoted shape is the fenced one and the real block is not.
+
+    `rfind` for the unfenced scan because the reviewer is asked to end with the
+    block, and a forward scan over a megabyte of prose would spend the time on every
+    brace before it. That scan may well land inside a fenced block; the duplicate
+    costs one `json.loads` of text that already parsed.
+
+    Each candidate carries whether it was fenced, because the caller judges a broken
+    block differently from a bad slice and only the fence says which it was looking
+    at.
+    """
     if not answer:
         return
-    for match in _FENCE.finditer(answer):
-        yield match.group(1)
+    blocks = [(match.start(1), match.group(1), True) for match in _FENCE.finditer(answer)]
     marker = answer.rfind('"findings"')
-    if marker == -1:
-        return
-    start = answer.rfind("{", 0, marker)
-    if start == -1:
-        return
+    start = answer.rfind("{", 0, marker) if marker != -1 else -1
     depth = 0
-    for index in range(start, len(answer)):
+    for index in range(start, len(answer)) if start != -1 else ():
         if answer[index] == "{":
             depth += 1
         elif answer[index] == "}":
             depth -= 1
             if depth == 0:
-                yield answer[start : index + 1]
-                return
+                blocks.append((start, answer[start : index + 1], False))
+                break
+    for _, chunk, fenced in sorted(blocks, key=lambda block: block[0], reverse=True):
+        yield chunk, fenced
 
 
 def _sources(stored: list[Any]) -> list[ConsultSource]:
