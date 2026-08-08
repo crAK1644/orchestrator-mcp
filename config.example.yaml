@@ -30,7 +30,7 @@ consult:
 
   agents:
     codex-sol:              # the id callers name in `target_agent`
-      runtime: codex        # codex | claude | antigravity
+      runtime: codex        # codex | claude | opencode | antigravity
       command: codex        # resolved on PATH; an absolute path works too, which is
                             # what the ChatGPT desktop app needs -- it bundles the CLI
                             # at /Applications/ChatGPT.app/Contents/Resources/codex
@@ -71,6 +71,27 @@ consult:
       scores:
         reasoning: 90
         review: 85
+
+    # OpenCode reaches many hosted providers through one CLI -- DeepSeek, Qwen, Kimi --
+    # which is how a model none of the three above carry becomes consultable without
+    # this server holding a key.
+    deepseek-flash:
+      runtime: opencode
+      command: opencode
+      model: opencode/deepseek-v4-flash-free
+                            # always `provider/model`; `opencode models` lists what is
+                            # reachable. `opencode auth login` once for a provider that
+                            # needs a credential. Hosted only: a consultation runs with
+                            # no `provider` block, so a locally served model -- Ollama,
+                            # LM Studio, your own endpoint -- cannot be named here. This
+                            # server consults a subscription; it does not run a model on
+                            # your machine
+      priority: 40
+      web_search: false     # not offered by this runtime, and setting it true here
+                            # does not buy it: web mode is refused either way
+      scores:
+        coding: 60
+        reasoning: 60
 
   # Who reviews. Named agents rather than a capability score, because a review is
   # only worth comparing with the last one if the same models wrote both. Delete the

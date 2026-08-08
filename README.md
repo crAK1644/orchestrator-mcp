@@ -29,7 +29,7 @@
 
 ---
 
-Orchestrator MCP is a local [Model Context Protocol](https://modelcontextprotocol.io) server that lets one coding agent consult another. It launches the Codex, Claude Code, or experimental Antigravity CLI already installed and authenticated on your machine, routes the request, and returns a structured answer.
+Orchestrator MCP is a local [Model Context Protocol](https://modelcontextprotocol.io) server that lets one coding agent consult another. It launches the Codex, Claude Code, OpenCode, or experimental Antigravity CLI already installed and authenticated on your machine, routes the request, and returns a structured answer.
 
 It does not ask for a provider key, proxy provider traffic, or silently switch models. Authentication remains inside each vendor's CLI.
 
@@ -67,6 +67,7 @@ Same subscriptions. Less context shuffling.
 ```text
  Claude Code host  ──►  Orchestrator MCP  ──►  Codex CLI
  Codex host        ──►  Orchestrator MCP  ──►  Claude Code CLI
+ Any host          ──►  Orchestrator MCP  ──►  OpenCode CLI (DeepSeek, Qwen, local…)
  Any host          ──►  Orchestrator MCP  ──►  Antigravity CLI (experimental)
 
                          local routing
@@ -98,6 +99,8 @@ claude auth login
 
 These are the normal Codex and Claude Code login flows. Orchestrator checks readiness, but never reads or stores their credentials.
 
+For OpenCode, sign in once with `opencode auth login` for whichever provider you plan to consult. Hosted providers only — this server does not run a model on your machine. See the [OpenCode runtime](#opencode-runtime--deepseek-qwen-kimi) section below.
+
 ### 2. Create `config.yaml`
 
 ```yaml
@@ -123,7 +126,7 @@ consult:
       scores: { coding: 90, research: 95, writing: 95, review: 95 }
 ```
 
-See [`config.example.yaml`](config.example.yaml) for every option and an experimental Antigravity example.
+See [`config.example.yaml`](config.example.yaml) for every option, an OpenCode agent, and an experimental Antigravity example.
 
 ### 3. Add the server to your MCP client
 
@@ -260,7 +263,7 @@ Agent configuration:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `runtime` | required | `codex`, `claude`, or `antigravity`. |
+| `runtime` | required | `codex`, `claude`, `opencode`, or `antigravity`. |
 | `command` | required | Executable name or absolute path. |
 | `model` | required | Requested model and, where possible, verified responding model. |
 | `priority` | `100` | Lower wins a score tie. |
@@ -303,7 +306,7 @@ The workflow is deliberately split:
 Finalization must preserve every machine-readable Critical finding, even when other reviewers disagree with it. Deep mode also requires the host agent to record its own findings before seeing the reviewers' answers.
 
 > [!IMPORTANT]
-> Material sent to a reviewer may remain in that vendor CLI's own history. Orchestrator cannot erase Codex, Claude Code, or Antigravity session logs.
+> Material sent to a reviewer may remain in that vendor CLI's own history. Orchestrator cannot erase Codex, Claude Code, OpenCode, or Antigravity session logs.
 
 <details>
 <summary><strong>Review tool reference</strong></summary>
@@ -348,7 +351,7 @@ Credential-shaped values are masked before storage. `secrets="send_as_is"` is an
 > [!WARNING]
 > **Redaction covers the review path, and only this database.** In a review, credential-shaped values are replaced before every insert — the goal, the context, the manifest, and every reviewer's answer. A plain `orchestrator_consult` is not redacted: its prompts, context, and answers are stored as you sent them. Detection is best-effort pattern matching rather than a scanner with perfect recall, so a secret with no recognizable shape survives it either way. Keep the database private, or set `store_full_content: false`.
 >
-> **Vendor history is outside all of this.** Material sent to a reviewer also lands in that reviewer's own CLI history — Codex writes `~/.codex/sessions/`, and the others keep their own logs. Orchestrator cannot redact or erase those files. It does read from them, in two places and for two fields: the Codex adapter opens the rollout file for the session it just ran to recover the model identity the CLI does not otherwise report, and opens the newest rollout to read the rate-limit numbers the service last returned. Nothing else is taken from either file.
+> **Vendor history is outside all of this.** Material sent to a reviewer also lands in that reviewer's own CLI history — Codex writes `~/.codex/sessions/`, and the others keep their own logs. Orchestrator cannot redact or erase those files. It does read from them, in three places and for two fields: the Codex adapter opens the rollout file for the session it just ran to recover the model identity the CLI does not otherwise report, and opens the newest rollout to read the rate-limit numbers the service last returned; the OpenCode adapter runs `opencode export` on the session it just ran, for the same reason — the model identity is absent from that runtime's event stream. Nothing else is taken from any of them.
 
 Two more limits worth knowing:
 
@@ -356,6 +359,38 @@ Two more limits worth knowing:
 - A caller-supplied JSON Schema is trusted input. A pathological regular expression in one can consume a large amount of CPU.
 
 Orchestrator checks structure, routing, permissions, and model identity where observable. It cannot prove that a model's factual claims are true.
+
+<details>
+<summary><strong>OpenCode runtime — DeepSeek, Qwen, Kimi</strong></summary>
+
+<br>
+
+[OpenCode](https://opencode.ai) is one CLI in front of many hosted providers, which is how models the other three runtimes do not carry become reachable without Orchestrator holding a key. Models are addressed as `provider/model`:
+
+```yaml
+    deepseek-flash:
+      runtime: opencode
+      command: opencode
+      model: opencode/deepseek-v4-flash-free
+      scores: { coding: 60, reasoning: 60 }
+```
+
+**Hosted providers only. Orchestrator does not run a model on your machine, or on anyone's.** Like the Codex and Claude runtimes, this one consults a subscription you already hold. A locally served model — Ollama, LM Studio, your own endpoint — cannot be reached through it, and that is enforced by construction rather than by a check: a consultation runs under a configuration with no `provider` block at all, and a provider block is the only place an endpoint outside OpenCode's own catalogue is ever named. Verified against the CLI: under this configuration `--model ollama/qwen2.5:7b` fails with `ProviderModelNotFoundError` and the local server is never contacted. The cost is real — if the model you want is one you host yourself, this runtime cannot consult it.
+
+**Readiness is asked under that same configuration.** Orchestrator runs `opencode models` with your global config out of reach and checks that the agent's `provider/model` is listed, so readiness answers the question the consultation will actually ask rather than reporting a model that would then fail to resolve. A provider that needs a credential wants `opencode auth login` once; stored keys and OAuth tokens live in OpenCode's data directory, which Orchestrator neither reads nor relocates. The child gets a fixed allowlist of environment variables — `HOME`, `PATH`, `LANG` and a few more — and every `*_API_KEY` in this server's own environment is excluded from it.
+
+Each consultation runs under a configuration Orchestrator writes and nothing crosses over from your own: permissions denied outright, no MCP servers, no plugins, no instructions, no project agents, no providers, sharing and auto-update off. `OPENCODE_CONFIG` merges rather than replaces, so `XDG_CONFIG_HOME` is pointed at an empty directory as well — your global config is out of reach, not merely outranked.
+
+The working directory is `~/.orchestrator-mcp/opencode/<agent>`, mode `0700` with the configuration files `0600`, holding nothing else. One per agent rather than one shared: the files are identical for every agent today, and one release that gives an agent something of its own to write would turn that into a race between a consultation starting and reading its configuration. Under `$HOME` rather than `/tmp` deliberately: Orchestrator refuses to run if it finds an `opencode.json` or `opencode.jsonc` above that directory — a parent's permissions outrank its own — and that check can only run *before* OpenCode reads the chain, so every ancestor needs to be a directory no one else can write to. It is not deleted afterwards, and cannot be: OpenCode records a session's directory and re-resolves it on resume, so a per-run temporary directory would break every follow-up turn.
+
+Two limits worth knowing before you enable it:
+
+- **Web search is not supported in this runtime.** `source_mode: web` is refused whatever `web_search` is set to, rather than being served a model-mode answer under a web-mode contract.
+- **`opencode run` exits 0 even when it fails**, so success is judged from the event stream. A run that produces no answer is reported as a failure rather than as an empty one.
+
+There is no schema flag on this runtime, unlike the other three, so the response shape is stated in the prompt. A model that returns malformed JSON is asked once more in the same session, and a second failure ends the consultation.
+
+</details>
 
 <details>
 <summary><strong>Experimental Antigravity runtime</strong></summary>
@@ -445,7 +480,7 @@ Live tests make real requests and may use paid capacity. Do not run them in CI u
 | `no_agent_available` | Give an enabled, non-host agent a positive score for the requested capability. |
 | `agent_not_installed` | Use an absolute path for `command`; GUI apps often inherit a smaller `PATH`. |
 | `connection_required` | Run the login command returned in `required_action`, then retry. |
-| Host runtime error | Set `ORCHESTRATOR_HOST_RUNTIME` to `claude`, `codex`, or `antigravity`. |
+| Host runtime error | Set `ORCHESTRATOR_HOST_RUNTIME` to `claude`, `codex`, `opencode`, or `antigravity`. |
 | Every consultation starts over | Return the previous `consultation_id` on the next call. |
 | `timeout` during a review | Raise `consult.timeout_s`; high-effort review can take much longer than 180 seconds. |
 | Dashboard changes do not appear | Restart the MCP server; configuration is loaded at startup. |

@@ -96,6 +96,16 @@ MODEL_PRESETS: dict[str, tuple[str, ...]] = {
         "claude-opus-4-6-thinking",
         "gpt-oss-120b-medium",
     ),
+    # The only runtime whose slug is two parts: opencode addresses `provider/model`,
+    # and the provider half decides where the request goes. All hosted, and only hosted
+    # is offerable: the consultation runs under a configuration with no `provider` block
+    # at all, which leaves opencode's own catalogue and nothing locally served.
+    "opencode": (
+        "opencode/deepseek-v4-flash-free",
+        "opencode/big-pickle",
+        "opencode/longcat-2.0-free",
+        "opencode/nemotron-3-ultra-free",
+    ),
 }
 
 # Conservative on purpose: an agent id ends up in a file name's neighbourhood, in a

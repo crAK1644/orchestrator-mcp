@@ -177,7 +177,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -458,7 +459,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -546,7 +548,8 @@
           "enum": [
             "codex",
             "claude",
-            "antigravity"
+            "antigravity",
+            "opencode"
           ],
           "title": "Host Runtime",
           "type": "string"
@@ -598,7 +601,8 @@
           "enum": [
             "codex",
             "claude",
-            "antigravity"
+            "antigravity",
+            "opencode"
           ],
           "title": "Target Runtime",
           "type": "string"
@@ -1500,7 +1504,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -2483,7 +2488,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -3452,7 +3458,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -4515,7 +4522,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -5434,7 +5442,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -6369,7 +6378,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -7280,7 +7290,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -7546,7 +7557,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -7634,7 +7646,8 @@
           "enum": [
             "codex",
             "claude",
-            "antigravity"
+            "antigravity",
+            "opencode"
           ],
           "title": "Host Runtime",
           "type": "string"
@@ -8336,7 +8349,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"

@@ -7,6 +7,7 @@ from .antigravity_cli import AntigravityCliAdapter
 from .base import AdapterError, AdapterResult, AgentStatus, ConsultAdapter
 from .claude_cli import ClaudeCliAdapter
 from .codex_cli import CodexCliAdapter
+from .opencode_cli import OpenCodeCliAdapter
 from ..errors import ConsultErrorCode
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "ClaudeCliAdapter",
     "CodexCliAdapter",
     "ConsultAdapter",
+    "OpenCodeCliAdapter",
     "adapter_for",
 ]
 
@@ -31,6 +33,8 @@ def adapter_for(agent: AgentConfig, config: ConsultConfig) -> ConsultAdapter:
         return CodexCliAdapter(config.timeout_s)
     if agent.runtime == "antigravity":
         return AntigravityCliAdapter(config.timeout_s)
+    if agent.runtime == "opencode":
+        return OpenCodeCliAdapter(config.timeout_s)
     raise AdapterError(
         ConsultErrorCode.AGENT_UNAVAILABLE,
         f"no adapter is implemented for runtime `{agent.runtime}`",
