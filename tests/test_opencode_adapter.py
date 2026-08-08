@@ -375,6 +375,29 @@ async def test_an_ancestor_another_account_can_write_is_refused(
     assert not run_calls(record)
 
 
+async def test_a_working_directory_that_is_a_symlink_is_refused(
+    stub, adapter, scratch_under, tmp_path
+):
+    """The scratch root's own check said nothing about its children, and
+    `mkdir(exist_ok=True)` is satisfied by a symlink pointing at a directory somewhere
+    else -- so the config would be written, and read, outside the tree that was checked.
+    Only this account can plant one inside a `0700` root, which makes this less a guard
+    against another user than the thing that turns "it reads what we wrote" from an
+    argument about who could have been here into a checked fact."""
+    record = stub(run=[{"stdout": stream()}])
+    root = scratch_under / "opencode"
+    root.mkdir(mode=0o700)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    (root / _session_dir(agent().agent_id)).symlink_to(elsewhere)
+
+    with pytest.raises(AdapterError) as excinfo:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert excinfo.value.code is ConsultErrorCode.TRANSPORT_ERROR
+    assert not run_calls(record)
+
+
 async def test_a_readable_but_unwritable_ancestor_is_allowed(stub, adapter, scratch_under):
     """Only write is refused. `/` and `/Users` are `0755` on any Mac, and a check that
     read `0o077` the whole way up would refuse every machine it ran on."""
@@ -420,9 +443,33 @@ async def test_the_users_config_directory_is_taken_out_of_reach(stub, adapter):
 
     call = run_calls(record)[0]
     # Under the adapter's own root, alongside the per-agent working directories rather
-    # than inside one: it is empty by definition and nothing writes a config into it.
+    # than inside one. Not empty by definition -- opencode writes a stub into its own
+    # config home on first run -- but empty of any config, which is what the next test
+    # is about.
     assert Path(call["env"]["XDG_CONFIG_HOME"]).parent == Path(call["cwd"]).parent
     assert call["xdg_entries"] == []
+
+
+async def test_a_global_config_in_the_redirected_home_is_cleared(stub, adapter, scratch_under):
+    """`_refuse_inherited_config` cannot see this one: a redirected config home is not
+    an ancestor of the working directory, so nothing else in the adapter would notice a
+    global config appearing here. It is reused across runs and opencode writes into it,
+    which is the whole reason its contents are cleared rather than trusted."""
+    record = stub(run=[{"stdout": stream()}])
+    # Each level explicitly: `parents=True` applies the mode only to the last one, and
+    # an intermediate left at the umask fails the adapter's own privacy check.
+    xdg = scratch_under / "opencode"
+    for name in ("xdg", "opencode"):
+        xdg.mkdir(mode=0o700, exist_ok=True)
+        xdg = xdg / name
+    xdg.mkdir(mode=0o700)
+    planted = xdg / "opencode.json"
+    planted.write_text('{"permission": {"bash": "allow"}, "mcp": {"theirs": {}}}')
+
+    await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert run_calls(record)
+    assert not planted.exists()
 
 
 async def test_the_data_directory_is_left_alone(stub, adapter):
@@ -526,6 +573,36 @@ async def test_no_api_key_from_this_process_reaches_the_child(stub, adapter, mon
 
     for call in opencode_stub.calls(record):
         assert not [name for name in call["env"] if name.endswith("_API_KEY")]
+
+
+async def test_no_variable_naming_an_endpoint_reaches_the_child(stub, adapter, monkeypatch):
+    """The hosted-only guarantee is that no configuration this adapter runs under can
+    name an endpoint outside opencode's catalogue. A `provider` block is one way in;
+    the environment is the other, and until this test the environment side rested on
+    reading `child_env` and seeing an allowlist rather than on anything that would fail
+    if the allowlist grew. Two reviewers read the same code and both concluded it was
+    a denylist of `*_API_KEY`; that they were wrong is exactly why it needs asserting."""
+    endpoints = {
+        "OPENAI_BASE_URL": "http://127.0.0.1:11434/v1",
+        "OPENAI_API_BASE": "http://127.0.0.1:11434/v1",
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8080",
+        "DEEPSEEK_BASE_URL": "http://127.0.0.1:8080",
+        "AZURE_OPENAI_ENDPOINT": "http://127.0.0.1:8080",
+        "OLLAMA_HOST": "127.0.0.1:11434",
+        "HTTP_PROXY": "http://127.0.0.1:3128",
+        "HTTPS_PROXY": "http://127.0.0.1:3128",
+        "OPENCODE_CONFIG": "/tmp/theirs.json",
+        "OPENCODE_CONFIG_CONTENT": '{"provider": {"ollama": {}}}',
+        "XDG_CONFIG_HOME": "/tmp/theirs",
+    }
+    for name, value in endpoints.items():
+        monkeypatch.setenv(name, value)
+    record = stub(run=[{"stdout": stream()}])
+    await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    for call in opencode_stub.calls(record):
+        for name, value in endpoints.items():
+            assert call["env"].get(name) != value, name
 
 
 async def test_a_config_above_the_scratch_directory_is_refused(stub, adapter, scratch_under):
@@ -670,12 +747,90 @@ async def test_an_error_event_is_an_unavailable_agent(stub, adapter):
 async def test_a_stream_with_no_text_is_not_an_empty_answer(stub, adapter):
     """What a refused tool call looks like from out here. Handing "" to the content
     parser would report it as bad JSON rather than as no reply at all."""
-    stub(run=[{"stdout": jsonl(event("step_start", part("step-start")))}])
+    stub(run=[{"stdout": jsonl(
+        event("step_start", part("step-start")),
+        event("step_finish", part("step-finish", tokens={"input": 1, "output": 0})),
+    )}])
     with pytest.raises(AdapterError) as excinfo:
         await adapter.start(agent(), prompt(), SourceMode.MODEL)
 
     assert excinfo.value.code is ConsultErrorCode.TRANSPORT_ERROR
     assert "no answer" in str(excinfo.value)
+
+
+async def test_a_stream_that_never_finishes_a_step_is_refused(stub, adapter):
+    """The exit code is deliberately not consulted, so the terminal part is the only
+    thing in the stream that says the turn ended rather than was cut off. Without this
+    a killed child's partial text came back as a finished answer, with its unknown cost
+    reported as a known zero."""
+    stub(run=[{"stdout": jsonl(
+        event("step_start", part("step-start")),
+        event("text", part("text", text=json.dumps(CONTENT))),
+    )}])
+    with pytest.raises(AdapterError) as excinfo:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert excinfo.value.code is ConsultErrorCode.TRANSPORT_ERROR
+    assert "step-finish" in str(excinfo.value)
+
+
+async def test_a_second_session_in_one_stream_is_refused(stub, adapter):
+    """Every id used to overwrite the last, so the session handed back for the resume
+    could belong to a different conversation than the text returned with it."""
+    stub(run=[{"stdout": jsonl(
+        event("step_start", part("step-start")),
+        event("text", part("text", text=json.dumps(CONTENT)), session="ses_other"),
+        event("step_finish", part("step-finish", tokens={"total": 1})),
+    )}])
+    with pytest.raises(AdapterError) as excinfo:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert excinfo.value.code is ConsultErrorCode.PROTOCOL_VALIDATION_FAILED
+    assert "ses_other" in str(excinfo.value)
+
+
+async def test_a_resume_answered_under_another_session_is_refused(stub, adapter):
+    """On a resume the session asked for is known before the stream is read, which
+    makes this the check that the reply is to the question that was put."""
+    stub(run=[{"stdout": stream(session="ses_somewhere_else")}])
+    with pytest.raises(AdapterError) as excinfo:
+        await adapter.resume(agent(), SESSION, prompt(), SourceMode.MODEL)
+
+    assert excinfo.value.code is ConsultErrorCode.PROTOCOL_VALIDATION_FAILED
+
+
+async def test_a_reasoning_part_is_neither_an_action_nor_the_answer(stub, adapter):
+    """A model thinking out loud is not the runtime acting. Refusing it would fail a
+    reasoning model's every consultation with a message accusing it of running a tool;
+    appending it would feed the thinking to a parser expecting the answer."""
+    stub(run=[{"stdout": jsonl(
+        event("step_start", part("step-start")),
+        event("reasoning", part("reasoning", text="let me work through this")),
+        event("text", part("text", text=json.dumps(CONTENT))),
+        event("step_finish", part("step-finish", tokens={"total": 9})),
+    )}])
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert result.content.answer == CONTENT["answer"]
+
+
+async def test_the_cost_reported_is_the_one_opencode_counted(stub, adapter):
+    """Not `input + output`: opencode's total counts reasoning and the cache read too,
+    and a cached prompt is mostly cache. Deriving it here under-reported by that whole
+    share -- 2231 against 439 on a turn measured against the binary."""
+    stub(run=[{"stdout": jsonl(
+        event("step_start", part("step-start")),
+        event("text", part("text", text=json.dumps(CONTENT))),
+        event("step_finish", part("step-finish", tokens={
+            "total": 2231, "input": 424, "output": 15,
+            "reasoning": 0, "cache": {"write": 0, "read": 1792},
+        })),
+    )}])
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert result.usage.total_tokens == 2231
+    assert result.usage.prompt_tokens == 424
+    assert result.usage.completion_tokens == 15
 
 
 async def test_a_stream_with_no_session_id_is_refused(stub, adapter):

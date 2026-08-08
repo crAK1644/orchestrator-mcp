@@ -42,6 +42,7 @@ import os
 import stat
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from ...contract import Usage
 from ..config import AgentConfig
@@ -73,6 +74,13 @@ EXPORT_TIMEOUT_S = 30.0
 # observed in this stream, so a check that looks for one by name would pass every
 # run whether or not a tool had run.
 ANSWER_PARTS = frozenset({"step-start", "text", "step-finish"})
+
+# Emitted by a model that reasons before it answers. Not an action and not an answer,
+# so neither a refusal nor part of the text. `"reasoning"` is a part type this binary
+# knows -- the literal sits beside `"tool"` and `"step-finish"` in it -- though none of
+# the models reachable on this account emit one, so this is a latent break closed
+# rather than an observed one repaired.
+IGNORED_PARTS = frozenset({"reasoning"})
 
 # Merged in from every directory above the working one, and neither `mcp` nor
 # `instructions` can be removed by a config lower down.
@@ -359,13 +367,7 @@ def _scratch() -> Path:
     _refuse_writable_ancestors(root.parent)
     root.mkdir(mode=0o700, exist_ok=True)
 
-    info = root.lstat()  # not `stat`: a symlink must fail here, not be followed
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise AdapterError(
-            ConsultErrorCode.TRANSPORT_ERROR,
-            f"`{root}` is not a private directory belonging to this user, so it is not "
-            "somewhere a consultation can safely be run from",
-        )
+    _refuse_shared(root)
 
     # An opencode config directly here would be an *ancestor* of the directory the
     # consultation runs in, which `_refuse_inherited_config` rightly refuses to run
@@ -377,6 +379,26 @@ def _scratch() -> Path:
         if stale.is_file():
             stale.unlink()
     return root
+
+
+def _refuse_shared(path: Path) -> None:
+    """Refuse a directory that is not this user's own, private, and not a symlink.
+
+    Applied to the scratch root and to every working directory under it. The root's
+    own check said nothing about its children, and `mkdir(mode=0o700, exist_ok=True)`
+    on an existing entry says nothing either -- the mode applies only on creation, and
+    `exist_ok` is satisfied by a symlink pointing at a directory somewhere else
+    entirely. Creating one inside a `0700` root takes this account, so this is not a
+    guard against another user; it is what makes "the config we wrote is the config it
+    reads" a checked fact rather than an argument about who could have been here.
+    """
+    info = path.lstat()  # not `stat`: a symlink must fail here, not be followed
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise AdapterError(
+            ConsultErrorCode.TRANSPORT_ERROR,
+            f"`{path}` is not a private directory belonging to this user, so it is not "
+            "somewhere a consultation can safely be run from",
+        )
 
 
 def _refuse_writable_ancestors(path: Path) -> None:
@@ -433,6 +455,7 @@ def _isolated(name: str) -> tuple[Path, dict[str, str]]:
     """
     root = _scratch() / name
     root.mkdir(mode=0o700, exist_ok=True)
+    _refuse_shared(root)
     _refuse_inherited_config(root)
 
     # Both places, because they fail differently. As the project config it outranks
@@ -472,13 +495,24 @@ def _empty_xdg() -> Path:
     opencode does: on its first run under a fresh config home it leaves an
     `opencode/opencode.jsonc` holding a `$schema` line and nothing else, alongside a
     `.gitignore` and whatever it installs for the providers it carries. That stub is
-    inert -- it declares no permission, no `mcp`, no `instructions` -- so it changes
-    nothing about the merge, which is why this directory can be reused rather than
-    emptied before each run. What matters is only that it is *not* the user's config
-    home, and it never becomes one.
+    inert today -- it declares no permission, no `mcp`, no `instructions`.
+
+    Which is why the config it leaves is cleared rather than trusted. This directory is
+    reused across runs, and `_refuse_inherited_config` cannot see it: it is a redirected
+    config home, not an ancestor of the working directory, so nothing else in this file
+    would notice a global config appearing here. A release that started writing a real
+    one would then merge it into every consultation, silently. Deleting is cheaper than
+    inspecting and does not have to be revisited when the stub's contents change --
+    opencode rewrites what it needs, and it needs nothing this adapter has not passed
+    on the command line.
     """
     empty = _scratch() / "xdg"
     empty.mkdir(mode=0o700, exist_ok=True)
+    _refuse_shared(empty)
+    for name in ANCESTOR_CONFIGS:
+        stale = empty / "opencode" / name
+        if stale.is_file():
+            stale.unlink()
     return empty
 
 
@@ -493,15 +527,24 @@ def _write(path: Path, text: str) -> None:
     nothing here is secret, but this is the file that decides a consultation may run no
     tools, and a mode is cheaper to set now than to notice missing later.
     """
-    scratch = path.with_suffix(f".{os.getpid()}.tmp")
-    # `O_NOFOLLOW` because the name is predictable; the mode argument applies only when
-    # `os.open` creates the file, so `fchmod` before the write narrows a leftover from a
-    # recycled pid rather than after it has already held the provider config.
-    descriptor = os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    # A pid alone named the same scratch file for both, so two turns of one agent
+    # starting together in this process shared an inode and each truncated what the
+    # other was writing -- the exact tearing the paragraph above says cannot happen.
+    # `O_EXCL` is what makes the name this call's own; `O_NOFOLLOW` is then redundant
+    # on it and kept for the leftover a crash could have left behind.
+    scratch = path.with_suffix(f".{os.getpid()}.{uuid4().hex}.tmp")
+    descriptor = os.open(
+        scratch, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+    )
+    # The mode argument applies only when `os.open` creates the file, so `fchmod` before
+    # the write narrows a leftover rather than after it has already held the config.
     os.fchmod(descriptor, 0o600)
-    with os.fdopen(descriptor, "w") as handle:
-        handle.write(text)
-    scratch.replace(path)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(text)
+        scratch.replace(path)
+    finally:
+        scratch.unlink(missing_ok=True)
 
 
 def _refuse_inherited_config(cwd: Path) -> None:
@@ -560,6 +603,16 @@ def _read_stream(result: ProcessResult, fallback_session: str | None) -> tuple[s
 
         session = event.get("sessionID")
         if isinstance(session, str) and session:
+            if native and session != native:
+                # Every id used to overwrite the last, so a stream carrying two sessions
+                # would hand back the id of whichever spoke last while the answer text
+                # came from both. On a resume `native` starts as the session that was
+                # asked, which makes this the check that the reply is to that question.
+                raise AdapterError(
+                    ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
+                    f"the agent answered under session `{session}` when the turn belongs "
+                    f"to `{native}`",
+                )
             native = session
 
         if event.get("type") == "error":
@@ -573,6 +626,12 @@ def _read_stream(result: ProcessResult, fallback_session: str | None) -> tuple[s
         if not isinstance(part, dict):
             continue
         kind = part.get("type")
+        if kind in IGNORED_PARTS:
+            # A model thinking out loud is not the runtime acting, and refusing it here
+            # would fail a reasoning model's every consultation with a message accusing
+            # it of running a tool. Ignored rather than appended: what a model thinks is
+            # not what it answered, and `parse_content` reads the answer as JSON.
+            continue
         if kind not in ANSWER_PARTS:
             raise AdapterError(
                 ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
@@ -588,6 +647,19 @@ def _read_stream(result: ProcessResult, fallback_session: str | None) -> tuple[s
         raise AdapterError(
             ConsultErrorCode.TRANSPORT_ERROR, "the agent returned no session id to resume"
         )
+    if usage is None:
+        # No `step-finish` at all. The exit code is deliberately not consulted, so
+        # without this a stream cut off mid-answer -- a killed child, a dropped
+        # connection, output past the cap -- returned its partial text as a finished
+        # reply. The terminal part is the only thing in the stream that says the turn
+        # ended, and three lines below this used to turn its absence into `Usage()`,
+        # reporting an unknown cost as a known zero in the same breath.
+        raise AdapterError(
+            ConsultErrorCode.TRANSPORT_ERROR,
+            f"the agent's reply ended without a `step-finish`, so it is a fragment "
+            f"rather than an answer (exit {result.returncode}): "
+            f"{result.stderr.strip()[:400]}",
+        )
     joined = "".join(text).strip()
     if not joined:
         # A stream that starts and finishes without a text part is what a refused tool
@@ -598,7 +670,7 @@ def _read_stream(result: ProcessResult, fallback_session: str | None) -> tuple[s
             f"the agent produced no answer (exit {result.returncode}): "
             f"{result.stderr.strip()[:400]}",
         )
-    return joined, native, usage or Usage()
+    return joined, native, usage
 
 
 def _usage(part: dict) -> Usage:
@@ -606,11 +678,19 @@ def _usage(part: dict) -> Usage:
     tokens = tokens if isinstance(tokens, dict) else {}
     prompt_tokens = int(tokens.get("input") or 0)
     completion_tokens = int(tokens.get("output") or 0)
+    # opencode's own total, which is not `input + output`: it counts `reasoning` and the
+    # `cache` read and write as well, and a cached prompt is mostly cache. Deriving the
+    # total here under-reported by the whole cached share -- 2231 against 439 on a turn
+    # measured against the binary. Falls back to the sum only if the field is absent,
+    # which is the old behaviour and still better than reporting nothing.
+    total = tokens.get("total")
+    if not isinstance(total, int) or isinstance(total, bool):
+        total = prompt_tokens + completion_tokens
     cost = part.get("cost")
     return Usage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
+        total_tokens=total,
         cost_usd=float(cost) if isinstance(cost, (int, float)) else None,
     )
 
