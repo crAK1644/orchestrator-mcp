@@ -2198,10 +2198,17 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         # `form-action 'self'` because `default-src 'none'` does not cover where a form
         # may submit to: without it, injected markup could post this page's token out.
+        #
+        # `frame-ancestors 'none'` because loopback is not a frame boundary: any page
+        # the user happens to be visiting can embed `localhost`, and with `editable`
+        # on, the forms it would be framing carry the per-process token. `X-Frame-
+        # Options` alongside it for the browsers that still only read that one.
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+            "frame-ancestors 'none'",
         )
+        self.send_header("X-Frame-Options", "DENY")
         # `same-origin` and not `no-referrer`, which this sent until a form post proved
         # why: a browser serializes the `Origin` header as `null` when the referrer
         # policy is `no-referrer`, so the strictest setting made every save look like it
