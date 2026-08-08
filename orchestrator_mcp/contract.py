@@ -34,9 +34,13 @@ _SECRETS = re.compile(
     (?: sk-ant-|sk-|rk-|xai-|gsk_|ghp_|github_pat_|AIza|AKIA|ASIA|xox[abposr]-|
         eyJ[A-Za-z0-9_-]{6,}\. )[A-Za-z0-9._\-]{8,}
     | \b(?:bearer|basic)\s+[A-Za-z0-9._\-+/=]{12,}
-    | \b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret)
+    # Group 1 is put back verbatim, so only the value is replaced. Swallowing the name
+    # and the separator along with it would turn `{"apiKey": "..."}` into `{"..."}` --
+    # still valid Python, a set literal rather than a dict, and no longer the text it
+    # was masking. A reviewer reading that reports a defect nobody wrote.
+    | (\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret)
       # The optional quote is what a JSON body looks like: `"api_key": "..."`.
-      \b["']?\s*[:=]\s*["']?[A-Za-z0-9._\-+/=]{8,}
+      \b["']?\s*[:=]\s*["']?)[A-Za-z0-9._\-+/=]{8,}
     | -{5}BEGIN[ A-Z]*PRIVATE KEY-{5}.*?-{5}END[ A-Z]*PRIVATE KEY-{5}
     """,
     re.DOTALL,
@@ -54,8 +58,13 @@ def redact(text: str) -> str:
 
 
 def redact_counted(text: str) -> tuple[str, int]:
-    """`redact`, and how many matches it replaced."""
-    return _SECRETS.subn("[redacted]", text)
+    """`redact`, and how many matches it replaced.
+
+    `\\g<1>` is the key and separator of the named-key alternative, put back so the
+    masked text keeps the shape it had. The other alternatives have no group 1, and a
+    group that did not participate substitutes as empty.
+    """
+    return _SECRETS.subn(r"\g<1>[redacted]", text)
 
 
 def secret_lines(text: str) -> list[int]:
