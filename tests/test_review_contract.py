@@ -253,6 +253,103 @@ def test_an_empty_findings_list_is_a_real_answer():
     assert findings == [] and parsed is True
 
 
+def test_the_last_block_wins_so_a_quoted_empty_one_cannot_erase_a_critical():
+    """Reviewers are asked to end with the block, and some of them quote the shape
+    they were asked for on the way there. Read first-to-last, that illustration
+    parses, so the answer comes back `parsed=True` with no findings at all -- a
+    Critical sitting in the prose above, and `missing_criticals` given an empty set
+    to check it against."""
+    answer = (
+        "I was asked for this shape:\n\n```json\n" + json.dumps({"findings": []}) + "\n```\n\n"
+        "and here is the real one:\n\n" + block([{"severity": "critical", "why": "the leak"}])
+    )
+
+    findings, parsed, _ = _parse_findings("rev", answer)
+
+    assert parsed
+    assert [f.severity for f in findings] == ["critical"]
+    assert findings[0].why == "the leak"
+
+
+def test_the_real_block_wins_unfenced_over_a_fenced_illustration():
+    """Position decides, not form. Ordering fenced blocks before unfenced ones puts
+    the quoted illustration first again whenever the reviewer fenced its example and
+    left its own block bare -- which is the likelier way round, since the example is
+    being quoted and the block is being written."""
+    answer = (
+        "the shape asked for:\n\n```json\n" + json.dumps({"findings": []}) + "\n```\n\n"
+        "mine:\n\n" + json.dumps({"findings": [{"severity": "critical", "why": "the leak"}]})
+    )
+
+    findings, parsed, _ = _parse_findings("rev", answer)
+
+    assert parsed
+    assert [f.severity for f in findings] == ["critical"]
+
+
+def test_a_broken_final_block_does_not_fall_back_to_an_earlier_empty_one():
+    """The fallback is what makes an earlier candidate dangerous: the reviewer's real
+    block is unparseable, so the empty one it quoted upstream becomes the answer, and
+    a review with a Critical in its prose finalizes clean. Refusing hands it to the
+    re-ask turn instead, which costs a few hundred characters."""
+    answer = (
+        "for reference:\n\n```json\n" + json.dumps({"findings": []}) + "\n```\n\n"
+        'mine:\n\n```json\n{"findings": [{"severity": "critical", "why": "the "leak""}]}\n```'
+    )
+
+    assert _parse_findings("rev", answer) == ([], False, 0)
+
+
+def test_a_final_block_in_the_wrong_json_dialect_is_broken_not_skippable():
+    """A model that gets the block wrong rarely gets it wrong in valid JSON: single
+    quotes, `None`, a trailing comma. Deciding whether a broken chunk was meant to be
+    the block by looking for `"findings"` inside it misses every one of those, and the
+    quoted empty template above wins again."""
+    answer = (
+        "the shape:\n\n```json\n" + json.dumps({"findings": []}) + "\n```\n\n"
+        "a critical auth bypass, in prose.\n\n"
+        "```json\n{'findings': [{'severity': 'critical', 'why': 'the bypass'}]}\n```"
+    )
+
+    assert _parse_findings("rev", answer) == ([], False, 0)
+
+
+def test_a_final_fenced_block_with_no_findings_key_is_broken_too():
+    """Only the unfenced scan can land somewhere it was not aiming. A fence is where
+    the reviewer was told to put the block, so one that arrives without a `findings`
+    key is the block gone wrong, not a bystander."""
+    answer = (
+        "```json\n" + json.dumps({"findings": []}) + "\n```\n\n"
+        '```json\n{"results": [{"severity": "critical"}]}\n```'
+    )
+
+    assert _parse_findings("rev", answer) == ([], False, 0)
+
+
+def test_a_wrong_typed_findings_key_is_broken_not_skippable():
+    """`"findings": {...}` is a block that was meant to be the block. Skipping to an
+    earlier one is the same silent erasure as skipping a syntax error."""
+    answer = (
+        "```json\n" + json.dumps({"findings": []}) + "\n```\n\n"
+        '```json\n{"findings": {"severity": "critical"}}\n```'
+    )
+
+    assert _parse_findings("rev", answer) == ([], False, 0)
+
+
+def test_prose_naming_findings_after_the_block_does_not_lose_it():
+    """The unfenced scan runs backwards from the last `"findings"`, so a reviewer
+    that mentions the word after its block sends it into a nested object. That slice
+    has no `findings` key of its own -- a mis-slice, not a broken block -- so it is
+    skipped rather than treated as a later block that failed."""
+    answer = block([{"severity": "critical", "why": "w"}]) + '\n\nthe "findings" above are complete.'
+
+    findings, parsed, _ = _parse_findings("rev", answer)
+
+    assert parsed
+    assert [f.severity for f in findings] == ["critical"]
+
+
 def test_the_findings_cap_drops_a_minor_before_a_critical():
     """Truncation is severity-ordered, so the cap can never be what loses a
     Critical -- and how many were dropped is reported rather than left silent."""

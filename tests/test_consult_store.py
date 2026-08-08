@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import sqlite3
 import stat
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from uuid import uuid4
 
@@ -69,6 +72,76 @@ async def test_opening_twice_is_not_a_second_migration(tmp_path):
     # Against `len(MIGRATIONS)` rather than a literal: the ledger grows by design,
     # and what this test is about is that a second open applies none of them again.
     assert (versions, profiles) == (len(MIGRATIONS), 1)
+
+
+async def test_a_migration_that_fails_does_not_leave_a_store_that_looks_open(tmp_path, monkeypatch):
+    """`open()` does its work only while `_connection` is None, so a connection left
+    behind by a migration that raised would be used by every later call -- against a
+    schema that was never finished, and with the exception long since swallowed by
+    whoever caught the first open."""
+    store = ConsultStore(tmp_path / "db.sqlite3")
+
+    published = []
+
+    def no(self, db):
+        published.append(self._connection)
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(ConsultStore, "_migrate", no)
+    with pytest.raises(sqlite3.OperationalError):
+        await store.open()
+
+    # Nothing was visible while the schema was still being built. That is the same
+    # invariant from the other direction: `_open` runs in a worker thread, and a
+    # caller cancelling its `await` releases `_open_lock` without stopping it, so a
+    # connection published before `_migrate` returns is reachable by the next opener
+    # even when nothing raised at all.
+    assert published == [None]
+    assert store._connection is None
+    # And it says so rather than handing back a connection to an unmigrated file.
+    with pytest.raises(StoreError):
+        store._db
+
+    # A later open, with the fault gone, still migrates.
+    monkeypatch.undo()
+    await store.open()
+    assert store._db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == len(MIGRATIONS)
+    await store.close()
+
+
+async def test_a_cancelled_open_never_publishes_the_connection_it_built(tmp_path, monkeypatch):
+    """`asyncio.to_thread` does not stop a worker when its awaiting task is cancelled,
+    and cancellation releases `_open_lock` on the way out. A worker that assigned
+    `_connection` itself would therefore land on a store somebody else has since
+    opened -- or closed -- reopening it from the outside, after the close returned."""
+    real = ConsultStore._migrate
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def slow(self, db):
+        started.set()
+        release.wait(5)
+        real(self, db)
+        finished.set()
+
+    monkeypatch.setattr(ConsultStore, "_migrate", slow)
+    store = ConsultStore(tmp_path / "db.sqlite3")
+    opening = asyncio.create_task(store.open())
+    await asyncio.to_thread(started.wait, 5)
+
+    opening.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await opening
+
+    release.set()
+    await asyncio.to_thread(finished.wait, 5)
+    assert store._connection is None
+
+    # And the store is still openable -- the cancelled attempt left nothing behind
+    # that the next one has to work around.
+    monkeypatch.undo()
+    await store.open()
+    assert store._db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == len(MIGRATIONS)
+    await store.close()
 
 
 OPENER = """\

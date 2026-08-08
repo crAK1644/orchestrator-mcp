@@ -317,6 +317,23 @@ async def test_a_request_with_no_host_header_is_refused(serve):
     connection.close()
 
 
+async def test_the_page_refuses_to_be_framed(serve):
+    """Loopback is not a frame boundary. Any page the user is already visiting can
+    embed `127.0.0.1`, and with `editable: true` the forms it would be framing carry
+    the per-process token -- the one thing on this server a click could spend."""
+    get, _ = serve()
+    connection = HTTPConnection("127.0.0.1", get.port, timeout=5)
+    connection.request("GET", "/", headers={"Host": f"127.0.0.1:{get.port}"})
+    response = connection.getresponse()
+    response.read()
+
+    assert "frame-ancestors 'none'" in response.getheader("Content-Security-Policy")
+    # Alongside, not instead: the directive is the modern spelling and this is the one
+    # older browsers read.
+    assert response.getheader("X-Frame-Options") == "DENY"
+    connection.close()
+
+
 async def test_it_serves_get_and_post_and_nothing_else(serve):
     """No handler for any other verb, which is how the stdlib refuses one: 501. POST
     exists only for the agents form; PUT and DELETE would be a second write surface to

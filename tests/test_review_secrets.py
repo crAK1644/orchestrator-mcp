@@ -331,5 +331,11 @@ def test_the_reviewers_own_history_is_out_of_reach():
 
     readme = Path(__file__).resolve().parents[1] / "README.md"
     guardrail = readme.read_text()
-    assert "Redaction covers this database only" in guardrail
+    assert "Redaction covers the review path, and only this database" in guardrail
     assert "best-effort" in guardrail and "~/.codex/sessions/" in guardrail
+    # Two claims this file used to make that were not true. A plain consult is stored
+    # as sent -- `ConsultService` defaults its storage sanitizer to identity, and only
+    # the review layer passes `scrub_json` -- and "nothing here can reach those files"
+    # was contradicted by `_rollout_model`, which opens one to read the model back.
+    assert "A plain `orchestrator_consult` is not redacted" in guardrail
+    assert "the Codex adapter opens the rollout file" in guardrail
