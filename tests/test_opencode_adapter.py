@@ -833,6 +833,19 @@ async def test_the_cost_reported_is_the_one_opencode_counted(stub, adapter):
     assert result.usage.completion_tokens == 15
 
 
+async def test_a_cost_of_true_is_not_a_dollar(stub, adapter):
+    """`bool` is a subclass of `int`, so `"cost": true` passes an isinstance check and
+    `float(True)` bills the turn at one dollar. An unknown cost stays unknown."""
+    stub(run=[{"stdout": jsonl(
+        event("step_start", part("step-start")),
+        event("text", part("text", text=json.dumps(CONTENT))),
+        event("step_finish", part("step-finish", tokens={"total": 9}, cost=True)),
+    )}])
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert result.usage.cost_usd is None
+
+
 async def test_a_stream_with_no_session_id_is_refused(stub, adapter):
     stub(run=[{"stdout": jsonl({"type": "text", "part": {"type": "text", "text": "hi"}})}])
     with pytest.raises(AdapterError) as excinfo:
@@ -911,6 +924,22 @@ async def test_both_turns_are_billed(stub, adapter):
     assert len(run_calls(record)) == 2
     assert (result.usage.prompt_tokens, result.usage.completion_tokens) == (130, 15)
     assert result.usage.total_tokens == 145
+
+
+async def test_the_record_of_a_repair_holds_the_turn_that_failed(stub, adapter):
+    """`raw_output` is what a human reads back when a consultation went wrong, and the
+    repair path is the only one where it has something to explain. Keeping the retry's
+    stream alone threw away the malformed answer that caused the repair."""
+    stub(
+        run=[
+            {"stdout": stream(text=json.dumps({"answer": "blue"}))},
+            {"stdout": stream()},
+        ]
+    )
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert '{\\"answer\\": \\"blue\\"}' in result.raw_output
+    assert result.raw_output.count('"step-finish"') == 2
 
 
 async def test_a_second_malformed_envelope_is_the_end_of_it(stub, adapter):

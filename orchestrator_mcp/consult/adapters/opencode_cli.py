@@ -238,7 +238,7 @@ class OpenCodeCliAdapter:
         # opencode has no `--system-prompt`, so the protocol contract travels with
         # the payload. It stays first, which is what keeps a task from reading as
         # one. Over stdin: no argv ceiling, and no shell to quote for.
-        content, native, result, usage = await self._answer(base, prompt, scratch, env, resume)
+        content, native, raw, usage = await self._answer(base, prompt, scratch, env, resume)
         reported = await self._reported_model(command, native, scratch, env)
 
         return AdapterResult(
@@ -246,7 +246,7 @@ class OpenCodeCliAdapter:
             native_session_id=native,
             model_used=check_model(agent, reported),
             model_verified=reported is not None,
-            raw_output=result.stdout,
+            raw_output=raw,
             usage=usage,
         )
 
@@ -257,7 +257,7 @@ class OpenCodeCliAdapter:
         cwd: str,
         env: dict[str, str],
         resume: str | None,
-    ) -> tuple[ConsultationContent, str, ProcessResult, Usage]:
+    ) -> tuple[ConsultationContent, str, str, Usage]:
         """The consultation, and one repair turn if the contract came back broken.
 
         With no schema flag the envelope rests on instruction alone, and a small model
@@ -265,6 +265,12 @@ class OpenCodeCliAdapter:
         would waste the context that was already paid for. One follow-up in the same
         session costs a few hundred characters. One, not a loop: a model that cannot
         produce the shape twice is not going to on the third ask.
+
+        The stream returned is both turns' when there were two. It used to be the
+        repair's alone, which threw away the one stream that says why a repair
+        happened: `raw_output` is the record kept for a human reading back a
+        consultation that went wrong, and on the only path where it has something to
+        explain it held the recovery and not the failure.
         """
         argv = base + ["--session", resume] if resume else base
         result = await run_process(
@@ -272,7 +278,7 @@ class OpenCodeCliAdapter:
         )
         text, native, usage = _read_stream(result, resume)
         try:
-            return parse_content(text), native, result, usage
+            return parse_content(text), native, result.stdout, usage
         except AdapterError as exc:
             if exc.code is not ConsultErrorCode.PROTOCOL_VALIDATION_FAILED:
                 raise
@@ -291,7 +297,12 @@ class OpenCodeCliAdapter:
             cwd=cwd,
         )
         text, native, retry_usage = _read_stream(retry, native)
-        return parse_content(text), native, retry, _add(usage, retry_usage)
+        return (
+            parse_content(text),
+            native,
+            result.stdout + retry.stdout,
+            _add(usage, retry_usage),
+        )
 
     async def _reported_model(
         self, command: str, native: str, cwd: str, env: dict[str, str]
@@ -686,12 +697,16 @@ def _usage(part: dict) -> Usage:
     total = tokens.get("total")
     if not isinstance(total, int) or isinstance(total, bool):
         total = prompt_tokens + completion_tokens
+    # `bool` excluded for the same reason it is excluded from `total` two lines up:
+    # it is a subclass of `int`, so a `"cost": true` passes the isinstance check and
+    # `float(True)` bills the turn at one dollar. An unknown cost has to stay unknown.
     cost = part.get("cost")
+    known_cost = isinstance(cost, (int, float)) and not isinstance(cost, bool)
     return Usage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=total,
-        cost_usd=float(cost) if isinstance(cost, (int, float)) else None,
+        cost_usd=float(cost) if known_cost else None,
     )
 
 
