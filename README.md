@@ -236,7 +236,7 @@ If the chosen agent fails, Orchestrator returns that failure. It does not quietl
 |---|---|
 | `auto` | `document` when context is present; otherwise `model`. |
 | `document` | Only the supplied context, with action tools disabled. |
-| `web` | The target CLI's own web search, bounded by `web_turn_limit`. |
+| `web` | The target CLI's own web search. `web_turn_limit` bounds it on Claude; Codex is bounded by `timeout_s` alone. |
 | `model` | No context and no web search; answer from model knowledge. |
 
 <details>
@@ -328,13 +328,15 @@ Reviews default to `web: false`. Reviewers cannot change files or run commands. 
 
 Credential-shaped values are masked before storage. `secrets="send_as_is"` is an explicit escape hatch for a false positive: it requires the exact original goal and context again, sends those originals to the reviewers, and still stores only the redacted copy.
 
+`store_full_content: false` does not apply here in full. A review's goal and context are stored either way — the second half of the approval handshake reads them back to send what was approved — and reviewer answers and findings are not. That leaves nothing to prove every Critical survived synthesis, so `orchestrator_finalize_review` refuses, and the review stays at `awaiting_synthesis`. Finalization is refused on the same grounds when a reviewer answered only in unparseable prose, or when its findings were truncated.
+
 </details>
 
 ## Security model
 
 | Property | Guarantee |
 |---|---|
-| **Credentials** | No provider key setting exists. Orchestrator never reads, stores, returns, or refreshes a CLI credential. |
+| **Credentials** | No provider key setting exists. Orchestrator never reads, stores, returns, or refreshes a CLI's own credential. A credential you put in a prompt is material, not a credential here — see the warning below. |
 | **Process launch** | Commands are executed as argument lists, never through a shell. |
 | **Self-consultation** | `ORCHESTRATOR_HOST_RUNTIME` comes from the environment and cannot be overridden by a tool call. |
 | **Agent permissions** | Consulted agents are answer-only, except for the target CLI's bounded search in explicit web mode. |
@@ -344,7 +346,14 @@ Credential-shaped values are masked before storage. `secrets="send_as_is"` is an
 | **Review approval** | Plans bind the scope to a one-time token before reviewer requests are made. |
 
 > [!WARNING]
-> **Redaction covers this database only.** Credential-shaped values are replaced before every insert, and detection is best-effort pattern matching rather than a scanner with perfect recall — a secret with no recognizable shape survives it. Material sent to a reviewer also lands in that reviewer's own CLI history (Codex writes `~/.codex/sessions/`, and the others keep their own logs). Nothing here can reach those files. Keep the database private, or set `store_full_content: false`.
+> **Redaction covers the review path, and only this database.** In a review, credential-shaped values are replaced before every insert — the goal, the context, the manifest, and every reviewer's answer. A plain `orchestrator_consult` is not redacted: its prompts, context, and answers are stored as you sent them. Detection is best-effort pattern matching rather than a scanner with perfect recall, so a secret with no recognizable shape survives it either way. Keep the database private, or set `store_full_content: false`.
+>
+> **Vendor history is outside all of this.** Material sent to a reviewer also lands in that reviewer's own CLI history — Codex writes `~/.codex/sessions/`, and the others keep their own logs. Orchestrator cannot redact or erase those files. It does read from them, in two places and for two fields: the Codex adapter opens the rollout file for the session it just ran to recover the model identity the CLI does not otherwise report, and opens the newest rollout to read the rate-limit numbers the service last returned. Nothing else is taken from either file.
+
+Two more limits worth knowing:
+
+- CLI error text is shortened and common secret formats are redacted, but an unusual one may still appear in a returned error. Do not forward a raw error envelope somewhere untrusted.
+- A caller-supplied JSON Schema is trusted input. A pathological regular expression in one can consume a large amount of CPU.
 
 Orchestrator checks structure, routing, permissions, and model identity where observable. It cannot prove that a model's factual claims are true.
 
@@ -395,8 +404,8 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 | `database_path` | `~/.orchestrator-mcp/consultations.sqlite3` | Consultation and review history. |
 | `managed_agents_path` | `~/.orchestrator-mcp/agents.yaml` | Agents written by the dashboard. |
 | `timeout_s` | `180` | Limit for one consultation turn. |
-| `web_turn_limit` | `8` | Assistant turns allowed in web mode. |
-| `store_full_content` | `true` | Set false to keep metadata and routing only. |
+| `web_turn_limit` | `8` | Assistant turns allowed in web mode. Enforced by the Claude runtime only. |
+| `store_full_content` | `true` | Set false to keep metadata and routing only — except a review's goal and context, which are stored either way. Reviews cannot be finalized under it — see below. |
 | `review` | absent | Configured reviewers; absent means no review tools. |
 | `dashboard` | off | Loopback history UI and optional agent editor. |
 
