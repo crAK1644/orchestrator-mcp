@@ -757,6 +757,27 @@ async def test_the_deadline_covers_the_whole_consultation_not_each_turn(
     assert exc.value.code is ConsultErrorCode.TIMEOUT
 
 
+def test_every_fragment_ends_on_the_instruction_not_on_the_task():
+    """A fragment body is up to 100 KB of "here is the code, answer this", so an
+    instruction placed only at the top is not what the model reads last -- and a real
+    consultation died exactly there, answering part 2 of 3 with a full review. The
+    closing line has to be the ACK, and it has to say what still hasn't arrived."""
+    turns = antigravity_cli._turns("x" * (MAX_ARG_BYTES * 2 + 5))
+    fragments = [text for text, answering in turns if not answering]
+
+    assert len(fragments) == 3, "this text is meant to need splitting"
+    for index, text in enumerate(fragments, start=1):
+        assert text.rstrip().endswith(
+            "an answer given here is an answer to part of a message."
+        )
+        assert f"Reply now with exactly: ACK {index}" in text
+    # How much is still missing, so a model that has read most of a long message cannot
+    # talk itself into being ready.
+    assert "2 more part(s) follow" in fragments[0]
+    assert "1 more part(s) follow" in fragments[1]
+    assert "was the last part" in fragments[2]
+
+
 def test_the_argv_ceiling_stays_under_the_one_linux_enforces():
     """`MAX_ARG_STRLEN` is 128 KiB per single argument and is not raisable. The
     remainder is headroom for the fragment wrapper, which is added on top of a body

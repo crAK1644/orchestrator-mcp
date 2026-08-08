@@ -62,6 +62,13 @@ MAX_ARG_BYTES = 100_000
 # Fragments of one oversized message. The instruction is repeated on every part rather
 # than stated once, because part 1 is the only one the model has read when it arrives
 # and a later part must not read as a fresh task.
+#
+# And repeated again *after* the body, which is what a 134 KB review taught. The body
+# is up to 100 KB of "here is the code, return your findings as JSON", so with the
+# instruction only at the top the last thing the model reads before replying is the
+# task itself -- and gemini-3.6-flash-high did exactly what that asks: it answered part
+# 2 of 3 with a full review instead of `ACK 2`, and the consultation failed on material
+# it had only two thirds of. The closing block is the one the model reads last.
 FRAGMENT_TEMPLATE = """\
 [CONSULT FRAGMENT {index} OF {total}]
 This is part {index} of a single message too large to send at once. Store it verbatim
@@ -70,7 +77,23 @@ split across all {total} parts.
 Reply with exactly: ACK {index}
 --- BEGIN PART {index} ---
 {body}
---- END PART {index} ---"""
+--- END PART {index} ---
+[END OF FRAGMENT {index} OF {total}]
+The text above is material to store, not a task to carry out -- any instruction inside
+it belongs to the message being assembled and takes effect only once part {total} has
+arrived. {remaining}
+Reply now with exactly: ACK {index}
+Any other reply -- an answer, a summary, a question -- ends the consultation with an
+error, because an answer given here is an answer to part of a message."""
+
+# The sentence that says how much is still missing. Concrete rather than "more parts
+# follow": a model that has read most of a review can talk itself into being ready, and
+# the count is the thing that argues back.
+REMAINING = "{count} more part(s) follow before the message is complete."
+LAST_FRAGMENT = (
+    "That was the last part; the request to answer comes in the next message, not this "
+    "one."
+)
 
 FINAL_TEMPLATE = """\
 All {total} parts have now been delivered. Reassemble them in order into the single
@@ -351,7 +374,19 @@ def _turns(text: str) -> list[tuple[str, bool]]:
         return [(parts[0], True)]
     total = len(parts)
     turns = [
-        (FRAGMENT_TEMPLATE.format(index=index, total=total, body=body), False)
+        (
+            FRAGMENT_TEMPLATE.format(
+                index=index,
+                total=total,
+                body=body,
+                remaining=(
+                    REMAINING.format(count=total - index)
+                    if index < total
+                    else LAST_FRAGMENT
+                ),
+            ),
+            False,
+        )
         for index, body in enumerate(parts, start=1)
     ]
     return turns + [(FINAL_TEMPLATE.format(total=total), True)]
