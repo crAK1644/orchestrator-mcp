@@ -269,10 +269,16 @@ class ConsultStore:
         if self._connection is None:
             async with self._open_lock:
                 if self._connection is None:
-                    await asyncio.to_thread(self._open)
+                    # Published here rather than by the worker, because cancelling
+                    # this `await` releases the lock without stopping the thread.
+                    # A worker that assigned the field itself would land on a store
+                    # someone else has since opened -- or closed -- and reopen it
+                    # from the outside. Cancelled, the connection it built is simply
+                    # never taken, and goes when the discarded result does.
+                    self._connection = await asyncio.to_thread(self._open)
         return self
 
-    def _open(self) -> None:
+    def _open(self) -> sqlite3.Connection:
         # `0700` before the file exists, so there is no window where a fresh
         # database is world-readable.
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -288,11 +294,18 @@ class ConsultStore:
         # WAL so a reader (the dashboard) never blocks the writer mid-consultation.
         _set_wal(connection)
         connection.execute("PRAGMA foreign_keys=ON")
-        self._connection = connection
-        self._migrate()
+        # Returned rather than assigned, and only once the schema is finished --
+        # `_migrate` takes the connection for that reason. Anything visible before
+        # this line is a connection every later call runs against a schema that was
+        # never finished, since `open()` skips its work whenever `_connection` is set.
+        try:
+            self._migrate(connection)
+        except BaseException:
+            connection.close()
+            raise
+        return connection
 
-    def _migrate(self) -> None:
-        db = self._db
+    def _migrate(self, db: sqlite3.Connection) -> None:
         db.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
         applied = {row[0] for row in db.execute("SELECT version FROM schema_migrations")}
         for version, statements in enumerate(MIGRATIONS):
