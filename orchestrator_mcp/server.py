@@ -23,8 +23,15 @@ from mcp.server import MCPServer
 
 from .contract import ConfigError
 from .consult.config import host_runtime, load_consult_config
-from .consult.contract import ConsultAgentsResponse, ConsultationRecord, ConsultResponse
+from .consult.contract import (
+    ConsultAgentsResponse,
+    ConsultationDeleteApproval,
+    ConsultationDeletionResult,
+    ConsultationRecord,
+    ConsultResponse,
+)
 from .consult.service import ConsultService
+from .consult.store import DELETE_CONFIRM_TTL_S as CONSULT_DELETE_CONFIRM_TTL_S
 from .consult.store import ConsultStore
 from .review.contract import (
     CombinedFinding,
@@ -141,8 +148,9 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         p.name: p.annotation for p in consult.__signature__.parameters.values()
     } | {"return": ConsultResponse}
     consult.__doc__ = (
-        "Consult another vendor's coding agent -- a Codex or Claude Code CLI running "
-        "under its own account -- and get back a structured second opinion.\n\n"
+        "Consult another vendor's coding agent -- Codex, Claude Code, OpenCode, or "
+        "experimental Antigravity -- running under its own account, and get back a "
+        "structured second opinion.\n\n"
         "Keep the `consultation_id` from the response and send it back on every later "
         "call about the same topic: that is what continues the same conversation on "
         "the other side, and without it each call starts a new one that remembers "
@@ -169,6 +177,39 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         chosen."""
         await service.open()
         return await service.get_consultation(consultation_id)
+
+    @server.tool(name="orchestrator_delete_consultation")
+    async def delete_consultation(consultation_id: UUID) -> ConsultationDeletionResult:
+        """Delete one ordinary consultation and all of its locally stored turns.
+
+        A consultation owned by a review must be deleted through the review tool so
+        the findings and audit trail cannot be separated from their source. Vendor
+        CLI history is outside this database and is not removed.
+        """
+        return ConsultationDeletionResult(
+            deleted=await service.delete_consultation(consultation_id)
+        )
+
+    @server.tool(name="orchestrator_request_delete_all_consultations")
+    async def request_delete_all_consultations() -> ConsultationDeleteApproval:
+        """Preview deletion of all ordinary consultation history. Deletes nothing.
+
+        The returned token is bound to the exact consultations counted here; review
+        history and consultations created afterwards are not included.
+        """
+        token, count = await service.request_delete_all_consultations()
+        return ConsultationDeleteApproval(
+            consultations=count,
+            confirm_token=token,
+            expires_in_s=int(CONSULT_DELETE_CONFIRM_TTL_S),
+        )
+
+    @server.tool(name="orchestrator_delete_all_consultations")
+    async def delete_all_consultations(confirm_token: str) -> ConsultationDeletionResult:
+        """Delete the ordinary consultations in the approved snapshot, and only those."""
+        return ConsultationDeletionResult(
+            deleted=await service.delete_all_consultations(confirm_token)
+        )
 
 
 def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
@@ -205,7 +246,9 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         credential-shaped was found (positions only, never values). Secret detection
         is best-effort pattern matching; a credential with no recognizable shape
         survives it, so the plan raises the odds the user notices and guarantees
-        nothing.
+        nothing. This checkpoint is advisory: MCP gives this server no separate
+        human channel, so it binds and audits the scope but cannot prove which human
+        saw or approved it.
 
         Give the material as **either** `context` (a string you write) **or**
         `context_paths` (files this server reads for you). Both together is refused.
@@ -253,6 +296,11 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
     ) -> ReviewResponse:
         """Send the approved material to every reviewer, in parallel. Call this only
         after the user has seen the plan and agreed.
+
+        This checkpoint is advisory: the server verifies the one-time token and
+        unchanged scope, but cannot prove which human supplied it or approved the
+        plan. Human approval depends on the MCP client's tool-confirmation experience
+        or another external gate.
 
         `secrets="mask"` sends the redacted copy. `secrets="send_as_is"` sends the
         original and requires `raw` to repeat the exact goal and context you planned

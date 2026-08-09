@@ -6,7 +6,8 @@ a install-time cost for every operator to pay for a page they may never open.
 
 The consultation store stays read-only in the strongest sense available: its own
 SQLite connection, opened `mode=ro`, so a bug here cannot write a row. What this page
-*can* write is one file, `managed.py`'s agents file, and only when
+*can* write is one managed configuration file containing agents and reviewer
+selection, and only when
 `dashboard.editable` is on -- a second opt-in, because turning a viewer on and
 turning an editor on are different things to agree to. `config.yaml` is never
 written, so the operator's own file and its comments are not something a click can
@@ -205,9 +206,9 @@ body {
 main { min-width: 0; width: 100%; max-width: 96rem; padding: 2rem 2.35rem 4rem; }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.5rem; margin-bottom: 1.15rem; }
 .page-heading-copy { min-width: 0; }
-.eyebrow { margin: 0 0 .38rem; color: var(--signal); font-size: .66rem; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
-h1, h2, h3, h4 { color: var(--text); font-family: "Arial Narrow", "Avenir Next Condensed", ui-sans-serif, sans-serif; }
-h1 { margin: 0; font-size: clamp(1.55rem, 2.5vw, 2rem); line-height: 1.08; letter-spacing: -.025em; }
+.eyebrow { margin: 0 0 .42rem; color: var(--signal); font-size: .64rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+h1, h2, h3, h4 { color: var(--text); font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+h1 { margin: 0; font-size: clamp(1.4rem, 2vw, 1.7rem); font-weight: 680; line-height: 1.14; letter-spacing: -.02em; }
 h2 { margin: 2.2rem 0 .7rem; font-size: 1rem; line-height: 1.2; letter-spacing: .01em; }
 h3 { margin: 0; font-size: .95rem; }
 h4 { margin: 1rem 0 .45rem; font-size: .82rem; }
@@ -319,6 +320,8 @@ button.danger { border-color: var(--bad); background: transparent; color: var(--
 .banner.warn { color: var(--warn); background: var(--warn-soft); }
 .banner.done { color: var(--good); background: var(--good-soft); }
 .error { padding: .65rem .75rem; color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 38%, var(--rule)); border-radius: 5px; background: var(--bad-soft); }
+.review-recommendation { margin: .65rem 0; padding: .72rem .8rem; border-left: 3px solid var(--signal); background: var(--panel-raised); }
+.review-synthesis { margin-top: .65rem; }
 @media (max-width: 880px) {
   .app-shell { grid-template-columns: 1fr; }
   .rail { position: static; width: 100%; height: auto; padding: .55rem .7rem; }
@@ -437,24 +440,19 @@ class ConsultDashboard:
         return render()
 
     def index(self) -> str:
-        actions = (
-            "<div class=form-actions><a class=button href='/agents'>Configure agents</a>"
-            "<a href='/reviewers'>Configure reviewers</a></div>"
-            if self.config.dashboard.editable
-            else ""
-        )
+        consultation_heading = "Other consultations" if self._reviews_ready() else "Consultations"
         return _document(
             "Consultations",
             "<header class=page-heading><div class=page-heading-copy>"
             "<p class=eyebrow>Consult Protocol v1</p><h1>Operations monitor</h1>"
             "<p class=context-line>"
             f"<span>orchestrator-mcp-server {_e(self.version)}</span>"
-            f"<span>{_e(str(self.config.database_path))}</span></p></div>{actions}</header>"
+            "<span>Local history</span></p></div></header>"
             f"{self._monitor_strip()}"
-            "<section><div class=section-heading><h2>Consultations</h2>"
+            f"{self._reviews_section()}"
+            f"<section><div class=section-heading><h2>{consultation_heading}</h2>"
             "<span class=meta>Newest 200</span></div>"
             f"{self._consultations_table()}</section>"
-            f"{self._reviews_section()}"
             "<section><div class=section-heading><h2>Agents</h2>"
             f"<span class=meta>{len(self.config.agents)} configured</span></div>"
             f"{self._agents_table()}{self._rate_limit_line()}</section>",
@@ -556,8 +554,9 @@ class ConsultDashboard:
 
         Under the table rather than in it: one `~/.codex` serves every codex agent, so
         a per-row copy of the same number would read as several separate budgets.
-        Nothing at all when no codex agent is configured, or when no consultation has
-        run yet to be told a number.
+        Nothing at all when no codex agent is configured or no Codex session has ever
+        reported a number. The newest session may have been run outside Orchestrator,
+        so the label names the CLI rather than inventing consultation provenance.
         """
         if not any(agent.runtime == "codex" for agent in self.config.agents.values()):
             return ""
@@ -569,12 +568,19 @@ class ConsultDashboard:
         plan = f" &middot; {_e(str(limit['plan_type']))} plan" if limit.get("plan_type") else ""
         return (
             f"<p class=rate-limit>codex usage: {limit['used_percent']:.0f}%{window} used{when}{plan}"
-            # Said plainly because it is: this is whatever the last consultation was
-            # told, not a number this page went and asked for.
-            " &middot; as of the last consultation</p>"
+            # Said plainly because it is: this is whatever the newest Codex rollout
+            # was told, not a number this page went and asked for.
+            " &middot; latest Codex CLI session</p>"
         )
 
     def _consultations_table(self) -> str:
+        grouped_reviews = self._reviews_ready()
+        review_filter = (
+            "WHERE NOT EXISTS (SELECT 1 FROM review_consultations rc "
+            "WHERE rc.consultation_id = c.id) "
+            if grouped_reviews
+            else ""
+        )
         rows = self._query(
             "SELECT c.id, c.created_at, c.updated_at, c.target_agent_id, c.target_model, "
             "c.capability, c.conversation_label, c.status, "
@@ -583,9 +589,14 @@ class ConsultDashboard:
             "(SELECT COUNT(*) FROM consultation_turns t WHERE t.consultation_id = c.id) AS turns, "
             "(SELECT COUNT(*) FROM consultation_turns t WHERE t.consultation_id = c.id "
             " AND t.error_code IS NOT NULL) AS failures "
-            "FROM consultations c ORDER BY c.created_at DESC LIMIT 200"
+            f"FROM consultations c {review_filter}ORDER BY c.created_at DESC LIMIT 200"
         )
         if not rows:
+            if grouped_reviews:
+                return (
+                    "<div class=empty-state><strong>No other consultations recorded yet.</strong> "
+                    "Consultations made for a review appear with that review.</div>"
+                )
             return (
                 "<div class=empty-state><strong>No consultations recorded yet.</strong> "
                 "New consultations will appear here with their route and current state.</div>"
@@ -599,7 +610,7 @@ class ConsultDashboard:
             f"<span class=meta><code>{_e(row['id'][:8])}</code> &middot; {_e(row['capability'])}</span></td>"
             f"<td class=route-cell data-label=Route><code>{_e(row['target_agent_id'])}</code>"
             f"<span class=meta><code>{_e(row['target_model'])}</code></span></td>"
-            f"<td class=meta data-label=Started>{_e(row['created_at'])}</td>"
+            f"<td class=meta data-label=Started>{_when(row['created_at'])}</td>"
             f"<td data-label=Activity>{row['turns']} turn{'s' if row['turns'] != 1 else ''}"
             f"<span class={'bad' if row['failures'] else 'meta'}> &middot; "
             f"{row['failures']} failed</span></td>"
@@ -629,7 +640,7 @@ class ConsultDashboard:
             f"<h1>{_e(consultation['capability'])} &rarr; "
             f"<code>{_e(consultation['target_agent_id'])}</code></h1></div>"
             f"<p class=context-line><span><code>{_e(consultation['id'])}</code></span>"
-            f"<span>{_e(consultation['created_at'])}</span></p></header>"
+            f"<span>{_when(consultation['created_at'])}</span></p></header>"
             "<div class=detail-grid><div>"
             f"<h2>Routing</h2>{self._routing(consultation_id)}"
             f"<h2>Turns</h2>{self._turns(consultation_id)}</div>"
@@ -694,7 +705,7 @@ class ConsultDashboard:
                 f"<h3>Turn {row['sequence_number']} &middot; {_e(row['source_mode'])}</h3>"
                 f"<div class=turn-stats><span>{row['latency_ms']} ms</span>"
                 f"<span>{row['input_tokens']} in / {row['output_tokens']} out</span>"
-                f"<span>{cost}</span><span>{_e(row['created_at'])}</span>"
+                f"<span>{cost}</span><span>{_when(row['created_at'])}</span>"
                 + (f" &middot; <span class=bad>{_e(row['error_code'])}</span>"
                    if row["error_code"] else "")
                 + "</div></div>"
@@ -786,7 +797,7 @@ class ConsultDashboard:
             f"<td data-label=Outcome>{_e(row['outcome'] or '--')}</td>"
             f"<td data-label=Coverage>{row['reviewers']} reviewer{'s' if row['reviewers'] != 1 else ''}"
             f"<span class={'bad' if row['failures'] else 'meta'}> &middot; {row['failures']} failed</span></td>"
-            f"<td class=meta data-label=Started>{_e(row['created_at'])}</td>"
+            f"<td class=meta data-label=Started>{_when(row['created_at'])}</td>"
             "</tr>"
             for row in rows
         )
@@ -844,6 +855,14 @@ class ConsultDashboard:
             if review["parent_review_id"]
             else ""
         )
+        recorded_input = (
+            "<details class=review-input><summary>Review input and recorded material</summary>"
+            f"{_material(review['material_json'])}"
+            # The stored copies are redacted. What a reviewer was sent is not kept
+            # anywhere this page can reach.
+            f"{_block('Goal (as stored)', review['goal'])}"
+            f"{_block('Context (as stored)', review['context'])}</details>"
+        )
         return HTTPStatus.OK, _document(
             f"Review {review_id[:8]}",
             "<a class=back-link href='/reviews'>&larr; All reviews</a>"
@@ -852,19 +871,15 @@ class ConsultDashboard:
             f"<h1>{_e(review['mode'])} review</h1>{_status_word(review['status'])}</div>"
             f"<p class=context-line><span><code>{_e(review['id'])}</code></span>"
             f"<span>outcome {_e(review['outcome'] or '--')}</span>"
-            f"<span>{_e(review['created_at'])}</span><span>updated {_e(review['updated_at'])}</span>"
+            f"<span>{_when(review['created_at'])}</span><span>updated {_when(review['updated_at'])}</span>"
             f"<span>web {'requested' if review['web_requested'] else 'off'}</span>"
             f"<span>{_secret_line(review['secret_hits_json'])}{parent}</span></p></header>"
-            f"{_material(review['material_json'])}"
-            # The stored copies, which are the redacted ones -- what a reviewer was
-            # sent is not kept anywhere this page can reach.
-            f"{_block('Goal (as stored)', review['goal'])}"
-            f"{_block('Context (as stored)', review['context'])}"
-            f"{_host_findings(review['host_findings_json'])}"
-            f"<h2>Reviewers</h2>{_reviewer_table(reviewers)}"
-            f"<h2>Findings</h2>{_findings_table(findings)}"
             f"<h2>Synthesis</h2>{_synthesis(review['summary_json'])}"
+            f"{_host_findings(review['host_findings_json'])}"
+            f"<h2>Findings</h2>{_findings_table(findings)}"
+            f"<h2>Reviewers</h2>{_reviewer_table(reviewers)}"
             f"<h2>Answers</h2>{_answers(reviewers)}"
+            f"{recorded_input}"
             f"{_fix_rounds(review['fix_rounds_json'])}"
             f"{self._rechecks(review_id)}",
             editable=self.config.dashboard.editable,
@@ -881,7 +896,7 @@ class ConsultDashboard:
         items = "".join(
             f"<li><a href='/reviews/{_e(row['id'])}'><code>{_e(row['id'][:8])}</code></a> "
             f"&mdash; {_status_word(row['status'])} "
-            f"<span class=meta>{_e(row['outcome'] or '')} {_e(row['created_at'])}</span></li>"
+            f"<span class=meta>{_e(row['outcome'] or '')} {_when(row['created_at'])}</span></li>"
             for row in rows
         )
         return f"<h2>Rechecks</h2><ul>{items}</ul>"
@@ -1694,6 +1709,31 @@ def _pretty(value: str | None) -> str | None:
         return value
 
 
+def _when(value: str | None) -> str:
+    """A timestamp that scans in a table but keeps the ledger's exact value on hover."""
+    if not value:
+        return "--"
+    try:
+        point = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return _e(value)
+    if point.tzinfo is None:
+        point = point.replace(tzinfo=UTC)
+    seconds = max(0, int((datetime.now(UTC) - point.astimezone(UTC)).total_seconds()))
+    if seconds < 60:
+        label = "just now"
+    elif seconds < 3600:
+        label = f"{seconds // 60}m ago"
+    elif seconds < 86_400:
+        label = f"{seconds // 3600}h ago"
+    elif seconds < 604_800:
+        label = f"{seconds // 86_400}d ago"
+    else:
+        label = f"{point.day} {point:%b %Y}"
+    escaped = _e(value)
+    return f"<time datetime='{escaped}' title='{escaped}'>{label}</time>"
+
+
 def _window(minutes: object) -> str:
     """A rate-limit window, in the unit it reads naturally in.
 
@@ -1879,7 +1919,7 @@ def _reviewer_table(rows: list[sqlite3.Row]) -> str:
             if row["consultation_id"]
             else "<td class=meta>--</td>"
         )
-        + f"<td class=meta>{_e(row['created_at'])}</td></tr>"
+        + f"<td class=meta>{_when(row['created_at'])}</td></tr>"
         for row in rows
     )
     head = "<tr><th>reviewer<th>status<th>findings<th>error<th>consultation<th>answered</tr>"
@@ -1950,14 +1990,17 @@ def _synthesis(summary_json: object) -> str:
         else ""
     )
     return (
+        "<p class=review-recommendation><strong>Recommendation.</strong> "
+        f"{_e(summary.get('recommendation') or '')}</p>"
+        "<details class=review-synthesis><summary>Review synthesis</summary>"
         f"<p>{_e(summary.get('summary') or '')}</p>{table}"
-        f"<p><strong>Recommendation.</strong> {_e(summary.get('recommendation') or '')}</p>"
         + _list("Agreements", summary.get("agreements"))
         + _list("Disagreements", summary.get("disagreements"))
         + _list("Options", summary.get("options"))
         + _list("Checked", summary.get("checked"))
         + _list("Not checked", summary.get("not_checked"))
         + _citations(summary.get("citations"))
+        + "</details>"
     )
 
 
@@ -2275,9 +2318,9 @@ def main() -> int:
     httpd = build_httpd(consult, config_path)
     host, port = httpd.server_address[0], httpd.server_address[1]
     mode = (
-        f"editing agents in {consult.managed_agents_path}"
+        f"editing managed configuration in {consult.managed_agents_path}"
         if consult.dashboard.editable
-        else "read-only -- set `consult.dashboard.editable: true` to configure agents here"
+        else "read-only -- set `consult.dashboard.editable: true` to configure agents and reviewers"
     )
     print(f"dashboard on http://{host}:{port} ({mode}) -- ctrl-c to stop")
     try:

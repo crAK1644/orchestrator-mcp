@@ -1,7 +1,7 @@
 """The MCP surface of the consultation path.
 
 `test_existing_contract.py` guards what a consult-free config advertises. This file
-guards the other half: that configuring `consult:` adds exactly three tools, that
+guards the other half: that configuring `consult:` adds exactly six tools, that
 the calling model reads a usable schema off them, and that it cannot name an agent
 nobody configured.
 """
@@ -28,7 +28,7 @@ async def tools(server):
     return {t.name: t for t in await server.list_tools()}
 
 
-async def test_configuring_consult_without_reviewers_adds_exactly_three_tools(
+async def test_configuring_consult_without_reviewers_adds_exactly_six_tools(
     tmp_path, host_claude
 ):
     """`review:` is a separate opt-in. A config with agents and no reviewers gets the
@@ -37,6 +37,9 @@ async def test_configuring_consult_without_reviewers_adds_exactly_three_tools(
         "orchestrator_consult",
         "orchestrator_list_consult_agents",
         "orchestrator_get_consultation",
+        "orchestrator_delete_consultation",
+        "orchestrator_request_delete_all_consultations",
+        "orchestrator_delete_all_consultations",
     }
 
 
@@ -66,6 +69,17 @@ async def test_the_tool_tells_the_host_to_keep_the_consultation_id(tmp_path, hos
     doc = (await tools(build_server(config(tmp_path))))["orchestrator_consult"].description
     assert "consultation_id" in doc
     assert "send it back" in doc
+
+
+async def test_the_tool_description_names_every_supported_runtime(tmp_path, host_claude):
+    doc = (await tools(build_server(config(tmp_path))))["orchestrator_consult"].description
+    assert all(name in doc for name in ("Codex", "Claude Code", "OpenCode", "Antigravity"))
+
+
+async def test_bulk_consultation_deletion_requires_the_preview_token(tmp_path, host_claude):
+    surface = await tools(build_server(config(tmp_path)))
+    schema = surface["orchestrator_delete_all_consultations"].input_schema
+    assert schema["required"] == ["confirm_token"]
 
 
 async def test_consult_answers_with_an_envelope_not_an_exception(tmp_path, host_claude):

@@ -338,5 +338,9 @@ def _usage(envelope: dict) -> Usage:
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=prompt_tokens + completion_tokens,
-        cost_usd=float(cost) if isinstance(cost, (int, float)) else None,
+        cost_usd=(
+            float(cost)
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool)
+            else None
+        ),
     )

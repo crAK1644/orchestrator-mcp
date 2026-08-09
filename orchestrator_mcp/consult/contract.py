@@ -219,6 +219,18 @@ class ConsultationRecord(BaseModel):
     routing: list[dict[str, Any]]
 
 
+class ConsultationDeleteApproval(BaseModel):
+    """An exact snapshot of ordinary consultation history offered for deletion."""
+
+    consultations: int = Field(ge=0)
+    confirm_token: str = Field(min_length=1, max_length=MAX_LABEL_CHARS)
+    expires_in_s: int = Field(ge=1)
+
+
+class ConsultationDeletionResult(BaseModel):
+    deleted: int = Field(ge=0)
+
+
 def _agent_enum(agent_ids: list[str]):
     """Advertise `target_agent` as the configured ids, or null.
 

@@ -203,15 +203,20 @@ The PyPI distribution is named `orchestrator-mcp-server`; the shorter PyPI name 
 | **Explicit model choice** | Verify the responding model when the CLI exposes that information; fail on a detected substitution. |
 | **Review panel** | Ask one reviewer, or up to five in deep mode, over the same approved material. |
 | **Local history** | Store consultations and reviews in SQLite, with an optional loopback dashboard. |
-| **Answer-only isolation** | Consulted agents cannot edit files, run commands, use MCP tools, or start subagents. |
+| **Answer-only isolation** | Codex, Claude Code, and OpenCode are prevented from using tools; experimental Antigravity detects and fails reported tool use but cannot yet prevent it. |
 
-### The three consultation tools
+### The consultation tools
 
 | Tool | Purpose |
 |---|---|
 | `orchestrator_consult` | Start or continue a structured consultation. |
 | `orchestrator_list_consult_agents` | Show configured agents, routing scores, installation, and login readiness. |
 | `orchestrator_get_consultation` | Retrieve a stored consultation, its turns, usage, and routing decision. |
+| `orchestrator_delete_consultation` | Delete one ordinary consultation and its local turns. |
+| `orchestrator_request_delete_all_consultations` / `orchestrator_delete_all_consultations` | Preview and confirm deletion of an exact ordinary-history snapshot. |
+
+These deletion tools remove local SQLite records only. They cannot erase a consulted
+runtime's own CLI or provider history.
 
 The review tools are opt-in: without a `consult.review` block, they are not advertised at all.
 
@@ -303,6 +308,11 @@ The workflow is deliberately split:
 2. Show that plan to the user. `orchestrator_review_run` spends its one-time token and asks reviewers in parallel.
 3. Read every result and call `orchestrator_finalize_review`. Reviewer replies alone leave the review at `awaiting_synthesis`.
 
+The checkpoint binds the scope and makes the token single-use, but it is advisory:
+MCP gives the server no separate human channel, so it cannot prove who saw the plan.
+Human approval depends on the calling client's tool-confirmation experience or an
+external gate.
+
 Finalization must preserve every machine-readable Critical finding, even when other reviewers disagree with it. Deep mode also requires the host agent to record its own findings before seeing the reviewers' answers.
 
 > [!IMPORTANT]
@@ -346,12 +356,12 @@ Credential-shaped values are masked before storage. `secrets="send_as_is"` is an
 | **Model identity** | A detected mismatch fails with `configured_model_unavailable`. Missing CLI metadata is reported as unverified, not invented. |
 | **Storage** | SQLite directory permissions are `0700`; the database and managed agent file are `0600`. |
 | **Dashboard** | Loopback only, with host-header checks and a per-process token. |
-| **Review approval** | Plans bind the scope to a one-time token before reviewer requests are made. |
+| **Review checkpoint** | Plans bind the scope to a one-time token before reviewer requests are made. The server cannot independently verify human approval. |
 
 > [!WARNING]
-> **Redaction covers the review path, and only this database.** In a review, credential-shaped values are replaced before every insert — the goal, the context, the manifest, and every reviewer's answer. A plain `orchestrator_consult` is not redacted: its prompts, context, and answers are stored as you sent them. Detection is best-effort pattern matching rather than a scanner with perfect recall, so a secret with no recognizable shape survives it either way. Keep the database private, or set `store_full_content: false`.
+> **Redaction covers every retained database copy, and only this database.** Credential-shaped values are replaced before every insert while the target CLI still receives the original material. Detection is best-effort pattern matching rather than a scanner with perfect recall, so a secret with no recognizable shape can survive it. Keep the database private, or set `store_full_content: false`.
 >
-> **Vendor history is outside all of this.** Material sent to a reviewer also lands in that reviewer's own CLI history — Codex writes `~/.codex/sessions/`, and the others keep their own logs. Orchestrator cannot redact or erase those files. It does read from them, in three places and for two fields: the Codex adapter opens the rollout file for the session it just ran to recover the model identity the CLI does not otherwise report, and opens the newest rollout to read the rate-limit numbers the service last returned; the OpenCode adapter runs `opencode export` on the session it just ran, for the same reason — the model identity is absent from that runtime's event stream. Nothing else is taken from any of them.
+> **Vendor history is outside all of this.** Material sent to a reviewer also lands in that reviewer's own CLI history — Codex writes `~/.codex/sessions/`, and the others keep their own logs. Orchestrator cannot redact or erase those files. It does read from them, in three places and for two fields: the Codex adapter opens the rollout file for the session it just ran to recover the model identity the CLI does not otherwise report, and opens the newest rollout to read the latest Codex CLI rate-limit numbers; the OpenCode adapter runs `opencode export` on the session it just ran, for the same reason — the model identity is absent from that runtime's event stream. Nothing else is taken from any of them.
 
 Two more limits worth knowing:
 
@@ -375,7 +385,7 @@ Orchestrator checks structure, routing, permissions, and model identity where ob
       scores: { coding: 60, reasoning: 60 }
 ```
 
-**Hosted providers only. Orchestrator does not run a model on your machine, or on anyone's.** Like the Codex and Claude runtimes, this one consults a subscription you already hold. A locally served model — Ollama, LM Studio, your own endpoint — cannot be reached through it, and that is enforced by construction rather than by a check: a consultation runs under a configuration with no `provider` block at all, and a provider block is the only place an endpoint outside OpenCode's own catalogue is ever named. Verified against the CLI: under this configuration `--model ollama/qwen2.5:7b` fails with `ProviderModelNotFoundError` and the local server is never contacted. The cost is real — if the model you want is one you host yourself, this runtime cannot consult it.
+**Hosted providers only. Orchestrator does not run a model on your machine, or on anyone's.** Depending on the selected model, this runtime consults a subscription you already hold or OpenCode's anonymous free tier. A locally served model — Ollama, LM Studio, your own endpoint — cannot be reached through it, and that is enforced by construction rather than by a check: a consultation runs under a configuration with no `provider` block at all, and a provider block is the only place an endpoint outside OpenCode's own catalogue is ever named. Verified against the CLI: under this configuration `--model ollama/qwen2.5:7b` fails with `ProviderModelNotFoundError` and the local server is never contacted. The constraint is real — if the model you want is one you host yourself, this runtime cannot consult it.
 
 **Readiness is asked under that same configuration.** Orchestrator runs `opencode models` with your global config out of reach and checks that the agent's `provider/model` is listed, so readiness answers the question the consultation will actually ask rather than reporting a model that would then fail to resolve. A provider that needs a credential wants `opencode auth login` once; stored keys and OAuth tokens live in OpenCode's data directory, which Orchestrator neither reads nor relocates. The child gets a fixed allowlist of environment variables — `HOME`, `PATH`, `LANG` and a few more — and every `*_API_KEY` in this server's own environment is excluded from it.
 

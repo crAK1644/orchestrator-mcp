@@ -35,6 +35,7 @@ from ..consult.contract import (
     ConsultError,
     ConsultResponse,
     ConsultSource,
+    ConsultationContent,
     Runtime,
     SourceMode,
 )
@@ -685,21 +686,44 @@ class ReviewService:
         seen = set()
         for row in await self.store.reviewer_rows(review_id):
             seen.add(row.agent_id)
+            consultation_id = UUID(row.consultation_id) if row.consultation_id else None
+            usage = (
+                await self.consult.store.usage(consultation_id)
+                if consultation_id is not None
+                else None
+            )
             if row.agent_id in fresh:
-                out.append(fresh[row.agent_id])
+                current = fresh[row.agent_id]
+                out.append(current.model_copy(update={"usage": usage or current.usage}))
                 continue
             findings = json.loads(row.findings_json) if row.findings_json else []
             sources = json.loads(row.sources_json) if row.sources_json else []
+            content = None
+            if consultation_id is not None:
+                payload = await self.consult.store.latest_response(consultation_id)
+                if payload is not None:
+                    try:
+                        content = ConsultationContent(**payload)
+                    except ValidationError:
+                        # A legacy or hand-edited row must not make the whole review
+                        # unreadable. The review row still carries its answer/findings.
+                        content = None
             out.append(
                 ReviewerResult(
                     agent_id=row.agent_id,
                     ok=row.status == "ok",
-                    consultation_id=UUID(row.consultation_id) if row.consultation_id else None,
+                    consultation_id=consultation_id,
                     findings=[Finding(**f) for f in findings],
                     sources=_sources(sources),
                     findings_parsed=bool(row.findings_parsed or row.findings_json),
                     findings_truncated=row.findings_truncated,
                     answer=row.answer,
+                    assumptions=(content.assumptions[:MAX_LIST_ITEMS] if content else []),
+                    uncertainties=(content.uncertainties[:MAX_LIST_ITEMS] if content else []),
+                    follow_up_questions=(
+                        content.follow_up_questions[:MAX_LIST_ITEMS] if content else []
+                    ),
+                    usage=usage,
                     error=(
                         ConsultError(
                             code=ConsultErrorCode(row.error_code),
@@ -1034,18 +1058,20 @@ class ReviewService:
         return await self._guard(review_id, started, lambda review: self._get(started, review))
 
     async def _get(self, started: float, review) -> ReviewResponse:
+        results = await self._results(review.id)
         return ReviewResponse(
             review_id=UUID(review.id),
             mode=review.mode,
             status=review.status,
             outcome=review.outcome,
-            results=await self._results(review.id),
+            results=results,
             host_findings=json.loads(review.host_findings_json or "[]"),
             summary=(
                 ReviewSummary(**json.loads(review.summary_json)) if review.summary_json else None
             ),
             fix_rounds=_fix_rounds(review),
             rechecks=await self.store.recheck_ids(review.id),
+            usage=_total(results),
             latency_ms=_ms(started),
         )
 
@@ -1329,18 +1355,22 @@ def _sources(stored: list[Any]) -> list[ConsultSource]:
 
 
 def _total(results: list[ReviewerResult]) -> Usage:
-    """What the whole review cost, summed over the reviewers that reported.
+    """What the whole review cost, if every reviewer reported it.
 
-    A reviewer rebuilt from its stored row has no usage, so this undercounts a
-    retry rather than inventing a figure for the attempts it did not run.
+    Reviewer usage is cumulative over the linked consultation's recorded turns, so
+    retries and retrieval after restart count every attempt exactly once.
     """
     used = [r.usage for r in results if r.usage is not None]
-    costs = [u.cost_usd for u in used if u.cost_usd is not None]
+    cost_known = (
+        bool(results)
+        and len(used) == len(results)
+        and all(u.cost_usd is not None for u in used)
+    )
     return Usage(
         prompt_tokens=sum(u.prompt_tokens for u in used),
         completion_tokens=sum(u.completion_tokens for u in used),
         total_tokens=sum(u.total_tokens for u in used),
-        cost_usd=sum(costs) if costs else None,
+        cost_usd=sum(u.cost_usd for u in used) if cost_known else None,
     )
 
 

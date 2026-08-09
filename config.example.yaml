@@ -1,12 +1,13 @@
 # Orchestrator MCP config.
 #
 # There is one block, and it routes to an *agent runtime* -- a Codex, Claude Code,
-# or Antigravity CLI installed on this machine, running under its own account -- so
-# Claude Code can consult GPT and Codex can consult Claude without either one
-# holding the other's API key. No provider SDK, no API key, no network of our own.
+# OpenCode, or experimental Antigravity CLI installed on this machine. Claude Code
+# can consult GPT, Codex can consult Claude, and OpenCode can reach its hosted
+# catalogue without this server holding a provider key. No provider SDK or network
+# call of our own.
 #
 # One environment variable is required alongside it: ORCHESTRATOR_HOST_RUNTIME, set
-# to `codex`, `claude`, or `antigravity` to say which runtime this installation
+# to `codex`, `claude`, `opencode`, or `antigravity` to say which runtime this installation
 # *is*. It is never a tool argument, because an agent that could name the host
 # runtime could route the work straight back to itself. Missing it is a startup
 # error.
@@ -84,8 +85,9 @@ consult:
                             # needs a credential. Hosted only: a consultation runs with
                             # no `provider` block, so a locally served model -- Ollama,
                             # LM Studio, your own endpoint -- cannot be named here. This
-                            # server consults a subscription; it does not run a model on
-                            # your machine
+                            # server reaches a hosted OpenCode model; it does not run a
+                            # model on your machine. Some hosted models are anonymous
+                            # free tier; others need a subscription or credential.
       priority: 40
       web_search: false     # not offered by this runtime, and setting it true here
                             # does not buy it: web mode is refused either way
@@ -106,8 +108,8 @@ consult:
   dashboard:
     enabled: false
     # A second opt-in, because a viewer and an editor are different things to agree
-    # to. On, the page can add, change and delete agents in `managed_agents_path`
-    # above -- and nothing else. It never edits this file and never runs a command.
+    # to. On, the page can add, change and delete agents and choose reviewers in
+    # `managed_agents_path` above. It never edits this file or runs a command.
     editable: false
     host: 127.0.0.1
     port: 8765

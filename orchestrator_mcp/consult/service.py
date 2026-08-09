@@ -58,11 +58,11 @@ class ConsultService:
         # there -- the adapter is still handed the caller's own text, because a
         # consultation answering a redacted question is not the same consultation.
         #
-        # Default is identity, so the plain `consult` path stores exactly what it
-        # always did. A caller that cannot let credentials reach disk (the review
-        # layer) passes `scrub_json`; there is deliberately no cleanup pass, which
-        # only a design that writes the secret first would need.
-        self._scrub: Callable[[Any], Any] = store_sanitizer or (lambda value: value)
+        # Credential-shaped values are scrubbed for every storage path. The adapter
+        # still receives the caller's original material; only the copy headed for
+        # SQLite passes through this function. Injection remains available for a
+        # stricter embedding, but opting out accidentally is no longer the default.
+        self._scrub: Callable[[Any], Any] = store_sanitizer or scrub_json
 
     async def open(self) -> ConsultService:
         await self.store.open()
@@ -295,6 +295,7 @@ class ConsultService:
             validated_response=self._scrub(result.content.model_dump()),
             input_tokens=result.usage.prompt_tokens,
             output_tokens=result.usage.completion_tokens,
+            total_tokens=result.usage.total_tokens,
             cost_usd=result.usage.cost_usd,
             latency_ms=int((time.perf_counter() - started) * 1000),
         )
@@ -390,6 +391,7 @@ class ConsultService:
                     "answer": t.validated_response_json,
                     "input_tokens": t.input_tokens,
                     "output_tokens": t.output_tokens,
+                    "total_tokens": t.total_tokens,
                     "cost_usd": t.cost_usd,
                     "latency_ms": t.latency_ms,
                     "error_code": t.error_code,
@@ -399,6 +401,18 @@ class ConsultService:
             ],
             routing=await self.store.routing_for(consultation_id),
         )
+
+    async def delete_consultation(self, consultation_id: UUID | str) -> int:
+        await self.open()
+        return await self.store.delete_consultation(consultation_id)
+
+    async def request_delete_all_consultations(self) -> tuple[str, int]:
+        await self.open()
+        return await self.store.request_delete_all_consultations()
+
+    async def delete_all_consultations(self, confirm_token: str) -> int:
+        await self.open()
+        return await self.store.delete_all_consultations(confirm_token)
 
 
 class _RoutingFailure(Exception):

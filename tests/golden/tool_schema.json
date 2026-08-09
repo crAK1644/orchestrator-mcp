@@ -685,6 +685,100 @@
       "type": "object"
     }
   },
+  "orchestrator_delete_consultation": {
+    "input_schema": {
+      "properties": {
+        "consultation_id": {
+          "format": "uuid",
+          "title": "Consultation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "consultation_id"
+      ],
+      "title": "delete_consultationArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "properties": {
+        "deleted": {
+          "minimum": 0,
+          "title": "Deleted",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deleted"
+      ],
+      "title": "ConsultationDeletionResult",
+      "type": "object"
+    }
+  },
+  "orchestrator_request_delete_all_consultations": {
+    "input_schema": {
+      "properties": {},
+      "title": "request_delete_all_consultationsArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "description": "An exact snapshot of ordinary consultation history offered for deletion.",
+      "properties": {
+        "consultations": {
+          "minimum": 0,
+          "title": "Consultations",
+          "type": "integer"
+        },
+        "confirm_token": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Confirm Token",
+          "type": "string"
+        },
+        "expires_in_s": {
+          "minimum": 1,
+          "title": "Expires In S",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "consultations",
+        "confirm_token",
+        "expires_in_s"
+      ],
+      "title": "ConsultationDeleteApproval",
+      "type": "object"
+    }
+  },
+  "orchestrator_delete_all_consultations": {
+    "input_schema": {
+      "properties": {
+        "confirm_token": {
+          "title": "Confirm Token",
+          "type": "string"
+        }
+      },
+      "required": [
+        "confirm_token"
+      ],
+      "title": "delete_all_consultationsArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "properties": {
+        "deleted": {
+          "minimum": 0,
+          "title": "Deleted",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deleted"
+      ],
+      "title": "ConsultationDeletionResult",
+      "type": "object"
+    }
+  },
   "orchestrator_review": {
     "input_schema": {
       "$defs": {

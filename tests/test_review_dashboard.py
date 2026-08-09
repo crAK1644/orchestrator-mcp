@@ -191,6 +191,29 @@ async def test_a_review_appears_in_the_list_with_its_mode_and_outcome(serve, rev
     assert status == 200
     assert str(review_id)[:8] in body
     assert "deep" in body and "complete" in body and "all" in body
+    assert "<time datetime=" in body
+
+
+async def test_the_index_groups_a_reviewers_consultations_under_its_review(
+    serve, review_config  # noqa: F811
+):
+    """Three deep-review calls are evidence for one review, not three competing events."""
+    get, consult_config = serve(review_config())
+    review_id = await make_review(consult_config)
+    database = sqlite3.connect(consult_config.database_path)
+    try:
+        child_id = database.execute(
+            "SELECT consultation_id FROM review_consultations WHERE review_id = ? LIMIT 1",
+            (str(review_id),),
+        ).fetchone()[0]
+    finally:
+        database.close()
+
+    _, body = get("/")
+
+    assert str(review_id)[:8] in body
+    assert child_id[:8] not in body
+    assert body.index("<h2>Reviews</h2>") < body.index("<h2>Other consultations</h2>")
 
 
 async def test_the_monitor_strip_counts_the_reviews_that_have_not_finished(serve, review_config):  # noqa: F811
@@ -228,6 +251,8 @@ async def test_the_detail_page_shows_every_reviewer_and_its_findings(serve, revi
     assert "proposed action" in body and "stream it" in body
     # And the original answers, folded away.
     assert "<details>" in body
+    assert body.index("<h2>Synthesis</h2>") < body.index("Review input and recorded material")
+    assert body.index("Recommendation.") < body.index("The parser reads an unbounded file.")
 
 
 async def test_the_detail_page_says_a_synthesis_is_still_missing(serve, review_config):  # noqa: F811

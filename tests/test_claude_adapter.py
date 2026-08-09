@@ -145,6 +145,14 @@ async def test_a_successful_consultation_returns_content_session_and_usage(
     assert result.usage.cost_usd == 0.0123
 
 
+async def test_a_boolean_cost_stays_unknown(tmp_path, monkeypatch, adapter):
+    """`bool` is an `int`, but a malformed cost field is not a one-dollar charge."""
+    agent_stub.install("claude", tmp_path, monkeypatch, runs=[{"stdout": envelope(total_cost_usd=True)}])
+    result = await adapter.start(agent(), prompt(), SourceMode.DOCUMENT)
+
+    assert result.usage.cost_usd is None
+
+
 async def test_resume_continues_the_same_session(tmp_path, monkeypatch, adapter):
     record = agent_stub.install("claude", tmp_path, monkeypatch, runs=[{"stdout": envelope()}])
     await adapter.resume(agent(), SESSION, prompt(), SourceMode.DOCUMENT)

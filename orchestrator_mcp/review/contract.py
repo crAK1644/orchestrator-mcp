@@ -168,8 +168,8 @@ class ReviewerResult(BaseModel):
     uncertainties: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
     follow_up_questions: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
     sources: list[ConsultSource] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
-    # Null on a reviewer rebuilt from its stored row: the cost was recorded against
-    # the consultation, not copied into the review table.
+    # Rebuilt from the linked consultation's turn ledger, so a retry includes every
+    # recorded attempt without copying or double-counting billing fields here.
     usage: Usage | None = None
     error: ConsultError | None = None
 

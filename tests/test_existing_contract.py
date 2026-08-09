@@ -50,6 +50,9 @@ async def test_a_config_without_reviewers_advertises_only_the_consult_tools(host
         "orchestrator_consult",
         "orchestrator_list_consult_agents",
         "orchestrator_get_consultation",
+        "orchestrator_delete_consultation",
+        "orchestrator_request_delete_all_consultations",
+        "orchestrator_delete_all_consultations",
     }
 
 
