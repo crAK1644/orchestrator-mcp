@@ -437,14 +437,26 @@ class ConsultStore:
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (version, _now()),
                 )
-                db.execute(
-                    "INSERT OR IGNORE INTO profiles (id, created_at) VALUES (?, ?)",
-                    (DEFAULT_PROFILE, _now()),
-                )
             except Exception:
                 db.execute("ROLLBACK")
                 raise
             db.execute("COMMIT")
+        # Outside the loop, because it is not a migration: every consultation
+        # references this row, and inside the loop it ran only when a migration was
+        # applied. A database already at the current version whose row had gone --
+        # purged, restored, repaired by hand -- never got it back, and every
+        # consultation after that failed on the foreign key with nothing said about
+        # why. Idempotent, so the cost of running it on every open is one no-op.
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            db.execute(
+                "INSERT OR IGNORE INTO profiles (id, created_at) VALUES (?, ?)",
+                (DEFAULT_PROFILE, _now()),
+            )
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("COMMIT")
 
     async def close(self) -> None:
         if self._connection is not None:

@@ -87,6 +87,32 @@ async def test_opening_twice_is_not_a_second_migration(tmp_path):
     assert (versions, profiles) == (len(MIGRATIONS), 1)
 
 
+async def test_a_database_that_lost_its_profile_row_gets_it_back_on_open(tmp_path):
+    """Found by a live review that died in 10ms with `IntegrityError`.
+
+    Every consultation references the default profile, and the row was created only
+    inside the migration loop -- so a database already at the current version never
+    recreated it. Emptying the tables (a purge, a restore, a manual repair) left an
+    installation that could never consult again, and said only `IntegrityError`.
+    """
+    path = tmp_path / "db.sqlite3"
+    first = await ConsultStore(path).open()
+    await first.close()
+
+    scratch = sqlite3.connect(path)
+    scratch.execute("DELETE FROM profiles")
+    scratch.commit()
+    scratch.close()
+
+    second = await ConsultStore(path).open()
+    try:
+        # The insert, not the row count: this has to fail the way the live one did,
+        # on the foreign key, rather than pass because some other row was restored.
+        await new_consultation(second)
+    finally:
+        await second.close()
+
+
 async def test_usage_is_rebuilt_from_every_recorded_turn(store):
     consultation_id = await new_consultation(store)
     await store.record_turn(
