@@ -321,6 +321,10 @@ class CodeChange(BaseModel):
     patch: str = ""
     raw_patch_sha256: str = ""
     commit: str = ""
+    # Written by a contained step, absent from `patch`, and gone with the worktree.
+    # Empty for every other mode. Recorded so "the patch is the whole change" is a
+    # claim the artifact can contradict rather than one nothing checks.
+    ignored: list[str] = []
 
 
 class TestReport(BaseModel):

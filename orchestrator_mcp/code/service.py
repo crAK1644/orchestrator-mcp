@@ -15,7 +15,9 @@ the ones git will not render as text.
 
 Cleanup runs whatever happened, including a timeout or a crash mid-run, because a
 worktree left behind is both a directory nobody will find and a registration inside
-the user's repository.
+the user's repository. One exception: when *capture itself* fails the worktree stays,
+because at that moment it is the only copy of the step's work and removing it would
+destroy the work over a failure to read it.
 """
 
 from __future__ import annotations
@@ -65,6 +67,7 @@ async def run_contained(
     adapter = code_adapter_for(agent, config)
     path = worktree_path(workflow_id, step_id)
     await _add_worktree(repo, path, baseline_commit)
+    keep = False
     try:
         try:
             run = await adapter.execute(agent, prompt, path, timeout_s)
@@ -74,14 +77,24 @@ async def run_contained(
             # run is not something a caller should have to know two exception types
             # to handle.
             raise CodeError(exc.code, str(exc)) from exc
-        patch, files = await _capture(path, baseline_commit)
+        try:
+            patch, files, ignored = await _capture(path, baseline_commit)
+        except CodeError:
+            # The worktree holds the only copy of what this step did. Deleting it
+            # because *reading* it failed destroys the work over a problem the host
+            # can usually look at and fix by hand -- and a nested `git init`, which
+            # is all it takes, is something an ordinary scaffolding step does.
+            keep = True
+            raise
     finally:
-        await _remove_worktree(repo, path)
+        if not keep:
+            await _remove_worktree(repo, path)
 
     return CodeResult(
         baseline_commit=baseline_commit,
         patch=patch,
         files=files,
+        ignored=ignored,
         summary=run.summary,
         commands=run.commands,
         native_session_id=run.native_session_id,
@@ -131,18 +144,27 @@ async def _remove_worktree(repo: Path, path: Path) -> None:
         pass
 
 
-async def _capture(path: Path, baseline_commit: str) -> tuple[str, list[str]]:
+async def _capture(path: Path, baseline_commit: str) -> tuple[str, list[str], list[str]]:
     """Everything the step changed, as one patch against the baseline.
 
     Staged first so untracked files are in the index and therefore in the diff. The
     agent cannot run `git add` itself -- a worktree's git directory is outside its
     sandbox -- so this index is only ever written here.
+
+    Two things a patch cannot carry, and neither is allowed to pass in silence. A
+    nested repository makes `git add -A` refuse the entire tree, so it raises, and the
+    caller keeps the worktree rather than deleting the work. Ignored files are skipped
+    by design and can never appear in a diff, so they come back named.
     """
     code, _, err = await _git(path, "add", "-A")
     if code != 0:
         raise CodeError(
             ConsultErrorCode.TRANSPORT_ERROR,
-            f"could not stage the worktree's changes for capture: {err[:400]}",
+            f"could not stage the worktree's changes for capture: {err[:400]}. The "
+            f"worktree has been left at `{path}` because it holds the only copy of "
+            "this step's work. A repository created inside it -- a `git init`, a "
+            "scaffolded subproject, a vendored fixture -- is the usual cause, and one "
+            "is enough for git to refuse the whole tree",
         )
     code, patch, err = await _git(path, "diff", "--binary", "--cached", baseline_commit)
     if code != 0:
@@ -151,4 +173,8 @@ async def _capture(path: Path, baseline_commit: str) -> tuple[str, list[str]]:
         )
     code, names, _ = await _git(path, "diff", "--name-only", "--cached", baseline_commit)
     files = [line.strip() for line in names.splitlines() if line.strip()] if code == 0 else []
-    return patch, files
+    code, others, _ = await _git(
+        path, "ls-files", "--others", "--ignored", "--exclude-standard"
+    )
+    ignored = [line.strip() for line in others.splitlines() if line.strip()] if code == 0 else []
+    return patch, files, ignored[:200]

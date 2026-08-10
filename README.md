@@ -442,13 +442,14 @@ routing time.
 **No delegated agent writes to your working tree.** In `patch` mode the agent never sees
 your checkout — only the context the host sent it, exactly as a reviewer does — and the
 diff comes back for the host to apply. In `isolated_write` it sees a *copy*: a worktree
-under `~/.orchestrator-mcp/worktrees/<workflow_id>/<step_id>/`, created at the baseline
-commit and deleted as soon as the diff is captured. Either way the step ends in
+under `~/.orchestrator-mcp/worktrees/<workflow_id>/<step_id>/`, checked out at the latest
+applied result (the workflow's baseline until the host has applied anything) and deleted
+as soon as the diff is captured. Either way the step ends in
 `awaiting_host_apply` and the host owns the branch. `ConsultAdapter` gained nothing for
 any of this: it is still three verbs with no way to ask for anything agentic, and write
 capability lives in a separate package behind a separate protocol.
 
-Two things about a contained run are worth knowing before you use one:
+Three things about a contained run are worth knowing before you use one:
 
 - **The diff is the record, not the reply.** Orchestrator runs `git add -A` in the
   worktree and takes the staged diff against the baseline, so files the agent *created*
@@ -461,6 +462,13 @@ Two things about a contained run are worth knowing before you use one:
   the tree and this server records it. The step's timeout is
   `consult.workflow.execution_timeout_s` (900s by default), not `consult.timeout_s`,
   which is sized for a question.
+- **Two things a diff cannot carry, and neither passes in silence.** A repository
+  created *inside* the worktree — a scaffolded subproject, a vendored fixture, any
+  `git init` — makes `git add -A` refuse the whole tree. The step fails and the worktree
+  is **kept**, with its path in the error, because at that moment it holds the only copy
+  of the work. Ignored files are skipped by `git add -A` by design and can never appear
+  in a patch; they come back listed on the step's `ignored` field rather than vanishing
+  with the worktree.
 
 ### Host identity
 

@@ -333,6 +333,64 @@ async def test_the_network_coming_back_on_is_noticed(repo, worktrees, tmp_path, 
         )
 
 
+async def test_a_repository_created_inside_the_worktree_does_not_destroy_the_step(
+    repo, worktrees, tmp_path, monkeypatch
+):
+    """One nested repository makes `git add -A` refuse the whole tree, exit 128.
+
+    Found by a review, then reproduced: capture raised, the `finally` force-removed the
+    worktree, and every file the step had written went with it -- over an ordinary
+    scaffolded subproject, not an attack. The worktree now survives a capture failure,
+    because at that moment it is the only copy of the work.
+    """
+    with pytest.raises(CodeError, match="only copy of this step's work"):
+        await run(
+            repo, tmp_path, monkeypatch,
+            runs=[{
+                "stdout": transcript(),
+                "append": {
+                    "greet.py": "def greet():\n    return 'hi'\n",
+                    # What git looks for before it calls a directory a repository. A
+                    # real `git init` in a subproject leaves all three and more.
+                    "sub/.git/HEAD": "ref: refs/heads/main\n",
+                    "sub/.git/objects/.keep": "",
+                    "sub/.git/refs/.keep": "",
+                    "sub/app.py": "print('hi')\n",
+                },
+            }],
+        )
+
+    kept = worktree_path("wf-1", "step-1")
+    assert (kept / "greet.py").exists()
+    assert (kept / "sub" / "app.py").exists()
+
+
+async def test_a_file_the_patch_cannot_carry_comes_back_named(
+    repo, worktrees, tmp_path, monkeypatch
+):
+    """`git add -A` skips ignored paths by design, and no diff can carry them.
+
+    So the step wrote a file, the patch says it did not, and the worktree that held it
+    is gone. Nothing here recovers the file -- what changed is that the result says
+    which one, instead of the omission being invisible.
+    """
+    result, _ = await run(
+        repo, tmp_path, monkeypatch,
+        runs=[{
+            "stdout": transcript(),
+            "append": {
+                ".gitignore": "build/\n",
+                "build/out.txt": "generated\n",
+                "greet.py": "def greet():\n    return 'hi'\n",
+            },
+        }],
+    )
+
+    assert result.ignored == ["build/out.txt"]
+    assert "build/out.txt" not in result.patch
+    assert sorted(result.files) == [".gitignore", "greet.py"]
+
+
 async def test_a_substituted_model_is_refused(repo, worktrees, tmp_path, monkeypatch):
     with pytest.raises(CodeError, match="the answer came from `gpt-4o-mini`"):
         await run(

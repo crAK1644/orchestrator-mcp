@@ -369,7 +369,7 @@ class WorkflowService:
         try:
             await self.open()
             workflow = await self._live(workflow_id)
-            row = await self._step_of(workflow_id, step_id)
+            row = await self._step_of(workflow, step_id)
             if row.executor != "agent":
                 raise WorkflowError(
                     ConsultErrorCode.INVALID_REQUEST,
@@ -496,7 +496,12 @@ class WorkflowService:
                 agent,
                 compile_execution_prompt(prompt, context),
                 repo=Path(workflow.workdir),
-                baseline_commit=workflow.baseline_commit,
+                # The applied result, not the original baseline. After round one the
+                # branch has moved, and a fix checked out at `baseline_commit` would
+                # edit pre-implementation source and return a patch computed against a
+                # commit the branch has left -- applying it reverts the implementation
+                # the round was supposed to build on.
+                baseline_commit=workflow.result_commit or workflow.baseline_commit,
                 workflow_id=workflow.id,
                 step_id=row.id,
                 timeout_s=float(self.policy.execution_timeout_s),
@@ -521,6 +526,7 @@ class WorkflowService:
             files=result.files,
             patch=result.patch,
             raw_patch_sha256=_text_sha256(result.patch),
+            ignored=result.ignored,
         ).model_dump(mode="json")
         await self.store.finish_step(
             row.id, "done", output=output, raw_patch_sha256=output["raw_patch_sha256"]
@@ -568,7 +574,7 @@ class WorkflowService:
         try:
             await self.open()
             workflow = await self._live(workflow_id)
-            row = await self._step_of(workflow_id, step_id)
+            row = await self._step_of(workflow, step_id)
             if row.executor != "host":
                 raise WorkflowError(
                     ConsultErrorCode.INVALID_REQUEST,
@@ -692,16 +698,16 @@ class WorkflowService:
         )
 
         if done:
-            await self.store.transition(workflow.id, "completed", ("synthesizing",))
+            await self._transition(workflow.id, "completed", ("synthesizing",))
         elif workflow.fix_rounds >= self.policy.max_fix_rounds:
-            await self.store.transition(
+            await self._transition(
                 workflow.id, "needs_attention", ("synthesizing",),
                 reason=f"the {self.policy.max_fix_rounds}-round cap was reached with "
                        f"{record.open_serious} serious finding(s) still open",
             )
         else:
             await self.store.bump_fix_rounds(workflow.id)
-            await self.store.transition(workflow.id, "fixing", ("synthesizing",))
+            await self._transition(workflow.id, "fixing", ("synthesizing",))
         return await self._view_response(workflow.id, started, step_id=row.id)
 
     def _loop_done(
@@ -750,7 +756,7 @@ class WorkflowService:
         if step in ("implement", "fix", "apply_patch") and output:
             commit = output.get("commit") or None
 
-        await self.store.transition(
+        await self._transition(
             workflow.id, target, definition.runs_from, result_commit=commit
         )
 
@@ -843,7 +849,7 @@ class WorkflowService:
                     if row.review_id:
                         await self.reviews.cancel(row.review_id)
                     await self.store.finish_step(row.id, "cancelled")
-            await self.store.transition(
+            await self._transition(
                 workflow_id, "cancelled",
                 tuple(s for s in _ALL_STATES if s not in TERMINAL_STATES),
                 reason="cancelled by the host",
@@ -864,9 +870,9 @@ class WorkflowService:
             )
         return workflow
 
-    async def _step_of(self, workflow_id: str, step_id: str) -> StepRow:
+    async def _step_of(self, workflow: WorkflowRun, step_id: str) -> StepRow:
         row = await self.store.get_step(step_id)
-        if row.workflow_id != workflow_id:
+        if row.workflow_id != workflow.id:
             # Checked rather than assumed: a step id from another workflow would
             # otherwise be run against this one's state and artifacts.
             raise WorkflowError(
@@ -878,7 +884,44 @@ class WorkflowService:
                 ConsultErrorCode.INVALID_REQUEST,
                 f"step `{step_id}` is `{row.status}`; only a planned step can be run",
             )
+        runs_from = STEPS[row.step].runs_from  # type: ignore[index]
+        if workflow.status not in runs_from:
+            # `planned` is not enough. Two steps can be planned from one state, and
+            # once the first has run, the second's preview describes a workflow that
+            # no longer exists -- but its row is still `planned`, so without this it
+            # would run, be paid for, and record an artifact for a state the workflow
+            # has left. The transition afterwards is what fails, far too late.
+            raise WorkflowError(
+                ConsultErrorCode.INVALID_REQUEST,
+                f"step `{step_id}` was planned to run from "
+                f"{_or_list(runs_from)}, and this workflow is now "
+                f"`{workflow.status}`. Something else moved it on since; plan the "
+                "step the status names as next",
+            )
         return row
+
+    async def _transition(
+        self,
+        workflow_id: str,
+        to_status: WorkflowState,
+        allowed_from: tuple[WorkflowState, ...],
+        **kwargs: Any,
+    ) -> None:
+        """Move the workflow, and refuse to carry on quietly when it has already moved.
+
+        `store.transition` guards the change in SQL and returns False when something
+        else got there first. Every caller here used to discard that, which made losing
+        the race silent: the step ran, was paid for and stored its artifact, and the
+        workflow simply stayed where it was with nothing said about why.
+        """
+        if not await self.store.transition(workflow_id, to_status, allowed_from, **kwargs):
+            raise WorkflowError(
+                ConsultErrorCode.INVALID_REQUEST,
+                f"this workflow could not move to `{to_status}`: it is no longer in "
+                f"{_or_list(allowed_from)}. Something changed it while this step was "
+                "running -- read `orchestrator_workflow_status` before doing anything "
+                "else. The step's own result was recorded",
+            )
 
     async def _status(self, workflow_id: str) -> WorkflowState:
         """The workflow's state for an error envelope, or `failed` if it has none."""
@@ -963,6 +1006,18 @@ def _paths(patch: str) -> list[str]:
             if path and path not in seen:
                 seen.append(path)
     return seen[:200]
+
+
+def _or_list(states: tuple[str, ...]) -> str:
+    """States a caller has to reconcile against, written the way they are read."""
+    quoted = [f"`{state}`" for state in states]
+    if len(quoted) > 4:
+        # Cancellation allows every non-terminal state. Naming a dozen of them tells
+        # the reader less than the count does.
+        return f"any of the {len(quoted)} states it was allowed to move from"
+    if len(quoted) < 3:
+        return " or ".join(quoted)
+    return f"{', '.join(quoted[:-1])} or {quoted[-1]}"
 
 
 def _validated(model: type, payload: dict[str, Any], step: str):

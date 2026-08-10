@@ -54,6 +54,10 @@ class CodeResult:
     baseline_commit: str
     patch: str
     files: list[str]
+    # Files the step wrote that no patch can carry: `git add -A` skips ignored paths
+    # by design. Named rather than dropped, so a step that wrote a generated file
+    # under an ignored directory does not look like a step that wrote nothing there.
+    ignored: list[str] = field(default_factory=list)
     summary: str = ""
     commands: list[ObservedCommand] = field(default_factory=list)
     native_session_id: str | None = None

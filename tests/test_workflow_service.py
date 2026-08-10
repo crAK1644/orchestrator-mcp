@@ -17,7 +17,7 @@ from orchestrator_mcp.consult.adapters.base import AdapterResult, AgentStatus
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import ConsultationContent, Usage
 from orchestrator_mcp.consult.errors import ConsultErrorCode
-from orchestrator_mcp.workflow.service import WorkflowService, _review_id
+from orchestrator_mcp.workflow.service import WorkflowError, WorkflowService, _review_id
 from orchestrator_mcp.workflow.store import _sha256
 
 from .conftest import agent
@@ -417,6 +417,51 @@ async def test_a_spent_token_cannot_be_spent_again(build, repo):
     assert again.error is not None
 
 
+async def test_a_step_planned_before_another_one_moved_the_workflow_will_not_run(build, repo):
+    """`planned` is not enough, and the review that found this said why.
+
+    Two steps can be previewed from one state. Once the first runs, the second's
+    preview describes a workflow that no longer exists -- but its row is still
+    `planned`, so it used to run, be paid for, and record an artifact for a state the
+    workflow had left. The guarded transition afterwards then failed silently.
+    """
+    service = await build()
+    workflow_id = await started(service, repo)
+    first, first_token = await step(service, workflow_id, "research")
+    stale, stale_token = await step(service, workflow_id, "research")
+
+    assert (
+        await service.record_host_step(workflow_id, first, first_token, json.loads(RESEARCH))
+    ).error is None
+
+    response = await service.record_host_step(
+        workflow_id, stale, stale_token, json.loads(RESEARCH)
+    )
+    assert response.error is not None
+    assert "`created`" in response.error.message and "`planning`" in response.error.message
+    # Refused before the token, not after paying for the step: it can still be spent
+    # on nothing, and the row is untouched.
+    row = (
+        await sql(service, "SELECT status, output_json FROM workflow_steps WHERE id = ?", stale)
+    ).fetchone()
+    assert row[0] == "planned"
+    assert not row[1]
+
+
+async def test_a_transition_that_lost_the_race_is_not_discarded(build, repo):
+    """The backstop behind the check above, called directly because reaching it means
+    winning a race the lease exists to prevent.
+
+    `store.transition` guards the change in SQL and returns False when something else
+    got there first. Every caller in the service threw that away, so a step could
+    finish, be paid for and store its artifact while the workflow silently stayed put.
+    """
+    service = await build()
+    workflow_id = await started(service, repo)
+    with pytest.raises(WorkflowError, match="could not move to `reviewing`"):
+        await service._transition(workflow_id, "reviewing", ("testing",))
+
+
 async def test_a_step_id_from_another_workflow_is_refused(build, repo):
     service = await build()
     first = await started(service, repo)
@@ -669,6 +714,60 @@ async def test_a_contained_step_returns_a_patch_and_leaves_the_tree_alone(
     assert not (repo / "src" / "b.py").exists()
     # And the consult path was never involved.
     assert service.adapters["codex-sol"].prompts == []
+
+
+async def test_a_contained_step_builds_on_the_applied_result_not_the_first_baseline(
+    build, repo, tmp_path, monkeypatch
+):
+    """The single-round smoke test could not see this, and a review found it.
+
+    Every contained run checked out `baseline_commit`, so the second round of a
+    workflow edited pre-implementation source and returned a patch computed against a
+    commit the branch had already left. Applying it reverts round one. The workflow
+    tracks `result_commit` for exactly this and simply was not reading it.
+    """
+    from .fixtures import agent_stub
+
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{
+        "stdout": "".join(json.dumps(event) + "\n" for event in (
+            {"type": "thread.started", "thread_id": "th-1", "model": "gpt-5.6-sol"},
+            {"type": "item.completed",
+             "item": {"type": "agent_message", "text": "Extended the scanner."}},
+        )),
+        "append": {"src/a.py": "extra\n"},
+    }])
+    service = await build(
+        bindings={"implement": {"agent": "codex-sol", "execution": "isolated_write"}},
+        agents={
+            **AGENTS,
+            "codex-sol": workflow_agent(
+                "codex", "gpt-5.6-sol", 10,
+                execution_modes=["consultation", "patch", "isolated_write"],
+            ),
+        },
+    )
+    workflow_id = await started(service, repo)
+
+    # Round one, as the host would have applied it: a real commit the workflow now
+    # points at. `src/a.py` says `new`; the baseline still says `old`.
+    (repo / "src" / "a.py").write_text("new\n")
+    subprocess.run(["git", "commit", "-aqm", "round one"], cwd=repo, check=True)
+    applied = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    await sql(service, "UPDATE workflow_runs SET result_commit = ? WHERE id = ?",
+              applied, workflow_id)
+
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
+    step_id, token = await step(service, workflow_id, "implement")
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is None, response.error
+    # The context line is what the worktree was checked out at. `old` here would mean
+    # the round started from the first baseline and its patch reverts round one.
+    assert "\n new\n" in response.patch
+    assert "old" not in response.patch
 
 
 async def test_a_contained_step_that_changes_nothing_does_not_advance(
