@@ -185,6 +185,61 @@ MIGRATIONS: list[str] = [
         expires_at              REAL NOT NULL
     );
     """,
+    """
+    CREATE TABLE workflow_runs (
+        id              TEXT PRIMARY KEY,
+        goal            TEXT NOT NULL,
+        workdir         TEXT NOT NULL,
+        host_runtime    TEXT NOT NULL,
+        host_model      TEXT,
+        status          TEXT NOT NULL,
+        bindings_json   TEXT NOT NULL,
+        policy_json     TEXT NOT NULL,
+        baseline_commit TEXT,
+        result_commit   TEXT,
+        fix_rounds      INTEGER NOT NULL DEFAULT 0,
+        reason          TEXT,
+        workflow_hash   TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+
+    CREATE TABLE workflow_steps (
+        id                  TEXT PRIMARY KEY,
+        workflow_id         TEXT NOT NULL REFERENCES workflow_runs(id),
+        step                TEXT NOT NULL,
+        executor            TEXT NOT NULL,
+        execution_mode      TEXT,
+        repository_access   TEXT NOT NULL,
+        round_index         INTEGER NOT NULL DEFAULT 0,
+        attempt             INTEGER NOT NULL DEFAULT 1,
+        sequence            INTEGER NOT NULL,
+        parent_step_id      TEXT,
+        agent_id            TEXT,
+        agent_snapshot_json TEXT NOT NULL,
+        status              TEXT NOT NULL,
+        confirm_token_sha   TEXT,
+        review_id           TEXT,
+        output_json         TEXT,
+        raw_patch_sha256    TEXT,
+        reported_by         TEXT,
+        lease_holder        TEXT,
+        lease_expires_at    REAL,
+        created_at          TEXT NOT NULL,
+        updated_at          TEXT NOT NULL
+    );
+
+    CREATE INDEX workflow_steps_workflow_id_idx ON workflow_steps(workflow_id);
+
+    ALTER TABLE consultations ADD COLUMN workflow_id TEXT;
+    ALTER TABLE consultations ADD COLUMN step_id TEXT;
+    ALTER TABLE reviews ADD COLUMN workflow_id TEXT;
+    ALTER TABLE reviews ADD COLUMN step_id TEXT;
+    """,
+    """
+    ALTER TABLE workflow_runs ADD COLUMN replan_token_sha TEXT;
+    ALTER TABLE workflow_runs ADD COLUMN replan_bindings_json TEXT;
+    """,
 ]
 
 DEFAULT_PROFILE = "default"
@@ -218,6 +273,12 @@ class Consultation:
     status: str
     created_at: str
     updated_at: str
+    # Set when a workflow step created this consultation. Its presence is what
+    # `ConsultService._bind_public` refuses on: the workflow path relaxes the host
+    # exclusion from runtime to execution identity, and a public resume must not be
+    # able to reach a row that was bound under the relaxed rule.
+    workflow_id: str | None = None
+    step_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -423,14 +484,17 @@ class ConsultStore:
         config_hash: str,
         conversation_label: str | None = None,
         profile_id: str = DEFAULT_PROFILE,
+        workflow_id: str | None = None,
+        step_id: str | None = None,
     ) -> Consultation:
         def work() -> Consultation:
             now = _now()
             self._db.execute(
                 "INSERT INTO consultations (id, profile_id, origin_runtime, target_agent_id, "
                 "target_runtime, target_model, capability, native_session_id, conversation_label, "
-                "protocol_version, config_hash, status, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "protocol_version, config_hash, status, created_at, updated_at, "
+                "workflow_id, step_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(consultation_id),
                     profile_id,
@@ -453,6 +517,8 @@ class ConsultStore:
                     "open",
                     now,
                     now,
+                    workflow_id,
+                    step_id,
                 ),
             )
             return self._fetch(str(consultation_id))
@@ -475,6 +541,23 @@ class ConsultStore:
                 f"no consultation `{consultation_id}` in this store; start a new one",
             )
         return Consultation(**dict(row))
+
+    async def step_consultation(self, workflow_id: str, step_id: str) -> Consultation | None:
+        """The consultation a workflow step already owns, if it has one.
+
+        None rather than a raise: a step's first turn has nothing to resume, and that
+        is the ordinary case, not a missing row.
+        """
+
+        def work() -> Consultation | None:
+            row = self._db.execute(
+                "SELECT * FROM consultations WHERE workflow_id = ? AND step_id = ? "
+                "ORDER BY created_at LIMIT 1",
+                (workflow_id, step_id),
+            ).fetchone()
+            return None if row is None else Consultation(**dict(row))
+
+        return await self._run(work)
 
     async def bind_native_session(self, consultation_id: UUID | str, native_session_id: str) -> None:
         """Record the session id the runtime gave us, once."""

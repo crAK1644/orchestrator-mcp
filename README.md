@@ -23,6 +23,7 @@
   <a href="#install">Install</a> ·
   <a href="#what-you-get">What you get</a> ·
   <a href="#reviews-with-a-checkpoint">Reviews</a> ·
+  <a href="#the-three-phase-workflow">Workflow</a> ·
   <a href="#security-model">Security</a> ·
   <a href="#local-dashboard">Dashboard</a>
 </p>
@@ -202,6 +203,7 @@ The PyPI distribution is named `orchestrator-mcp-server`; the shorter PyPI name 
 | **Predictable routing** | Rank configured agents by capability score, priority, then agent ID. |
 | **Explicit model choice** | Verify the responding model when the CLI exposes that information; fail on a detected substitution. |
 | **Review panel** | Ask one reviewer, or up to five in deep mode, over the same approved material. |
+| **Three-phase workflow** | Run a whole job — research and planning, implementation and testing, review and fixing — with any model bound to any step it scores for. |
 | **Local history** | Store consultations and reviews in SQLite, with an optional loopback dashboard. |
 | **Answer-only isolation** | Codex, Claude Code, and OpenCode are prevented from using tools; experimental Antigravity detects and fails reported tool use but cannot yet prevent it. |
 
@@ -218,7 +220,7 @@ The PyPI distribution is named `orchestrator-mcp-server`; the shorter PyPI name 
 These deletion tools remove local SQLite records only. They cannot erase a consulted
 runtime's own CLI or provider history.
 
-The review tools are opt-in: without a `consult.review` block, they are not advertised at all.
+Three independent opt-ins: the consult tools are always advertised, the review tools only with a `consult.review` block, the workflow tools only with a `consult.workflow` block. Reviewers are not a workflow, and a workflow is not reviewers.
 
 ## How consultation works
 
@@ -345,6 +347,207 @@ Credential-shaped values are masked before storage. `secrets="send_as_is"` is an
 
 </details>
 
+## The three-phase workflow
+
+A consultation is one question. A review is one body of material. A **workflow** is a
+whole job held together: research and planning, implementation and testing, review and
+fixing, the last two in a capped loop, with every consultation and review it produces
+hanging off one `workflow_id`.
+
+```text
+ research → plan → author_execution_prompt → implement → test → review → synthesize
+                                                 ▲                          │
+                                                 └────────── fix ◄──────────┘
+                                                   capped at max_fix_rounds
+```
+
+Enable it in `config.yaml`. Without a `workflow:` block the workflow tools are not
+advertised at all, the same rule the review tools follow:
+
+```yaml
+consult:
+  host:
+    runtime: claude              # asserted against ORCHESTRATOR_HOST_RUNTIME
+    model: claude-opus-5         # optional; see "Host identity" below
+  workflow:
+    max_fix_rounds: 5
+    roots: [~/src]
+    advance_on_failed_test: false
+    review_policy:
+      different_from_implementer: true
+      different_from_planner: false
+    bindings:
+      research:  {agent: codex-sol}
+      plan:      {agent: codex-sol}
+      author_execution_prompt: {executor: host}
+      implement: {agent: deepseek-flash, execution: patch}
+      apply_patch: {executor: host}
+      test:      {executor: host}
+      review:    {agents: [codex-sol, claude-opus]}
+      synthesize: {executor: host}
+      fix:       {agent: codex-sol, execution: patch}
+```
+
+`workflow:` requires `store_full_content: true` and refuses at startup otherwise. A
+workflow *is* its stored plans, briefs, patches and reports, and the review step cannot
+finalize without them — the failure belongs at boot, not several paid steps in.
+
+### Models are not tied to phases
+
+A binding is one of three shapes, and mixing them is a startup error:
+
+| Binding | Meaning |
+|---|---|
+| `{executor: host}` | The calling agent does this step itself and records the result. |
+| `{agent: x, execution: patch}` | That agent, in that execution mode. |
+| `{agents: [x, y]}` | Several agents. `review` is the only step that takes more than one. |
+
+Leaving `agent:` out means `auto`: routed by capability score for the step, ties broken
+by `priority` then agent id, the same rule `orchestrator_consult` uses. GPT, Claude,
+DeepSeek, Gemini, Qwen — any model reachable through a supported runtime can take any
+step it scores for and is permitted the mode for. A step with no binding falls to the
+host, which is the conservative default.
+
+Steps route on the four capabilities added for this: `planning`, `prompt_authoring`,
+`testing` and `synthesis`, alongside `coding`, `research` and `review`.
+
+Bindings are resolved and **snapshotted at workflow creation**. Editing `config.yaml`
+does not reroute a running workflow; that takes `orchestrator_workflow_plan_replan` and
+its own approval.
+
+### Execution modes, and what each one can reach
+
+`execution_modes` on an agent is **operator trust, not capability**. What actually
+happens is the intersection of that list with what the runtime can be made to do, and a
+refusal names which side said no.
+
+| Mode | The agent gets | Repository access |
+|---|---|---|
+| `consultation` | The read-only consult path, unchanged. | `context_only` |
+| `patch` | The same read-only path; it returns a unified diff. The host applies it. | `context_only` |
+| `isolated_write` | A git worktree outside your repository. **No adapter exists yet, so every runtime refuses it today.** | `worktree` |
+| `executor: host` | Not an agent at all: the host edits its own checkout. | `active_tree` |
+
+| Runtime | `isolated_write` | Why |
+|---|---|---|
+| `codex` | permitted in configuration | `sandbox_mode: workspace-write` is enforced by the CLI at OS level. |
+| `opencode` | refused | Its permission set isolates *configuration*, not filesystem effects: an allowed shell command can leave the worktree. |
+| `claude` | refused | No contained executor yet — same bar as OpenCode. |
+| `antigravity` | refused | Writing needs `--dangerously-skip-permissions`, the one flag the adapter refuses by construction. |
+
+A root allowlist and a prompt instruction are not containment. An agent that declares
+`isolated_write` on a runtime that cannot be contained is refused **at startup**, not at
+routing time.
+
+**No delegated agent writes to your working tree.** In `patch` mode the agent never sees
+your checkout — only the context the host sent it, exactly as a reviewer does — and the
+diff comes back for the host to apply. `ConsultAdapter` gained nothing for any of this:
+it is still three verbs with no way to ask for anything agentic, and write capability
+lives in a separate package behind a separate protocol.
+
+### Host identity
+
+`(runtime, model)` is an execution identity, not an agent id, and it comes from trusted
+startup configuration only — never a tool argument. `runtime` still comes from
+`ORCHESTRATOR_HOST_RUNTIME`, which stays the authority; naming it under `host:` is an
+assertion, and a mismatch refuses the boot.
+
+`model` is the part the environment cannot supply. With it, a *different* model on the
+host's own runtime becomes routable. Without it, every agent on that runtime is excluded
+— today's consult behaviour. Write the versioned name: identity must be **provably
+different**, so `opus` and `claude-opus` are treated as `claude-opus-5` and refused, and
+a name with no version at all is refused for being unprovable rather than assumed
+distinct.
+
+`review_policy` is checked against this resolved identity too, so two agent ids pointing
+at one model are one reviewer however they are spelled.
+
+### Two calls per step
+
+```text
+plan_step                    run_step | record_host_step
+returns a preview       ──►  spends that step's token
+and a one-time token         and runs or records it
+```
+
+There is no one-call form and **no workflow-level token**. One approval covering
+research, implementation, every fix round and every review would be an approval of
+nothing in particular. What a token proves is snapshot integrity — that the step being
+run is the step that was previewed, with the same agent, mode and inputs. It cannot
+prove a human saw anything, because MCP gives this server no channel to one; that
+depends on your client's tool-confirmation experience or an external gate.
+
+A workdir must resolve beneath a configured root. `/` is never accepted and nothing is
+inferred from the working directory. A dirty tree is refused without `allow_dirty`.
+
+### Tests are observed, not claimed
+
+A coding agent's statement that it ran the tests is retained as reported information; it
+is never the test result. A `TestReport` carries the exact command, working directory,
+exit code, bounded output, duration and the commit tested, plus `reported_by`, which the
+service assigns from *which tool wrote the row* and never reads out of a caller's
+payload. A host-written report is host-attested, and its provenance says so.
+
+A failed test returns to `fixing` rather than advancing, unless `advance_on_failed_test`
+is set.
+
+### Where the loop stops
+
+The review step goes through the review service — it does not write a synthesis
+straight into workflow storage, which would route around the guarantee that every
+serious finding survives. Findings gained a `disposition` (`open`, `fixed`, `rejected`,
+`accepted_risk`), because "unresolved finding" was previously not representable;
+rejecting or accepting the risk of a critical or important finding without a reason is
+refused.
+
+`loop_done` is computed here, never asked of a reviewer. It is true only when the
+authoritative tests passed for the current commit, every reviewer's findings parsed and
+were retained, no critical or important finding is still `open`, `missing_serious`
+passed, and the workflow is in no exceptional state. Reaching `max_fix_rounds` with
+serious findings still open ends the workflow `needs_attention` — not `completed`.
+
+### The execution contract, honestly scoped
+
+The coding prompt is assembled by this code: our `EXECUTION_CONTRACT` first, then the
+scope, accepted plan, authored brief and prior findings as a JSON payload. An authored
+brief is data inside that payload, and no field turns it into contract text.
+
+That is **code ownership, not a transport-level enforcement boundary**. Claude Code has
+a real system-prompt channel; Codex and OpenCode receive one compiled text, so there the
+ordering is a prompt convention a determined model could argue with. Saying so is more
+useful than overclaiming.
+
+<details>
+<summary><strong>Workflow tool reference</strong></summary>
+
+<br>
+
+| Tool | What it does |
+|---|---|
+| `orchestrator_workflow_start` | Create a workflow: validate the workdir and root, resolve and snapshot bindings, record the git baseline. Sends nothing and returns no execution token. |
+| `orchestrator_workflow_plan_step` | Preview one step and mint its one-time token. A review step returns the review plan's own token rather than an unrelated second approval. |
+| `orchestrator_workflow_run_step` | Spend the token and run the step through its bound agent. |
+| `orchestrator_workflow_record_host_step` | Record work the host did itself. The token is consumed as the host's attestation. |
+| `orchestrator_workflow_status` | State, artifacts, selected agents, round count, and what may happen next. |
+| `orchestrator_workflow_plan_replan` / `orchestrator_workflow_replan` | Change the binding snapshot under the same preview-and-approve handshake. |
+| `orchestrator_workflow_cancel` | Cancel pending work and terminate a child this process owns, with the same caveat `orchestrator_cancel_review` carries about another process's children. |
+
+A review step's reviewers come from its binding, so a workflow needs no `review:` block
+unless that binding is left to `auto` — then it falls back to the configured reviewers
+and refuses without them.
+
+A workflow's consultations are not reachable from the public tool: resuming one by its
+`consultation_id` is refused with `workflow_owned_session`. Steps take a lease, so a
+crashed run resolves rather than leaving a status that outlives its process.
+
+**Patch integrity.** Redaction can rewrite credential-shaped text, and a rewritten patch
+is a corrupt patch. So the raw diff is returned to the host **once**, what is stored is a
+sanitized audit copy plus the sha256 of the raw patch, and the sanitized copy is never
+offered for application. After the host applies it, the resulting commit is the review
+artifact.
+
+</details>
+
 ## Security model
 
 | Property | Guarantee |
@@ -357,6 +560,10 @@ Credential-shaped values are masked before storage. `secrets="send_as_is"` is an
 | **Storage** | SQLite directory permissions are `0700`; the database and managed agent file are `0600`. |
 | **Dashboard** | Loopback only, with host-header checks and a per-process token. |
 | **Review checkpoint** | Plans bind the scope to a one-time token before reviewer requests are made. The server cannot independently verify human approval. |
+| **Workflow write surface** | No delegated agent writes to your working tree. `patch` mode returns a diff over the read-only consult path; `isolated_write` has no adapter and every runtime refuses it. The host owns application. |
+| **Workflow checkpoints** | One token per side-effecting step, spent in the statement that starts it. There is no workflow-level token, and a token proves snapshot integrity rather than human approval. |
+| **Workflow identity** | The host execution identity comes from startup configuration only. A candidate that cannot be *proven* a different model from the host is refused. |
+| **Workflow scope** | A workdir must resolve beneath a configured root; `/` is refused and nothing is inferred from the working directory. A dirty tree needs explicit acknowledgement. |
 
 > [!WARNING]
 > **Redaction covers every retained database copy, and only this database.** Credential-shaped values are replaced before every insert while the target CLI still receives the original material. Detection is best-effort pattern matching rather than a scanner with perfect recall, so a secret with no recognizable shape can survive it. Keep the database private, or set `store_full_content: false`.
@@ -452,6 +659,8 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 | `web_turn_limit` | `8` | Assistant turns allowed in web mode. Enforced by the Claude runtime only. |
 | `store_full_content` | `true` | Set false to keep metadata and routing only — except a review's goal and context, which are stored either way. Reviews cannot be finalized under it — see below. |
 | `review` | absent | Configured reviewers; absent means no review tools. |
+| `workflow` | absent | The three-phase workflow; absent means no workflow tools. Requires `store_full_content: true`. |
+| `host` | runtime from the environment | Asserted host runtime, and the host model that makes same-runtime routing possible. |
 | `dashboard` | off | Loopback history UI and optional agent editor. |
 
 `consult` is the only top-level section. Configuration from releases before 0.4 containing `capabilities`, `model_list`, `router_settings`, or `limits` is rejected at startup because direct API routing was removed.
@@ -500,7 +709,8 @@ Live tests make real requests and may use paid capacity. Do not run them in CI u
 
 - No direct provider API routing or provider API-key configuration.
 - No file edits, shell commands, MCP tools, or subagents for consulted agents.
-- No automatic fixes; the host agent owns edits and tests.
+- No automatic fixes; the host agent owns edits and tests. A workflow records and validates the phases, it does not run the job unattended.
+- No contained executor yet, so no delegated agent writes anywhere: `isolated_write` is refused on every runtime.
 - No streaming; each consultation returns one complete envelope.
 - No dashboard-initiated consultations.
 - No automatic configuration reload.

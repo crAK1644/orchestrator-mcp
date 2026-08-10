@@ -43,11 +43,19 @@ consult:
                                 # means the model's own default, not yours.
       priority: 10          # ascending: lower wins a tie
       web_search: true      # required before `source_mode: web` will route here
+      execution_modes: [consultation, patch]
+                            # what this agent may be *asked* for, which is trust and
+                            # not capability: `isolated_write` written here cannot
+                            # make a runtime containable, and a runtime that is not
+                            # refuses with its own reason. Default `[consultation]`.
       scores:               # 0..100 per capability; omitted means 0, i.e. never
-        coding: 95          # the vocabulary is fixed: coding, research,
-        research: 85        # writing, reasoning, review
-        reasoning: 90
-        review: 95
+        coding: 95          # the vocabulary is fixed: coding, research, writing,
+        research: 85        # reasoning, review, planning, prompt_authoring,
+        reasoning: 90       # testing, synthesis. The last four are what the
+        review: 95          # workflow steps route on.
+        planning: 85
+        prompt_authoring: 80
+        synthesis: 85
 
     claude-opus:
       runtime: claude
@@ -91,6 +99,7 @@ consult:
       priority: 40
       web_search: false     # not offered by this runtime, and setting it true here
                             # does not buy it: web mode is refused either way
+      execution_modes: [consultation, patch]
       scores:
         coding: 60
         reasoning: 60
@@ -101,6 +110,54 @@ consult:
   review:
     reviewers: [codex-sol]                    # exactly one, for `mode: standard`
     deep_reviewers: [codex-sol, claude-opus]  # 1 to 5, for `mode: deep`
+
+  # Which execution identity this installation *is*. `runtime` still comes from
+  # ORCHESTRATOR_HOST_RUNTIME and that stays the authority -- naming it here is an
+  # assertion, and a mismatch refuses the boot. `model` is the part the environment
+  # cannot supply: with it, a *different* model on the host's own runtime becomes
+  # routable; without it, every agent on that runtime is excluded, which is what the
+  # consult path has always done. Write the versioned name -- a bare alias like
+  # `opus` cannot be shown to differ from `claude-opus-5`, so it buys nothing.
+  host:
+    runtime: claude
+    model: claude-opus-5
+
+  # The three-phase workflow: research and planning, implementation and testing,
+  # review and fixing, the last two in a capped loop. Delete the block and the
+  # `orchestrator_workflow_*` tools are simply not advertised. It requires
+  # `store_full_content: true` -- a workflow *is* its stored plans, briefs, patches
+  # and reports, and a review cannot be finalized without them.
+  workflow:
+    max_fix_rounds: 5         # reached with serious findings still open, the
+                              # workflow ends `needs_attention`, not `completed`
+    roots: [~/src]            # a workflow's workdir must resolve beneath one of
+                              # these. `/` is refused, and nothing is inferred from
+                              # the working directory.
+    advance_on_failed_test: false
+                              # off by default: reviewing code already known to be
+                              # broken spends reviewers on a known answer
+    review_policy:
+      different_from_implementer: true   # checked on execution identity, not agent
+      different_from_planner: false      # id: two ids for one model are one reviewer
+    # Which worker takes each step. Models are not tied to phases -- any agent that
+    # scores for the step and is permitted the mode can take it. A step named here
+    # with nothing bound falls to the host, which is the conservative default.
+    bindings:
+      research:  {agent: codex-sol}
+      plan:      {agent: codex-sol}
+      author_execution_prompt: {executor: host}
+      implement: {agent: deepseek-flash, execution: patch}
+                              # `patch` returns a unified diff over the ordinary
+                              # read-only path: the agent never sees your tree, and
+                              # you apply the diff yourself. No new write surface.
+      apply_patch: {executor: host}      # host-only: only the party holding the
+                                         # working tree can apply anything to it
+      test:      {executor: host}        # an exit code somebody watched. A coding
+                                         # agent's claim to have run the tests is
+                                         # recorded as a claim, never as the result.
+      review:    {agents: [codex-sol, claude-opus]}
+      synthesize: {executor: host}
+      fix:       {agent: codex-sol, execution: patch}
 
   # A local page over the stored consultations, loopback only, started separately
   # with `orchestrator-mcp-dashboard`. Off unless you turn it on: it serves every

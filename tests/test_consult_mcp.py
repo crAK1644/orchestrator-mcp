@@ -55,8 +55,13 @@ async def test_the_consult_schema_offers_only_configured_agents(tmp_path, host_c
 
 async def test_the_consult_schema_carries_the_capability_vocabulary(tmp_path, host_claude):
     schema = (await tools(build_server(config(tmp_path))))["orchestrator_consult"].input_schema
+    # Spelled out rather than compared against `CONSULT_CAPABILITIES`, so widening the
+    # vocabulary stays a deliberate edit in two places. `planning`, `prompt_authoring`,
+    # `testing` and `synthesis` exist for the workflow's steps -- without the last two
+    # an `auto` binding for `test` or `synthesize` would have nothing to sort on.
     assert set(schema["properties"]["capability"]["enum"]) == {
-        "coding", "research", "writing", "reasoning", "review"
+        "coding", "research", "writing", "reasoning", "review",
+        "planning", "prompt_authoring", "testing", "synthesis",
     }
     assert schema["required"] == ["capability", "prompt"] or set(schema["required"]) == {
         "capability", "prompt"

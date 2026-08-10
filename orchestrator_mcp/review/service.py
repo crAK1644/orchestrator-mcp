@@ -43,6 +43,7 @@ from ..consult.errors import ConsultErrorCode
 from ..consult.service import ConsultService
 from ..consult.store import ConsultStore, StoreError
 from ..consult.contract import MAX_CONTEXT_CHARS
+from ..workflow.identity import same_execution_identity
 from .contract import (
     FIX_STEPS,
     MAX_FINDINGS,
@@ -70,7 +71,7 @@ from .contract import (
     ReviewStatus,
     ReviewSummary,
     SecretHit,
-    missing_criticals,
+    missing_serious,
 )
 from .store import REVIEW_LEASE_SLACK_S, ReviewStore, _now, canonical, sha256
 
@@ -130,12 +131,20 @@ class ReviewService:
         reviewers: list[str] | None = None,
         parent_review_id: UUID | str | None = None,
         host_model: str | None = None,
+        workflow_id: str | None = None,
+        step_id: str | None = None,
+        excluded_identities: dict[str, tuple[str, str]] | None = None,
     ) -> ReviewResponse:
         """Describe what would be sent. Sends nothing.
 
         Writes a `pending` row holding the redacted material and the sha256 of a
         one-time token, and hands the token back once. Nothing here spawns a
         subprocess, so a caller can plan freely and abandon it.
+
+        The last three arguments have no tool parameter behind them. `WorkflowService`
+        passes them; `orchestrator_review` names its arguments one by one and cannot,
+        which is what keeps a caller from labelling a standalone review as a
+        workflow's or from being the one who decides which identities get excluded.
         """
         started = time.perf_counter()
         review_id = uuid4()
@@ -144,6 +153,7 @@ class ReviewService:
             return await self._plan(
                 started, review_id, mode, goal, material or [], context, context_paths,
                 web, reviewers, parent_review_id, host_model,
+                workflow_id, step_id, excluded_identities or {},
             )
         except (StoreError, ValueError) as exc:
             code = exc.code if isinstance(exc, StoreError) else ConsultErrorCode.INVALID_REQUEST
@@ -170,11 +180,15 @@ class ReviewService:
         reviewers: list[str] | None,
         parent_review_id: UUID | str | None,
         host_model: str | None,
+        workflow_id: str | None,
+        step_id: str | None,
+        excluded_identities: dict[str, tuple[str, str]],
     ) -> ReviewResponse:
         if not goal.strip():
             raise ValueError("a review needs a goal saying what to look at")
 
         snapshots = self._reviewer_snapshots(mode, reviewers)
+        _refuse_excluded(snapshots, excluded_identities)
         manifest = [MaterialItem(**item) for item in material]
 
         # Resolved before the scan, so everything after this point -- the secret
@@ -265,6 +279,8 @@ class ReviewService:
             secret_hits=[h.model_dump(mode="json") for h in hits[:MAX_SECRET_HITS]],
             web_requested=web,
             parent_review_id=parent_review_id,
+            workflow_id=workflow_id,
+            step_id=step_id,
         )
 
         return ReviewResponse(
@@ -784,7 +800,7 @@ class ReviewService:
         """One follow-up turn when the findings block could not be read.
 
         An unparsed answer is not a failed one -- the review was written, only its
-        structure was lost, and in that state `missing_criticals` enforces nothing.
+        structure was lost, and in that state `missing_serious` enforces nothing.
         The re-ask rides the same consultation, so the material is already in the
         session's history and this costs a few hundred characters rather than another
         copy of the context.
@@ -872,12 +888,12 @@ class ReviewService:
         # Checked, not merely asked for: the reason to consult more than one reviewer
         # is that a lone dissenting Critical survives the synthesis, and a rule stated
         # only in a prompt is a rule nothing enforces.
-        invalid = missing_criticals(results, written)
+        invalid = missing_serious(results, written)
         if invalid:
             return refusal(
                 f"the summary has invalid or incomplete finding provenance: "
-                f"{', '.join(invalid)}. Every Critical must be referenced through "
-                "`source_finding_ids`, and every referenced id must come from a "
+                f"{', '.join(invalid)}. Every Critical and Important must be referenced "
+                "through `source_finding_ids`, and every referenced id must come from a "
                 "reviewer's findings"
             )
 
@@ -1156,6 +1172,26 @@ class ReviewService:
             return "failed"
 
 
+def _refuse_excluded(
+    snapshots: list[ReviewerSnapshot], excluded: dict[str, tuple[str, str]]
+) -> None:
+    """Refuse a reviewer that is one of the identities this review has to differ from.
+
+    What `workflow.review_policy` is enforced through. The keys are roles -- the
+    implementer, the planner -- and the values are the `(runtime, model)` those roles
+    actually resolved to, so an operator cannot get around it by giving one agent two
+    ids. Refused here rather than at the workflow, so the refusal lands before a
+    `pending` row exists and before anything is sent.
+    """
+    for snapshot in snapshots:
+        for role, (runtime, model) in sorted(excluded.items()):
+            if reason := same_execution_identity(snapshot.runtime, snapshot.model, runtime, model):
+                raise ValueError(
+                    f"`{snapshot.agent_id}` ({snapshot.runtime}/{snapshot.model}) cannot be "
+                    f"shown to differ from the {role} ({runtime}/{model}): {reason}"
+                )
+
+
 def _fix_rounds(review) -> list[FixRound]:
     return [FixRound(**r) for r in json.loads(review.fix_rounds_json or "[]")][:MAX_FIX_ROUNDS]
 
@@ -1307,7 +1343,7 @@ def _candidates(answer: str):
     so in document order a reviewer quoting the required shape early -- an empty
     `{"findings": []}` in its prose -- would win over the real block at the end. That
     parses, so the result is not `findings_parsed=False`; it is a review claiming
-    zero findings while its Criticals sit in the text above, and `missing_criticals`
+    zero findings while its Criticals sit in the text above, and `missing_serious`
     then has nothing to catch. A fenced-first order loses the same way whenever the
     quoted shape is the fenced one and the real block is not.
 

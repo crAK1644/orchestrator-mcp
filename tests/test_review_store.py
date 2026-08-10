@@ -88,9 +88,15 @@ async def test_the_migration_applies_to_a_database_created_before_it_existed(tmp
     # Rewind the ledger to before the review migration, the way a database written
     # by the previous release looks.
     raw = sqlite3.connect(path)
+    # Every table any migration after index 0 created, so re-running them all from a
+    # rewound ledger is what this asserts. The `ADD COLUMN` statements in those
+    # migrations do re-run against columns that are still there, and the loop's
+    # `duplicate column name` tolerance is exactly what covers that.
     raw.executescript(
         "DROP TABLE reviews; DROP TABLE review_consultations; DROP TABLE review_leases; "
-        "DROP TABLE review_delete_confirmations; DELETE FROM schema_migrations WHERE version >= 1;"
+        "DROP TABLE review_delete_confirmations; "
+        "DROP TABLE workflow_runs; DROP TABLE workflow_steps; "
+        "DELETE FROM schema_migrations WHERE version >= 1;"
     )
     raw.commit()
     raw.close()

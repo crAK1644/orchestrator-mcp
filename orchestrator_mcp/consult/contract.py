@@ -23,10 +23,48 @@ from .errors import ConsultErrorCode
 # The consultation capabilities are a fixed vocabulary, not the operator's
 # `capabilities:` block: an agent's score is only meaningful against a name that
 # means the same thing in every installation.
-CONSULT_CAPABILITIES = ("coding", "research", "writing", "reasoning", "review")
+#
+# The last four are the workflow's steps. They live here rather than in a second
+# workflow-only vocabulary because a score is a statement about an agent, not about
+# which subsystem happens to be asking: an agent good enough to plan is good enough
+# to plan whether the caller is `orchestrator_consult` or a workflow step. Without
+# `testing` and `synthesis` in particular, an `auto` binding for those steps would
+# have nothing to sort on and could only refuse.
+CONSULT_CAPABILITIES = (
+    "coding",
+    "research",
+    "writing",
+    "reasoning",
+    "review",
+    "planning",
+    "prompt_authoring",
+    "testing",
+    "synthesis",
+)
 
-Capability = Literal["coding", "research", "writing", "reasoning", "review"]
+Capability = Literal[
+    "coding",
+    "research",
+    "writing",
+    "reasoning",
+    "review",
+    "planning",
+    "prompt_authoring",
+    "testing",
+    "synthesis",
+]
 Runtime = Literal["codex", "claude", "antigravity", "opencode"]
+
+# How a delegated agent is allowed to produce work. `consultation` is the only mode
+# the consult path itself knows about, and it is what every agent gets by default:
+# read-only, three verbs, no way to ask for anything agentic. The other two are
+# workflow concepts and mean nothing here -- they are declared in this module only
+# so the config can name them without importing the workflow package.
+#
+# What a runtime can actually *do* is not this type's business either; see
+# `orchestrator_mcp.code.registry.RUNTIME_CAPABILITIES`. Declaring a mode in YAML is
+# operator trust, not capability.
+ExecutionMode = Literal["consultation", "patch", "isolated_write"]
 
 PROTOCOL_VERSION = "consult-v1"
 
