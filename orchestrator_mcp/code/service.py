@@ -120,6 +120,15 @@ async def _remove_worktree(repo: Path, path: Path) -> None:
     """
     await _git(repo, "worktree", "remove", "--force", str(path))
     await _git(repo, "worktree", "prune")
+    # The per-workflow directory above it is ours, not git's, so nothing else removes
+    # it and a finished workflow leaves an empty one behind for good. `rmdir` rather
+    # than a recursive delete on purpose: it refuses a directory that still holds
+    # another step's worktree, which is the only thing that makes this safe to call
+    # while a sibling step is running.
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
 
 
 async def _capture(path: Path, baseline_commit: str) -> tuple[str, list[str]]:

@@ -204,6 +204,31 @@ async def test_the_worktree_is_removed_and_deregistered(repo, worktrees, tmp_pat
     assert "wf-1" not in listed.stdout
 
 
+async def test_a_finished_workflow_leaves_no_directory_of_its_own(
+    repo, worktrees, tmp_path, monkeypatch
+):
+    """Found by the live run: the step's worktree went, its parent stayed forever.
+
+    Nothing but this code creates that directory, so nothing but this code removes it,
+    and one empty directory per workflow accumulates under the user's home.
+    """
+    await run(repo, tmp_path, monkeypatch)
+
+    assert not worktree_path("wf-1", "step-1").parent.exists()
+
+
+async def test_a_sibling_step_still_running_keeps_the_directory(
+    repo, worktrees, tmp_path, monkeypatch
+):
+    """`rmdir` and not a recursive delete: a fix round can be live while this one ends."""
+    sibling = worktree_path("wf-1", "step-2")
+    sibling.mkdir(parents=True)
+
+    await run(repo, tmp_path, monkeypatch)
+
+    assert sibling.exists()
+
+
 async def test_two_steps_of_one_workflow_get_separate_directories():
     assert worktree_path("wf-1", "step-1") != worktree_path("wf-1", "step-2")
     assert worktree_path("wf-1", "step-1") != worktree_path("wf-2", "step-1")
