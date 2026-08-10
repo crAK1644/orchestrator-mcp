@@ -23,6 +23,7 @@ from uuid import UUID
 import yaml
 from mcp.server import MCPServer
 
+from .commands import add_commands
 from .contract import ConfigError
 from .consult.config import StepBinding, host_runtime, load_consult_config
 from .consult.contract import (
@@ -153,6 +154,13 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
             _add_workflow_tools(
                 server, WorkflowService(consult_config, runtime, store=store, reviews=reviews)
             )
+        # The slash commands, gated on the same two answers as the tools they drive.
+        # Last, so the `if`s above have already decided what exists.
+        add_commands(
+            server,
+            reviews=reviews is not None,
+            workflow=consult_config.workflow is not None,
+        )
 
     return server
 
