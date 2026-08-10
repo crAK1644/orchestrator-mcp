@@ -321,9 +321,29 @@ def _tools_used(node: Any) -> set[str]:
 def _reported_model(envelope: dict) -> str | None:
     usage: Any = envelope.get("modelUsage")
     if isinstance(usage, dict) and usage:
-        # One key in practice; sorted so a hypothetical second one still reports the
-        # same model every run rather than whichever hashed first.
-        return sorted(usage)[0]
+        if len(usage) == 1:
+            return next(iter(usage))
+
+        # Claude Code 2.1.220 can report helper-model usage beside the model that
+        # answered. The top-level usage is the primary answer's usage, so match it
+        # back to the one model entry rather than treating an internal Haiku call as
+        # a silent fallback from the requested Opus model.
+        primary: Any = envelope.get("usage")
+        if isinstance(primary, dict):
+            matches = [
+                model
+                for model, model_usage in usage.items()
+                if isinstance(model_usage, dict)
+                and model_usage.get("inputTokens") == primary.get("input_tokens")
+                and model_usage.get("outputTokens") == primary.get("output_tokens")
+            ]
+            if len(matches) == 1:
+                return matches[0]
+
+        raise AdapterError(
+            ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
+            "the agent returned ambiguous model metadata for the primary answer",
+        )
     model = envelope.get("model")
     return model if isinstance(model, str) else None
 
