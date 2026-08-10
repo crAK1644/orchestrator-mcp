@@ -150,6 +150,10 @@ consult:
                               # `patch` returns a unified diff over the ordinary
                               # read-only path: the agent never sees your tree, and
                               # you apply the diff yourself. No new write surface.
+                              # Because it sees nothing, send it the source: the
+                              # `context` argument of `orchestrator_workflow_plan_step`
+                              # is the only way anything from your repository reaches
+                              # a delegated step, and it is redacted before it goes.
       apply_patch: {executor: host}      # host-only: only the party holding the
                                          # working tree can apply anything to it
       test:      {executor: host}        # an exit code somebody watched. A coding

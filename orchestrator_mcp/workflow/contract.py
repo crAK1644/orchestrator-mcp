@@ -87,6 +87,10 @@ ArtifactType = Literal[
     "test_report",
     "review_outcome",
     "synthesis",
+    # An input no step produces: the serious findings the last review left open, read
+    # back from the review row. A fix round that does not carry these is a second pass
+    # at the goal rather than an answer to the review, so the preview names it.
+    "open_findings",
 ]
 
 Executor = Literal["host", "agent"]
@@ -200,7 +204,11 @@ STEPS: dict[Step, StepDefinition] = {
     ),
     "fix": StepDefinition(
         capability="coding",
-        input_artifacts=("review_outcome",),
+        # Not `review_outcome`: a review's product is a review row, and the review
+        # step stores nothing under its artifact name on purpose, so naming it here
+        # asked for something that never exists. The findings reach this step through
+        # `_open_findings` instead; these are the artifacts it reads.
+        input_artifacts=("implementation_plan", "test_report"),
         output_artifact="code_change",
         produces_code_change=True,
         allowed_execution_modes=("patch", "isolated_write"),

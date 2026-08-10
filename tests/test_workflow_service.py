@@ -525,6 +525,87 @@ async def test_a_patch_comes_back_raw_once_and_is_stored_scrubbed(build, repo):
     assert stored["files"] == ["src/a.py"]
 
 
+async def test_the_material_the_host_shows_a_step_reaches_the_agent(build, repo):
+    """The only channel a delegated step has to the source it is changing.
+
+    It cannot see the repository, so material passed at plan time has to survive to
+    the send or the step is being asked to patch a file it was never shown -- which
+    is what a live run against a real model produced before this existed.
+    """
+    service = await build(bindings={"plan": {"agent": "codex-sol"}})
+    service.adapters["codex-sol"].answers = ["```json\n" + PLAN + "\n```"]
+    workflow_id = await started(service, repo)
+    # One line and no escapes, because the payload is JSON: a newline in the
+    # material is `\n` by the time it reaches the wire.
+    source = "def parse(line): return line.split()"
+
+    planned = await service.plan_step(workflow_id, "plan", context=source)
+    assert planned.error is None, planned.error
+    step_id, token = planned.preview.step_id, planned.preview.confirm_token
+    response = await service.run_step(workflow_id, step_id, token)
+    assert response.error is None, response.error
+
+    sent = service.adapters["codex-sol"].prompts[0]
+    assert source in sent
+    # Counted in the preview too: a `prompt_chars` that ignored the material would
+    # understate exactly the part the operator most wants to see the size of.
+    assert planned.preview.prompt_chars > len(source)
+
+
+async def test_host_material_is_redacted_before_it_is_stored_and_before_it_is_sent(
+    build, repo
+):
+    """One string for all three: the preview, the token's hash, and the send.
+
+    Storing the original and sending it would make the record a description of
+    something else; sending the original and storing the redaction would make the
+    hash unverifiable against either.
+    """
+    secret = "sk-ant-api03-" + "B" * 40
+    service = await build(bindings={"plan": {"agent": "codex-sol"}})
+    service.adapters["codex-sol"].answers = ["```json\n" + PLAN + "\n```"]
+    workflow_id = await started(service, repo)
+
+    planned = await service.plan_step(workflow_id, "plan", context=f'KEY = "{secret}"\n')
+    assert planned.error is None, planned.error
+    step_id = planned.preview.step_id
+    response = await service.run_step(workflow_id, step_id, planned.preview.confirm_token)
+    assert response.error is None, response.error
+
+    assert secret not in service.adapters["codex-sol"].prompts[0]
+    snapshot = (
+        await sql(service, "SELECT agent_snapshot_json FROM workflow_steps WHERE id = ?", step_id)
+    ).fetchone()[0]
+    assert secret not in snapshot
+    assert "KEY" in snapshot
+
+
+async def test_a_reviewer_sees_the_same_material_the_coding_steps_did(build, repo):
+    """A reviewer reading a diff without the file it changes is reviewing half of it."""
+    service = await build()
+    service.adapters["codex-sol"].answers = ["Looks fine.\n\n```json\n{\"findings\": []}\n```"]
+    workflow_id = await started(service, repo)
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
+    await host_step(
+        service, workflow_id, "implement", {"summary": "did it", "files": ["src/a.py"]}
+    )
+    await host_step(
+        service, workflow_id, "test",
+        {"command": "pytest -q", "workdir": str(repo), "exit_code": 0, "status": "passed"},
+    )
+
+    # One line and no escapes, because the payload is JSON: a newline in the
+    # material is `\n` by the time it reaches the wire.
+    source = "def parse(line): return line.split()"
+    planned = await service.plan_step(workflow_id, "review", context=source)
+    assert planned.error is None, planned.error
+    stored = (
+        await sql(service, "SELECT context FROM reviews WHERE id = ?", planned.preview.review_id)
+    ).fetchone()[0]
+    assert source in stored
+
+
 async def test_the_prompt_a_step_sends_is_the_one_its_preview_described(build, repo):
     service = await build(bindings={"plan": {"agent": "codex-sol"}})
     workflow_id = await started(service, repo)
@@ -666,6 +747,38 @@ async def test_an_open_important_finding_keeps_the_loop_going(build, repo):
     record = [s for s in response.workflow.steps if s.step == "synthesize"][0]
     assert record.output["loop_done"] is False and record.output["open_serious"] == 1
     assert response.workflow.fix_rounds == 1
+
+
+async def test_a_fix_round_is_sent_the_findings_it_is_supposed_to_fix(build, repo):
+    """The gap a live run found: `fix` was previewed and sent with an empty payload.
+
+    Its declared input was `review_outcome`, which no step ever writes -- the review's
+    product is a review row -- so the round arrived carrying nothing and the agent
+    answered from the goal a second time instead of from what the reviewer said.
+    """
+    adapters = {aid: StubAdapter(FINDINGS, PATCH) for aid in AGENTS}
+    service = await build(adapters=adapters,
+                          bindings={"fix": {"agent": "flash", "execution": "patch"}})
+    workflow_id = await _to_synthesis(service, repo)
+    ids = await finding_ids(service, workflow_id)
+    assert (await host_step(service, workflow_id, "synthesize",
+                            summary_with("open", ids))).status == "fixing"
+
+    response = await service.plan_step(workflow_id, "fix")
+    assert response.error is None, response.error
+    assert "open_findings" in response.preview.inputs
+
+    step_id, token = response.preview.step_id, response.preview.confirm_token
+    assert (await service.run_step(workflow_id, step_id, token)).error is None
+    sent = adapters["flash"].prompts[-1]
+    assert "the scanner drops the last token" in sent
+
+    # A closed finding is not what a round is for, and carrying it back would invite a
+    # patch for something already disposed of.
+    stored = json.loads(
+        [s for s in await service.store.steps(workflow_id) if s.step == "fix"][-1].agent_snapshot_json
+    )
+    assert stored["inputs"] == ["implementation_plan", "test_report", "open_findings"]
 
 
 async def test_dropping_a_reviewers_important_finding_is_refused(build, repo):

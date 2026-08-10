@@ -32,12 +32,12 @@ from typing import Any
 from uuid import uuid4
 
 from ..code.registry import CodeError, code_adapter_for
-from ..contract import MAX_ERROR_CHARS
+from ..contract import MAX_ERROR_CHARS, scrub_json
 from ..consult.config import ConsultConfig, StepBinding
 from ..consult.contract import ConsultError, Runtime
 from ..consult.errors import ConsultErrorCode
 from ..consult.store import ConsultStore, StoreError
-from ..review.contract import ReviewSummary, open_serious
+from ..review.contract import SERIOUS, ReviewSummary, open_serious
 from ..review.service import ReviewService
 from .contract import (
     ARTIFACT_MODELS,
@@ -179,8 +179,15 @@ class WorkflowService:
 
     # --- planning a step ------------------------------------------------------
 
-    async def plan_step(self, workflow_id: str, step: str) -> WorkflowResponse:
+    async def plan_step(
+        self, workflow_id: str, step: str, context: str = ""
+    ) -> WorkflowResponse:
         """Write the `planned` row and hand back its preview and one-time token.
+
+        `context` is the material the host is showing this step. A delegated step
+        never sees the repository, so the source it is meant to change has to arrive
+        this way or not at all; it is redacted before it is stored *and* before it is
+        sent, so the preview, the hash and the send are all the same text.
 
         For a **review** step this calls `ReviewService.plan` and returns *that*
         plan's token as the step's own. One review, one approval: minting a second
@@ -193,7 +200,7 @@ class WorkflowService:
             workflow = await self._live(workflow_id)
             if step not in STEPS:
                 raise WorkflowError(ConsultErrorCode.INVALID_REQUEST, f"`{step}` is not a step")
-            return await self._plan_step(started, workflow, step)  # type: ignore[arg-type]
+            return await self._plan_step(started, workflow, step, context)  # type: ignore[arg-type]
         except (WorkflowError, StoreError) as exc:
             return _failed(workflow_id, await self._status(workflow_id), exc.code, str(exc), started)
         except ValueError as exc:
@@ -202,7 +209,9 @@ class WorkflowService:
                 ConsultErrorCode.INVALID_REQUEST, str(exc), started,
             )
 
-    async def _plan_step(self, started: float, workflow: WorkflowRun, step: Step) -> WorkflowResponse:
+    async def _plan_step(
+        self, started: float, workflow: WorkflowRun, step: Step, context: str = ""
+    ) -> WorkflowResponse:
         definition = STEPS[step]
         if workflow.status not in definition.runs_from:
             allowed = ", ".join(f"`{s}`" for s in definition.runs_from) or "no state"
@@ -223,21 +232,25 @@ class WorkflowService:
             )
 
         steps = await self.store.steps(workflow.id)
-        artifacts = _artifacts(steps)
         round_index = workflow.fix_rounds
         attempt = 1 + sum(1 for s in steps if s.step == step and s.round_index == round_index)
-        inputs = {name: artifacts[name] for name in definition.input_artifacts if name in artifacts}
+        inputs = await self._step_inputs(step, steps)
         step_id = str(uuid4())
         agents = [AgentRef(**a) for a in binding.get("agents", [])]
 
-        prompt = context = None
+        # Redacted here rather than at the store, so the text this preview measures,
+        # the hash the token is bound to, the copy on the row and what the agent
+        # actually receives are one string. Storing the original and sending it would
+        # make the record a lie about what was sent.
+        material = scrub_json(context) if context else ""
+        prompt = payload = None
         review_id = None
         token = secrets_mod.token_urlsafe(32)
         if binding["executor"] == "agent" and step in INSTRUCTIONS:
-            prompt, context = step_prompt(step, workflow.goal, inputs)
+            prompt, payload = step_prompt(step, workflow.goal, inputs, material)
         if step == "review":
             # The step's token *is* the review's. One approval, one review.
-            review = await self._plan_review(workflow, binding, step_id, inputs)
+            review = await self._plan_review(workflow, binding, step_id, inputs, material)
             review_id = str(review.review_id)
             assert review.plan is not None
             token = review.plan.confirm_token
@@ -251,7 +264,10 @@ class WorkflowService:
             # send is the one the preview described. Without it the token would
             # approve the agent and the mode while leaving what they are asked to do
             # free to change.
-            "prompt_sha256": _text_sha256(f"{prompt or ''}\n{context or ''}"),
+            "prompt_sha256": _text_sha256(f"{prompt or ''}\n{payload or ''}"),
+            # Kept so `run_step` sends what the preview described. Already redacted,
+            # and scrubbed once more by the store, which is idempotent.
+            "material": material,
         }
         if len(agents) == 1:
             # Where `StepRow.snapshot` reads the execution identity from. A step with
@@ -285,7 +301,7 @@ class WorkflowService:
                 agents=agents,
                 web=bool(binding.get("web")),
                 inputs=list(inputs),  # type: ignore[arg-type]
-                prompt_chars=len(prompt or "") + len(context or ""),
+                prompt_chars=len(prompt or "") + len(payload or ""),
                 prompt_sha256=agent_snapshot["prompt_sha256"],
                 review_id=review_id,
                 confirm_token=token,
@@ -294,7 +310,7 @@ class WorkflowService:
         ).check_invariants()
 
     async def _plan_review(
-        self, workflow: WorkflowRun, binding: dict, step_id: str, inputs: dict
+        self, workflow: WorkflowRun, binding: dict, step_id: str, inputs: dict, material: str = ""
     ) -> Any:
         """Plan the review this step will run, under the workflow's review policy.
 
@@ -313,15 +329,20 @@ class WorkflowService:
             if wanted and agents:
                 excluded[role] = (agents[0]["runtime"], agents[0]["model"])
 
-        context = json.dumps(inputs, indent=2, sort_keys=True, ensure_ascii=False, default=str)
-        material = [
+        payload = dict(inputs)
+        if material:
+            # The same material the coding steps were shown. A reviewer reading a diff
+            # without the file it changes is reviewing half of it.
+            payload["host_material"] = material
+        context = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+        manifest = [
             {"label": name, "kind": "text", "chars": len(json.dumps(value, default=str))}
-            for name, value in inputs.items()
+            for name, value in payload.items()
         ]
         response = await self.reviews.plan(
             mode="standard",
             goal=workflow.goal,
-            material=material,
+            material=manifest,
             context=context,
             web=False,
             reviewers=[a["agent_id"] for a in binding.get("agents", [])] or None,
@@ -374,10 +395,10 @@ class WorkflowService:
         if step == "review":
             return await self._run_review(started, workflow, row, token)
 
-        artifacts = _artifacts(await self.store.steps(workflow.id))
-        inputs = {n: artifacts[n] for n in STEPS[step].input_artifacts if n in artifacts}
-        prompt, context = step_prompt(step, workflow.goal, inputs)
-        expected = json.loads(row.agent_snapshot_json).get("prompt_sha256")
+        inputs = await self._step_inputs(step, await self.store.steps(workflow.id))
+        stored = json.loads(row.agent_snapshot_json)
+        prompt, context = step_prompt(step, workflow.goal, inputs, stored.get("material", ""))
+        expected = stored.get("prompt_sha256")
         if expected and expected != _text_sha256(f"{prompt}\n{context or ''}"):
             await self.store.finish_step(row.id, "failed")
             raise WorkflowError(
@@ -503,6 +524,46 @@ class WorkflowService:
         )
         await self._advance(workflow, row, output)
         return await self._view_response(workflow.id, started, step_id=row.id)
+
+    async def _step_inputs(self, step: Step, steps: list[StepRow]) -> dict[str, Any]:
+        """What one step is shown: its artifacts, plus the findings a round is about.
+
+        Read the same way in `plan_step` and `run_step`, because the prompt hash the
+        token is bound to is computed from it -- two different assemblies would mean a
+        step could never run what its preview described.
+        """
+        artifacts = _artifacts(steps)
+        inputs: dict[str, Any] = {
+            name: artifacts[name] for name in STEPS[step].input_artifacts if name in artifacts
+        }
+        if step in ("fix", "review"):
+            findings = await self._open_findings(steps)
+            if findings:
+                inputs["open_findings"] = findings
+        return inputs
+
+    async def _open_findings(self, steps: list[StepRow]) -> list[dict[str, Any]]:
+        """The serious findings the last review left open, in full.
+
+        These cannot arrive as an artifact: the review step deliberately writes nothing
+        under its own artifact name, so a fix round asking for `review_outcome` was
+        handed an empty payload and answered from the goal instead of from what the
+        reviewer said. Reading them back through `ReviewService` is what makes the
+        round about the findings. `open_serious` returns the problem text alone, which
+        is right for a reason line and not enough to fix anything from.
+        """
+        review_id = _review_id(steps)
+        if review_id is None:
+            return []
+        response = await self.reviews.get(review_id)
+        summary = response.summary
+        if summary is None:
+            return []
+        return [
+            finding.model_dump(mode="json")
+            for finding in summary.combined_findings
+            if finding.disposition == "open" and finding.severity in SERIOUS
+        ]
 
     # --- synthesis and the loop ----------------------------------------------
 

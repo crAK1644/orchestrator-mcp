@@ -480,6 +480,20 @@ depends on your client's tool-confirmation experience or an external gate.
 A workdir must resolve beneath a configured root. `/` is never accepted and nothing is
 inferred from the working directory. A dirty tree is refused without `allow_dirty`.
 
+### A delegated step sees only what the host hands it
+
+Nothing here reads your repository on an agent's behalf, so a delegated step starts with
+no code in front of it. `orchestrator_workflow_plan_step(workflow_id, step, context)`
+takes that material — the source of the files being changed, most of the time — and the
+host decides what goes in it. Without it, an implementation step has the plan and the
+brief and nothing to patch, and the honest models say exactly that instead of inventing
+a file they were never shown.
+
+The material is redacted with the same scrubber as everything else *before* it is
+stored and *before* it is sent, and it is covered by the step's prompt hash, so the text
+the preview described is the text that goes out. A review step gets the same material
+its coding steps did.
+
 ### Tests are observed, not claimed
 
 A coding agent's statement that it ran the tests is retained as reported information; it
@@ -506,6 +520,10 @@ were retained, no critical or important finding is still `open`, `missing_seriou
 passed, and the workflow is in no exceptional state. Reaching `max_fix_rounds` with
 serious findings still open ends the workflow `needs_attention` — not `completed`.
 
+A fix round carries the findings that are still open, read back from the review row
+rather than from workflow storage, so the round is an answer to the review and not a
+second pass at the goal. A re-review gets them too.
+
 ### The execution contract, honestly scoped
 
 The coding prompt is assembled by this code: our `EXECUTION_CONTRACT` first, then the
@@ -525,7 +543,7 @@ useful than overclaiming.
 | Tool | What it does |
 |---|---|
 | `orchestrator_workflow_start` | Create a workflow: validate the workdir and root, resolve and snapshot bindings, record the git baseline. Sends nothing and returns no execution token. |
-| `orchestrator_workflow_plan_step` | Preview one step and mint its one-time token. A review step returns the review plan's own token rather than an unrelated second approval. |
+| `orchestrator_workflow_plan_step` | Preview one step and mint its one-time token, with the optional `context` the step is shown. A review step returns the review plan's own token rather than an unrelated second approval. |
 | `orchestrator_workflow_run_step` | Spend the token and run the step through its bound agent. |
 | `orchestrator_workflow_record_host_step` | Record work the host did itself. The token is consumed as the host's attestation. |
 | `orchestrator_workflow_status` | State, artifacts, selected agents, round count, and what may happen next. |

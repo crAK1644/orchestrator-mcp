@@ -9388,7 +9388,8 @@
                   "code_change",
                   "test_report",
                   "review_outcome",
-                  "synthesis"
+                  "synthesis",
+                  "open_findings"
                 ],
                 "type": "string"
               },
@@ -9821,6 +9822,11 @@
           ],
           "title": "Step",
           "type": "string"
+        },
+        "context": {
+          "default": "",
+          "title": "Context",
+          "type": "string"
         }
       },
       "required": [
@@ -10051,7 +10057,8 @@
                   "code_change",
                   "test_report",
                   "review_outcome",
-                  "synthesis"
+                  "synthesis",
+                  "open_findings"
                 ],
                 "type": "string"
               },
@@ -10708,7 +10715,8 @@
                   "code_change",
                   "test_report",
                   "review_outcome",
-                  "synthesis"
+                  "synthesis",
+                  "open_findings"
                 ],
                 "type": "string"
               },
@@ -11371,7 +11379,8 @@
                   "code_change",
                   "test_report",
                   "review_outcome",
-                  "synthesis"
+                  "synthesis",
+                  "open_findings"
                 ],
                 "type": "string"
               },
@@ -12018,7 +12027,8 @@
                   "code_change",
                   "test_report",
                   "review_outcome",
-                  "synthesis"
+                  "synthesis",
+                  "open_findings"
                 ],
                 "type": "string"
               },
@@ -12742,7 +12752,8 @@
                   "code_change",
                   "test_report",
                   "review_outcome",
-                  "synthesis"
+                  "synthesis",
+                  "open_findings"
                 ],
                 "type": "string"
               },
@@ -13394,7 +13405,8 @@
                   "code_change",
                   "test_report",
                   "review_outcome",
-                  "synthesis"
+                  "synthesis",
+                  "open_findings"
                 ],
                 "type": "string"
               },
@@ -14041,7 +14053,8 @@
                   "code_change",
                   "test_report",
                   "review_outcome",
-                  "synthesis"
+                  "synthesis",
+                  "open_findings"
                 ],
                 "type": "string"
               },

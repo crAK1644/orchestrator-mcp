@@ -552,11 +552,21 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         )
 
     @server.tool(name="orchestrator_workflow_plan_step")
-    async def workflow_plan_step(workflow_id: str, step: Step) -> WorkflowResponse:
+    async def workflow_plan_step(
+        workflow_id: str, step: Step, context: str = ""
+    ) -> WorkflowResponse:
         """Prepare one step and show what it would do. **Sends nothing.**
 
         Returns the step's id, the agents it would use, and a `confirm_token` that is
         shown once and spent once. Show the preview to the user before spending it.
+
+        `context` is the material this step gets to see -- the current source of the
+        files it is meant to change, most usefully. A delegated agent never sees your
+        repository, so a `plan`, `implement` or `fix` step sent without it is being
+        asked to work from a description alone, and a good model will say so rather
+        than guess. Credential-shaped values are redacted before it is stored *and*
+        before it is sent, so the preview, the token's hash and the send are the same
+        text.
 
         For a **review** step this plans the review as well, and the token you get
         back *is* that review's token -- one review, one approval. The reviewers are
@@ -564,7 +574,7 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         under `workflow.review_policy:`, so two agent ids pointing at one model cannot
         review each other's work.
         """
-        return await service.plan_step(workflow_id, step)
+        return await service.plan_step(workflow_id, step, context)
 
     @server.tool(name="orchestrator_workflow_run_step")
     async def workflow_run_step(

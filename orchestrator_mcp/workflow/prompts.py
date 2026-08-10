@@ -91,12 +91,17 @@ INSTRUCTIONS: dict[Step, str] = {
 }
 
 
-def step_prompt(step: Step, goal: str, inputs: dict[str, Any]) -> tuple[str, str | None]:
+def step_prompt(
+    step: Step, goal: str, inputs: dict[str, Any], material: str = ""
+) -> tuple[str, str | None]:
     """The `task` and `context` for one delegated step.
 
     The inputs go in `context` rather than in the task text so they land in the
     payload as data, on the far side of the contract, the way a consultation's
-    document does.
+    document does. `material` is whatever the host chose to show this step -- the
+    source of the files being changed, most of the time -- and lands in the same
+    payload under its own key: a step that cannot see the repository can only work
+    from what it was handed, and before this there was no way to hand it anything.
     """
     parts = [INSTRUCTIONS[step], f"Goal:\n{goal.strip()}"]
     model = REPLY_MODELS.get(step)
@@ -105,9 +110,12 @@ def step_prompt(step: Step, goal: str, inputs: dict[str, Any]) -> tuple[str, str
             "Return a JSON object matching this schema, as the last thing in your "
             "answer:\n" + json.dumps(model.model_json_schema(), sort_keys=True)
         )
+    payload = dict(inputs)
+    if material:
+        payload["host_material"] = material
     context = (
-        json.dumps(inputs, indent=2, sort_keys=True, ensure_ascii=False, default=str)
-        if inputs
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+        if payload
         else None
     )
     return "\n\n".join(parts), context
