@@ -14,6 +14,7 @@ of a step comes from git and not from anything the model said.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -389,6 +390,34 @@ async def test_a_file_the_patch_cannot_carry_comes_back_named(
     assert result.ignored == ["build/out.txt"]
     assert "build/out.txt" not in result.patch
     assert sorted(result.files) == [".gitignore", "greet.py"]
+
+
+async def test_capture_reads_the_git_directory_it_pinned_not_the_one_left_behind(
+    repo, worktrees, tmp_path, monkeypatch
+):
+    """A worktree's `.git` is a one-line file naming its git directory.
+
+    Capture used to rediscover the repository by reading that line -- after the agent
+    had spent the whole step writing into the directory it sits in. Pointed somewhere
+    else it is a file the step controls that decides what the step's diff is of. The
+    gitdir is now read at worktree creation, before the agent starts, and passed
+    explicitly, so what is written here is simply ignored.
+    """
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=decoy, check=True)
+
+    result, _ = await run(
+        repo, tmp_path, monkeypatch,
+        runs=[{
+            "stdout": transcript(),
+            "append": {"greet.py": "def greet():\n    return 'hi'\n"},
+            "write": {".git": f"gitdir: {decoy / '.git'}\n"},
+        }],
+    )
+
+    assert "+def greet():" in result.patch
+    assert result.files == ["greet.py"]
 
 
 async def test_a_substituted_model_is_refused(repo, worktrees, tmp_path, monkeypatch):

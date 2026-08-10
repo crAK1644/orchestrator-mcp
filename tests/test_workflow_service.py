@@ -17,6 +17,7 @@ from orchestrator_mcp.consult.adapters.base import AdapterResult, AgentStatus
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import ConsultationContent, Usage
 from orchestrator_mcp.consult.errors import ConsultErrorCode
+from orchestrator_mcp.consult.store import StoreError
 from orchestrator_mcp.workflow.service import WorkflowError, WorkflowService, _review_id
 from orchestrator_mcp.workflow.store import _sha256
 
@@ -485,12 +486,18 @@ async def test_a_delegated_step_refuses_the_host_tool_and_the_other_way_round(bu
 
 
 async def test_the_review_step_cannot_be_the_hosts(build, repo):
+    """And it is refused at creation, before anything has been spent.
+
+    It used to be refused only when the review step was planned -- after research,
+    planning and implementation had all run and been paid for. Worse, unbound steps
+    default to the host, so an operator who simply never mentioned `review` got a
+    workflow that could not finish and no way to know until it got there.
+    """
     service = await build(bindings={"review": {"executor": "host"}})
-    workflow_id = await started(service, repo)
-    await sql(service, "UPDATE workflow_runs SET status = 'reviewing' WHERE id = ?", workflow_id)
-    response = await service.plan_step(workflow_id, "review")
+    response = await service.start(goal="split the scanner out", workdir=str(repo))
     assert response.error is not None
     assert "cannot be `executor: host`" in response.error.message
+    assert not (await sql(service, "SELECT COUNT(*) FROM workflow_runs")).fetchone()[0]
 
 
 async def test_repeated_rounds_reconstruct_in_order(build, repo):
@@ -803,6 +810,145 @@ async def test_a_contained_step_that_changes_nothing_does_not_advance(
     assert "changed no files" in response.error.message
     assert "could not find the scanner" in response.error.message
     assert response.status == "coding"
+
+
+def _contained_test(service_agents: dict) -> dict:
+    return {
+        **service_agents,
+        "codex-sol": workflow_agent(
+            "codex", "gpt-5.6-sol", 10,
+            execution_modes=["consultation", "patch", "isolated_write"],
+        ),
+    }
+
+
+async def _to_testing(service, repo) -> str:
+    workflow_id = await started(service, repo)
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
+    await host_step(service, workflow_id, "implement", {"summary": "s", "files": [], "patch": PATCH})
+    return workflow_id
+
+
+def _ran(command: list[str], exit_code: int, output: str) -> str:
+    return "".join(json.dumps(event) + "\n" for event in (
+        {"type": "thread.started", "thread_id": "th-1", "model": "gpt-5.6-sol"},
+        {"type": "item.completed", "item": {
+            "type": "command_execution", "command": command,
+            "exit_code": exit_code, "aggregated_output": output,
+        }},
+        {"type": "item.completed",
+         "item": {"type": "agent_message", "text": "Ran the suite."}},
+    ))
+
+
+async def test_a_delegated_test_step_reports_the_exit_code_this_process_read(
+    build, repo, tmp_path, monkeypatch
+):
+    """`test` is bound to `isolated_write` and had no path that could succeed.
+
+    It went through `_run_contained`, which refuses a run that changed nothing -- which
+    is exactly what a passing test run looks like -- and otherwise built a `CodeChange`,
+    so `_advance` read `status` off a code change, found none, and sent every delegated
+    test to `fixing`. The step was unrunnable and `reported_by="orchestrator"` was a
+    value nothing could produce.
+    """
+    from .fixtures import agent_stub
+
+    agent_stub.install("codex", tmp_path, monkeypatch,
+                       runs=[{"stdout": _ran(["pytest", "-q"], 0, "12 passed")}])
+    service = await build(
+        bindings={"test": {"agent": "codex-sol", "execution": "isolated_write"}},
+        agents=_contained_test(AGENTS),
+    )
+    workflow_id = await _to_testing(service, repo)
+    step_id, token = await step(service, workflow_id, "test")
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is None, response.error
+    assert response.status == "reviewing"
+    report = [s for s in response.workflow.steps if s.step == "test"][0].output
+    assert report["status"] == "passed"
+    assert report["command"] == "pytest -q" and report["exit_code"] == 0
+    assert "12 passed" in report["stdout_tail"]
+    # The point of the whole path: an exit code this process read out of the event
+    # stream, not a sentence the model wrote.
+    assert report["reported_by"] == "orchestrator"
+    # A test step is not a channel for edits, so a run that changed nothing says so.
+    assert report["changed_files"] == []
+
+
+async def test_a_delegated_test_that_failed_goes_back_to_fixing(
+    build, repo, tmp_path, monkeypatch
+):
+    """And a run that edited the code while testing it says which files.
+
+    The worktree is gone either way -- nothing here can apply those edits -- so this is
+    only about the report not looking identical to a clean pass.
+    """
+    from .fixtures import agent_stub
+
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{
+        "stdout": _ran(["pytest", "-q"], 1, "1 failed, 11 passed"),
+        "append": {"src/a.py": "# nudged the test into passing\n"},
+    }])
+    service = await build(
+        bindings={"test": {"agent": "codex-sol", "execution": "isolated_write"}},
+        agents=_contained_test(AGENTS),
+    )
+    workflow_id = await _to_testing(service, repo)
+    step_id, token = await step(service, workflow_id, "test")
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is None, response.error
+    assert response.status == "fixing"
+    report = [s for s in response.workflow.steps if s.step == "test"][0].output
+    assert report["status"] == "failed" and report["exit_code"] == 1
+    assert report["changed_files"] == ["src/a.py"]
+
+
+async def test_a_step_that_stopped_running_cannot_still_record_its_result(build, repo):
+    """`finish_step` matched on the id alone, so a writer that had lost the step won.
+
+    The step is reaped as `abandoned` while its run is still in flight; the run then
+    comes back and writes. Without a status guard that write resurrects it as `done`,
+    clears the lease columns and reports success for a step the workflow already gave
+    up on -- and says nothing about it.
+    """
+    service = await build()
+    workflow_id = await started(service, repo)
+    step_id, _ = await step(service, workflow_id, "research")
+    await sql(service, "UPDATE workflow_steps SET status = 'abandoned' WHERE id = ?", step_id)
+
+    with pytest.raises(StoreError, match="no longer running"):
+        await service.store.finish_step(step_id, "done", output={"summary": "s"})
+    row = (
+        await sql(service, "SELECT status, output_json FROM workflow_steps WHERE id = ?", step_id)
+    ).fetchone()
+    assert row[0] == "abandoned" and not row[1]
+
+
+async def test_a_second_caller_cannot_take_a_lease_the_first_one_still_holds(build, repo):
+    """The held-lease query exempted the step being leased, which was the hole.
+
+    A duplicate call on one step overwrote the first caller's `lease_holder`, failed on
+    the spent token, and on the way out cleared the lease it had just stolen -- leaving
+    the first still running with no lease at all, so a *different* step of the same
+    workflow could then start beside it. The lease is on the workflow; it has to hold
+    against every caller, including one naming the same step.
+    """
+    service = await build()
+    workflow_id = await started(service, repo)
+    step_id, _ = await step(service, workflow_id, "research")
+
+    async with service.store.lease(workflow_id, step_id, ttl_s=60):
+        with pytest.raises(StoreError, match="already has step"):
+            async with service.store.lease(workflow_id, step_id, ttl_s=60):
+                pass
+        held = (
+            await sql(service, "SELECT lease_holder FROM workflow_steps WHERE id = ?", step_id)
+        ).fetchone()[0]
+        assert held, "the first caller's lease was cleared by the one that was refused"
 
 
 # --- review, synthesis and the loop -----------------------------------------

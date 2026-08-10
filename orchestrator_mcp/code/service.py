@@ -66,7 +66,7 @@ async def run_contained(
     """Check out the baseline, let the agent work in it, and read back what changed."""
     adapter = code_adapter_for(agent, config)
     path = worktree_path(workflow_id, step_id)
-    await _add_worktree(repo, path, baseline_commit)
+    gitdir = await _add_worktree(repo, path, baseline_commit)
     keep = False
     try:
         try:
@@ -78,7 +78,7 @@ async def run_contained(
             # to handle.
             raise CodeError(exc.code, str(exc)) from exc
         try:
-            patch, files, ignored = await _capture(path, baseline_commit)
+            patch, files, ignored = await _capture(gitdir, path, baseline_commit)
         except CodeError:
             # The worktree holds the only copy of what this step did. Deleting it
             # because *reading* it failed destroys the work over a problem the host
@@ -105,7 +105,14 @@ async def run_contained(
     )
 
 
-async def _add_worktree(repo: Path, path: Path, baseline_commit: str) -> None:
+async def _add_worktree(repo: Path, path: Path, baseline_commit: str) -> Path:
+    """Create the worktree and return the git directory it is administered from.
+
+    The gitdir is read here, before the agent has run, and every later git call names
+    it explicitly. Otherwise capture would rediscover it by reading `.git` inside a
+    directory the agent spent the whole step writing to -- a one-line file pointing
+    anywhere, and capture would faithfully diff whatever it pointed at.
+    """
     if path.exists():
         raise CodeError(
             ConsultErrorCode.INVALID_REQUEST,
@@ -121,6 +128,13 @@ async def _add_worktree(repo: Path, path: Path, baseline_commit: str) -> None:
             ConsultErrorCode.INVALID_REQUEST,
             f"could not create a worktree at `{path}` from `{baseline_commit[:12]}`: {err[:400]}",
         )
+    code, gitdir, err = await _git(path, "rev-parse", "--absolute-git-dir")
+    if code != 0 or not gitdir.strip():
+        raise CodeError(
+            ConsultErrorCode.TRANSPORT_ERROR,
+            f"could not read the git directory of the worktree at `{path}`: {err[:400]}",
+        )
+    return Path(gitdir.strip())
 
 
 async def _remove_worktree(repo: Path, path: Path) -> None:
@@ -144,19 +158,30 @@ async def _remove_worktree(repo: Path, path: Path) -> None:
         pass
 
 
-async def _capture(path: Path, baseline_commit: str) -> tuple[str, list[str], list[str]]:
+async def _capture(
+    gitdir: Path, path: Path, baseline_commit: str
+) -> tuple[str, list[str], list[str]]:
     """Everything the step changed, as one patch against the baseline.
 
     Staged first so untracked files are in the index and therefore in the diff. The
     agent cannot run `git add` itself -- a worktree's git directory is outside its
     sandbox -- so this index is only ever written here.
 
+    `gitdir` was read before the agent started and is passed explicitly, so none of
+    these commands discovers a repository by reading a file the agent could have
+    rewritten. That also disables discovery outright: if the worktree's `.git` is gone
+    or wrong, git fails here rather than quietly diffing something else.
+
     Two things a patch cannot carry, and neither is allowed to pass in silence. A
     nested repository makes `git add -A` refuse the entire tree, so it raises, and the
     caller keeps the worktree rather than deleting the work. Ignored files are skipped
     by design and can never appear in a diff, so they come back named.
     """
-    code, _, err = await _git(path, "add", "-A")
+
+    async def git(*args: str) -> tuple[int, str, str]:
+        return await _git(path, f"--git-dir={gitdir}", f"--work-tree={path}", *args)
+
+    code, _, err = await git("add", "-A")
     if code != 0:
         raise CodeError(
             ConsultErrorCode.TRANSPORT_ERROR,
@@ -166,15 +191,13 @@ async def _capture(path: Path, baseline_commit: str) -> tuple[str, list[str], li
             "scaffolded subproject, a vendored fixture -- is the usual cause, and one "
             "is enough for git to refuse the whole tree",
         )
-    code, patch, err = await _git(path, "diff", "--binary", "--cached", baseline_commit)
+    code, patch, err = await git("diff", "--binary", "--cached", baseline_commit)
     if code != 0:
         raise CodeError(
             ConsultErrorCode.TRANSPORT_ERROR, f"could not read back the step's changes: {err[:400]}"
         )
-    code, names, _ = await _git(path, "diff", "--name-only", "--cached", baseline_commit)
+    code, names, _ = await git("diff", "--name-only", "--cached", baseline_commit)
     files = [line.strip() for line in names.splitlines() if line.strip()] if code == 0 else []
-    code, others, _ = await _git(
-        path, "ls-files", "--others", "--ignored", "--exclude-standard"
-    )
+    code, others, _ = await git("ls-files", "--others", "--ignored", "--exclude-standard")
     ignored = [line.strip() for line in others.splitlines() if line.strip()] if code == 0 else []
     return patch, files, ignored[:200]

@@ -469,15 +469,22 @@ class WorkflowStore:
         that means the stored copy is an audit copy and nothing else -- the raw text
         went back to the host once, and `raw_patch_sha256` is what ties the two
         together. Never reapply what comes back out of this column.
+
+        `status = 'running'` in the WHERE clause is what stops a writer that has lost
+        the right to write. `consume_step_token` is the only thing that makes a step
+        `running`, so every legitimate caller passes -- but a step that was reaped as
+        `abandoned` or cancelled underneath a slow run is no longer this caller's to
+        finish, and without the guard the late write would resurrect it as `done`,
+        lease columns cleared, with nothing said.
         """
 
         def work() -> None:
-            self._db.execute(
+            cursor = self._db.execute(
                 "UPDATE workflow_steps SET status = ?, output_json = COALESCE(?, output_json), "
                 "review_id = COALESCE(?, review_id), "
                 "raw_patch_sha256 = COALESCE(?, raw_patch_sha256), "
                 "reported_by = COALESCE(?, reported_by), lease_holder = NULL, "
-                "lease_expires_at = NULL, updated_at = ? WHERE id = ?",
+                "lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'running'",
                 (
                     status,
                     canonical(scrub_json(output)) if output is not None else None,
@@ -488,6 +495,13 @@ class WorkflowStore:
                     str(step_id),
                 ),
             )
+            if cursor.rowcount != 1:
+                raise StoreError(
+                    ConsultErrorCode.INVALID_REQUEST,
+                    f"step `{step_id}` is no longer running, so its result was not "
+                    "recorded. It was cancelled or timed out while the work was still "
+                    "in flight; read `orchestrator_workflow_status` and plan it again",
+                )
 
         await self._run(work)
 
@@ -535,10 +549,14 @@ class WorkflowStore:
         db.execute("BEGIN IMMEDIATE")
         try:
             now = time.time()
+            # No exemption for `step_id` itself. Exempting it meant a second caller on
+            # the same step overwrote the first one's `lease_holder`, then failed on the
+            # spent token, and on the way out `_release` matched its own token and
+            # cleared the lease -- leaving the first still running with no lease at all,
+            # so a *different* step of the same workflow could then start beside it.
             held = db.execute(
-                "SELECT id FROM workflow_steps WHERE workflow_id = ? AND lease_expires_at > ? "
-                "AND id <> ?",
-                (workflow_id, now, step_id),
+                "SELECT id FROM workflow_steps WHERE workflow_id = ? AND lease_expires_at > ?",
+                (workflow_id, now),
             ).fetchone()
             if held is None:
                 db.execute(

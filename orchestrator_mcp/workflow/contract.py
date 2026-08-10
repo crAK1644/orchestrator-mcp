@@ -222,6 +222,17 @@ STEPS: dict[Step, StepDefinition] = {
 # that can.
 HOST_RECORDABLE: frozenset[Step] = frozenset(STEPS)
 
+# ...with one exception, and it is not recordable in either direction. The review
+# step's product is a review row, and only `ReviewService` writes one. A host-recorded
+# `review_outcome` would be a synthesis written straight into a step, which is exactly
+# the path around `missing_serious` that the review layer exists to close. Said in one
+# place because it is checked in two: when the binding is resolved, and again when the
+# step is planned from the stored snapshot.
+HOST_REVIEW_REFUSAL = (
+    "the `review` step cannot be `executor: host`; bind it to reviewers so the "
+    "findings go on the record and can be checked for survival"
+)
+
 
 def repository_access_for(executor: Executor, mode: ExecutionMode | None) -> RepositoryAccess:
     """What this resolved binding can reach.
@@ -338,6 +349,11 @@ class TestReport(BaseModel):
     stderr_tail: str = ""
     duration_ms: int = Field(default=0, ge=0)
     commit: str = ""
+    # What the run changed while it was supposedly only testing. Normally empty, and
+    # a contained test step's worktree is deleted either way, so this is not a patch
+    # anyone can apply -- it is how "the tests pass" and "the code was edited to make
+    # them pass" stop being the same-looking result.
+    changed_files: list[str] = []
     # Set by the service. A value supplied by a caller is dropped, so `orchestrator`
     # here always means this process read the exit code.
     reported_by: ReportedBy = "host"

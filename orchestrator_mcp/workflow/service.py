@@ -32,8 +32,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from ..code.adapters.base import CodeResult
 from ..code.registry import CodeError
-from ..code.service import run_contained
+from ..code.service import run_contained, worktree_path
 from ..contract import MAX_ERROR_CHARS, scrub_json
 from ..consult.config import ConsultConfig, StepBinding
 from ..consult.contract import ConsultError, Runtime
@@ -44,6 +45,7 @@ from ..review.contract import SERIOUS, ReviewSummary, open_serious
 from ..review.service import ReviewService
 from .contract import (
     ARTIFACT_MODELS,
+    HOST_REVIEW_REFUSAL,
     STEPS,
     TERMINAL_STATES,
     AgentRef,
@@ -224,15 +226,10 @@ class WorkflowService:
             )
         binding = json.loads(workflow.bindings_json)[step]
         if step == "review" and binding["executor"] == "host":
-            # The review step's product is a review row, and only `ReviewService`
-            # writes one. A host-recorded `review_outcome` would be a synthesis
-            # written straight into a step, which is exactly the path around
-            # `missing_serious` that the review layer exists to close.
-            raise WorkflowError(
-                ConsultErrorCode.INVALID_REQUEST,
-                "the `review` step cannot be `executor: host`; bind it to reviewers so "
-                "the findings go on the record and can be checked for survival",
-            )
+            # `resolve` refuses this at creation, so reaching it means the stored
+            # snapshot says something creation would not have written. Kept because
+            # this is the check that reads the snapshot the step will actually use.
+            raise WorkflowError(ConsultErrorCode.INVALID_REQUEST, HOST_REVIEW_REFUSAL)
 
         steps = await self.store.steps(workflow.id)
         round_index = workflow.fix_rounds
@@ -392,6 +389,11 @@ class WorkflowService:
         snapshot = row.snapshot()
         step: Step = snapshot.step
         if snapshot.execution_mode == "isolated_write":
+            # `test` is contained like the rest but produces a report, not a diff, so
+            # it takes its own path: the one below fails a run that changed nothing,
+            # which is precisely what a passing test run looks like.
+            if step == "test":
+                return await self._run_contained_test(started, workflow, row)
             return await self._run_contained(started, workflow, row)
 
         if step == "review":
@@ -462,6 +464,97 @@ class WorkflowService:
             )
         return prompt, context
 
+    async def _contained_run(
+        self, workflow: WorkflowRun, row: StepRow
+    ) -> tuple[CodeResult, str, int]:
+        """The worktree run itself, shared by the steps that write and the one that tests.
+
+        Returns the result, the commit it ran at and how long it took. Shared so the
+        test step cannot drift into checking out a different commit, or sending
+        something its preview did not describe, from the steps that produce code.
+        """
+        snapshot = row.snapshot()
+        agent = self.config.agents.get(snapshot.agent_id or "")
+        if agent is None:
+            await self.store.finish_step(row.id, "failed")
+            raise WorkflowError(
+                ConsultErrorCode.AGENT_UNAVAILABLE,
+                f"agent `{snapshot.agent_id}` is no longer configured, so the step "
+                "cannot run as it was approved. Plan it again",
+            )
+
+        prompt, context = await self._planned_prompt(workflow, row, snapshot.step)
+        # The applied result, not the original baseline. After round one the branch has
+        # moved, and a fix checked out at `baseline_commit` would edit pre-implementation
+        # source and return a patch computed against a commit the branch has left --
+        # applying it reverts the implementation the round was supposed to build on.
+        commit = workflow.result_commit or workflow.baseline_commit
+        clock = time.perf_counter()
+        try:
+            result = await run_contained(
+                self.config,
+                agent,
+                compile_execution_prompt(prompt, context),
+                repo=Path(workflow.workdir),
+                baseline_commit=commit,
+                workflow_id=workflow.id,
+                step_id=row.id,
+                timeout_s=float(self.policy.execution_timeout_s),
+            )
+        except CodeError:
+            await self.store.finish_step(row.id, "failed")
+            raise
+        return result, commit, int((time.perf_counter() - clock) * 1000)
+
+    async def _run_contained_test(
+        self, started: float, workflow: WorkflowRun, row: StepRow
+    ) -> WorkflowResponse:
+        """Run the tests in a worktree and report the exit codes this process read.
+
+        The only path that ever writes `reported_by="orchestrator"`, so it is worth
+        being exact about what that buys and what it does not. The exit codes come out
+        of the CLI's own event stream rather than out of anything the model wrote, so a
+        model that merely claims the tests passed cannot produce one. What it does not
+        buy is completeness: codex omits sandbox-denied commands from that stream, so
+        `passed` here means "every command it reported running returned zero", not "the
+        project's test suite ran".
+
+        Unlike the steps that write, an unchanged tree is the normal outcome and not a
+        failure. Files the run *did* change are named on the report rather than kept:
+        the worktree goes, and a test step is not a channel for edits -- if it patched
+        the code to make a test pass, the report is where that shows.
+        """
+        result, commit, duration_ms = await self._contained_run(workflow, row)
+
+        failed = next((c for c in result.commands if c.exit_code not in (0, None)), None)
+        if failed is not None:
+            status, command, exit_code = "failed", failed.command, failed.exit_code or 1
+            tail = failed.output_tail
+        elif result.commands:
+            last = result.commands[-1]
+            status, command, exit_code = "passed", last.command, 0
+            tail = last.output_tail
+        else:
+            # Nothing observed is not nothing run -- a denied command leaves no event.
+            # Either way no exit code was read, so the one status that claims none.
+            status, command, exit_code = "skipped", "", 0
+            tail = result.summary
+
+        output = TestReport(
+            command=command,
+            workdir=str(worktree_path(workflow.id, row.id)),
+            exit_code=exit_code,
+            status=status,  # type: ignore[arg-type]
+            stdout_tail=tail[-MAX_ERROR_CHARS:],
+            duration_ms=duration_ms,
+            commit=commit,
+            changed_files=result.files,
+            reported_by="orchestrator",
+        ).model_dump(mode="json")
+        await self.store.finish_step(row.id, "done", output=output, reported_by="orchestrator")
+        await self._advance(workflow, row, output)
+        return await self._view_response(workflow.id, started, step_id=row.id)
+
     async def _run_contained(
         self, started: float, workflow: WorkflowRun, row: StepRow
     ) -> WorkflowResponse:
@@ -480,35 +573,7 @@ class WorkflowService:
         """
         snapshot = row.snapshot()
         step: Step = snapshot.step
-        agent = self.config.agents.get(snapshot.agent_id or "")
-        if agent is None:
-            await self.store.finish_step(row.id, "failed")
-            raise WorkflowError(
-                ConsultErrorCode.AGENT_UNAVAILABLE,
-                f"agent `{snapshot.agent_id}` is no longer configured, so the step "
-                "cannot run as it was approved. Plan it again",
-            )
-
-        prompt, context = await self._planned_prompt(workflow, row, step)
-        try:
-            result = await run_contained(
-                self.config,
-                agent,
-                compile_execution_prompt(prompt, context),
-                repo=Path(workflow.workdir),
-                # The applied result, not the original baseline. After round one the
-                # branch has moved, and a fix checked out at `baseline_commit` would
-                # edit pre-implementation source and return a patch computed against a
-                # commit the branch has left -- applying it reverts the implementation
-                # the round was supposed to build on.
-                baseline_commit=workflow.result_commit or workflow.baseline_commit,
-                workflow_id=workflow.id,
-                step_id=row.id,
-                timeout_s=float(self.policy.execution_timeout_s),
-            )
-        except CodeError:
-            await self.store.finish_step(row.id, "failed")
-            raise
+        result, _, _ = await self._contained_run(workflow, row)
 
         if not result.changed:
             # Not an advance. A step that left the tree as it found it has not

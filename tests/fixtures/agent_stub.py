@@ -44,6 +44,12 @@ for target, text in run.get("append", {{}}).items():
     with open(target, "a") as handle:
         handle.write(text)
 
+# Truncating, for the cases where appending is not the same thing -- overwriting a
+# file the run was given rather than adding to it.
+for target, text in run.get("write", {{}}).items():
+    Path(target).parent.mkdir(parents=True, exist_ok=True)
+    Path(target).write_text(text)
+
 sys.stdout.write(run.get("stdout", ""))
 sys.stdout.flush()
 sys.stderr.write(run.get("stderr", ""))

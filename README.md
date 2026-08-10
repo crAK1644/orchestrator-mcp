@@ -406,7 +406,12 @@ Leaving `agent:` out means `auto`: routed by capability score for the step, ties
 by `priority` then agent id, the same rule `orchestrator_consult` uses. GPT, Claude,
 DeepSeek, Gemini, Qwen — any model reachable through a supported runtime can take any
 step it scores for and is permitted the mode for. A step with no binding falls to the
-host, which is the conservative default.
+host, which is the conservative default — with one exception. `review` cannot be the
+host's: its product is a review row that only the review service writes, and a
+host-recorded outcome would be a synthesis written straight into a step. Because unbound
+steps default to the host, a config that simply never mentions `review` is refused at
+`workflow_start`, before anything has been spent, rather than at the review step after
+research, planning and implementation have all been paid for.
 
 Steps route on the four capabilities added for this: `planning`, `prompt_authoring`,
 `testing` and `synthesis`, alongside `coding`, `research` and `review`.
@@ -449,7 +454,7 @@ as soon as the diff is captured. Either way the step ends in
 any of this: it is still three verbs with no way to ask for anything agentic, and write
 capability lives in a separate package behind a separate protocol.
 
-Three things about a contained run are worth knowing before you use one:
+Four things about a contained run are worth knowing before you use one:
 
 - **The diff is the record, not the reply.** Orchestrator runs `git add -A` in the
   worktree and takes the staged diff against the baseline, so files the agent *created*
@@ -469,6 +474,11 @@ Three things about a contained run are worth knowing before you use one:
   of the work. Ignored files are skipped by `git add -A` by design and can never appear
   in a patch; they come back listed on the step's `ignored` field rather than vanishing
   with the worktree.
+- **The repository capture reads is the one pinned before the agent started.** A
+  worktree's `.git` is a one-line file naming its git directory, and it sits in the
+  directory the agent spent the whole step writing to. That gitdir is read at worktree
+  creation and passed explicitly to every later git call, so what capture diffs is not
+  decided by a file the step could rewrite.
 
 ### Host identity
 
@@ -526,6 +536,15 @@ is never the test result. A `TestReport` carries the exact command, working dire
 exit code, bounded output, duration and the commit tested, plus `reported_by`, which the
 service assigns from *which tool wrote the row* and never reads out of a caller's
 payload. A host-written report is host-attested, and its provenance says so.
+
+`reported_by: orchestrator` has exactly one source: a `test` step bound to
+`isolated_write`, where the exit codes come out of the CLI's own event stream rather
+than out of anything the model wrote. Read what that does and does not claim. It means
+every command the run *reported* returned zero — codex omits sandbox-denied commands
+from that stream, so it is not a claim that the project's suite ran. A contained test
+step that edited files while testing lists them on the report's `changed_files`; the
+worktree is deleted either way, so nothing there is applicable, but "the tests pass" and
+"the code was edited until they did" no longer look identical.
 
 A failed test returns to `fixing` rather than advancing, unless `advance_on_failed_test`
 is set.

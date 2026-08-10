@@ -19,6 +19,7 @@ from ..consult.config import AgentConfig, ConsultConfig, StepBinding
 from ..consult.contract import Capability, ExecutionMode
 from ..consult.errors import ConsultErrorCode
 from .contract import (
+    HOST_REVIEW_REFUSAL,
     STEPS,
     Executor,
     RepositoryAccess,
@@ -87,6 +88,13 @@ class WorkflowRouter:
         web = bool(want_web and definition.needs_web)
 
         if binding.executor == "host":
+            if step == "review":
+                # Here rather than only where the step is planned. Unbound steps default
+                # to the host, so an operator who simply never mentions `review` used to
+                # get a workflow that started, ran, and only refused at the review step
+                # -- after research, planning and implementation had been paid for. The
+                # refusal belongs at creation, where nothing has been spent yet.
+                raise WorkflowError(ConsultErrorCode.INVALID_REQUEST, HOST_REVIEW_REFUSAL)
             return ResolvedStep(
                 step=step,
                 executor="host",
