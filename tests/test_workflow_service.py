@@ -625,7 +625,26 @@ async def test_the_prompt_a_step_sends_is_the_one_its_preview_described(build, r
     assert service.adapters["codex-sol"].prompts == []
 
 
-async def test_isolated_write_is_refused_and_the_refusal_names_which_side(build, repo):
+async def test_a_contained_step_returns_a_patch_and_leaves_the_tree_alone(
+    build, repo, tmp_path, monkeypatch
+):
+    """The whole of `isolated_write` from the workflow's side.
+
+    The stub is a real executable on PATH writing real files into whatever directory
+    it is given, so what is exercised here is the worktree, the capture and the
+    transition -- everything except the sandbox, which is codex's and was checked
+    live rather than here.
+    """
+    from .fixtures import agent_stub
+
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{
+        "stdout": "".join(json.dumps(event) + "\n" for event in (
+            {"type": "thread.started", "thread_id": "th-1", "model": "gpt-5.6-sol"},
+            {"type": "item.completed",
+             "item": {"type": "agent_message", "text": "Split the scanner out into src/b.py."}},
+        )),
+        "append": {"src/b.py": "def scan():\n    return 2\n"},
+    }])
     service = await build(
         bindings={"implement": {"agent": "codex-sol", "execution": "isolated_write"}},
         agents={
@@ -641,9 +660,50 @@ async def test_isolated_write_is_refused_and_the_refusal_names_which_side(build,
     await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
     step_id, token = await step(service, workflow_id, "implement")
     response = await service.run_step(workflow_id, step_id, token)
-    assert response.error is not None
-    assert "write adapter is not implemented" in response.error.message
+
+    assert response.error is None, response.error
+    # The raw patch comes back once, the same way a delegated one does.
+    assert "+def scan():" in response.patch
+    # The host still owns applying it: a contained write has touched no branch.
+    assert response.status == "awaiting_host_apply"
+    assert not (repo / "src" / "b.py").exists()
+    # And the consult path was never involved.
     assert service.adapters["codex-sol"].prompts == []
+
+
+async def test_a_contained_step_that_changes_nothing_does_not_advance(
+    build, repo, tmp_path, monkeypatch
+):
+    """`awaiting_host_apply` with an empty patch would ask the host to apply nothing
+    and then test it. The model's own account of why is kept in the refusal."""
+    from .fixtures import agent_stub
+
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{
+        "stdout": json.dumps({
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": "I could not find the scanner."},
+        }) + "\n",
+    }])
+    service = await build(
+        bindings={"implement": {"agent": "codex-sol", "execution": "isolated_write"}},
+        agents={
+            **AGENTS,
+            "codex-sol": workflow_agent(
+                "codex", "gpt-5.6-sol", 10,
+                execution_modes=["consultation", "patch", "isolated_write"],
+            ),
+        },
+    )
+    workflow_id = await started(service, repo)
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
+    step_id, token = await step(service, workflow_id, "implement")
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is not None
+    assert "changed no files" in response.error.message
+    assert "could not find the scanner" in response.error.message
+    assert response.status == "coding"
 
 
 # --- review, synthesis and the loop -----------------------------------------

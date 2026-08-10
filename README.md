@@ -425,12 +425,12 @@ refusal names which side said no.
 |---|---|---|
 | `consultation` | The read-only consult path, unchanged. | `context_only` |
 | `patch` | The same read-only path; it returns a unified diff. The host applies it. | `context_only` |
-| `isolated_write` | A git worktree outside your repository. **No adapter exists yet, so every runtime refuses it today.** | `worktree` |
+| `isolated_write` | A disposable git worktree outside your repository, checked out at the workflow's baseline. The agent edits and runs commands there; Orchestrator reads the diff back out of git and the host applies it. **Codex only.** | `worktree` |
 | `executor: host` | Not an agent at all: the host edits its own checkout. | `active_tree` |
 
 | Runtime | `isolated_write` | Why |
 |---|---|---|
-| `codex` | permitted in configuration | `sandbox_mode: workspace-write` is enforced by the CLI at OS level. |
+| `codex` | **supported** | `sandbox_mode: workspace-write` with `approval_policy: never` is enforced by the CLI at OS level: a command aimed outside the worktree comes back `Operation not permitted` from the kernel, not from the model declining. Network is off, `/tmp` and `$TMPDIR` are excluded from the writable set. |
 | `opencode` | refused | Its permission set isolates *configuration*, not filesystem effects: an allowed shell command can leave the worktree. |
 | `claude` | refused | No contained executor yet — same bar as OpenCode. |
 | `antigravity` | refused | Writing needs `--dangerously-skip-permissions`, the one flag the adapter refuses by construction. |
@@ -441,9 +441,26 @@ routing time.
 
 **No delegated agent writes to your working tree.** In `patch` mode the agent never sees
 your checkout — only the context the host sent it, exactly as a reviewer does — and the
-diff comes back for the host to apply. `ConsultAdapter` gained nothing for any of this:
-it is still three verbs with no way to ask for anything agentic, and write capability
-lives in a separate package behind a separate protocol.
+diff comes back for the host to apply. In `isolated_write` it sees a *copy*: a worktree
+under `~/.orchestrator-mcp/worktrees/<workflow_id>/<step_id>/`, created at the baseline
+commit and deleted as soon as the diff is captured. Either way the step ends in
+`awaiting_host_apply` and the host owns the branch. `ConsultAdapter` gained nothing for
+any of this: it is still three verbs with no way to ask for anything agentic, and write
+capability lives in a separate package behind a separate protocol.
+
+Two things about a contained run are worth knowing before you use one:
+
+- **The diff is the record, not the reply.** Orchestrator runs `git add -A` in the
+  worktree and takes the staged diff against the baseline, so files the agent *created*
+  are captured too — a plain `git diff <baseline>..` would miss them. The model's summary
+  is stored beside the patch as a description of its work, never as the account of it.
+  Its list of commands is stored the same way, and is knowingly incomplete: codex omits
+  sandbox-denied commands from its event stream entirely.
+- **The agent cannot commit.** A worktree's git directory lives outside its sandbox, so
+  `git add`, `commit`, `stash` and `checkout` all fail from inside. It leaves the work in
+  the tree and this server records it. The step's timeout is
+  `consult.workflow.execution_timeout_s` (900s by default), not `consult.timeout_s`,
+  which is sized for a question.
 
 ### Host identity
 
@@ -578,7 +595,7 @@ artifact.
 | **Storage** | SQLite directory permissions are `0700`; the database and managed agent file are `0600`. |
 | **Dashboard** | Loopback only, with host-header checks and a per-process token. |
 | **Review checkpoint** | Plans bind the scope to a one-time token before reviewer requests are made. The server cannot independently verify human approval. |
-| **Workflow write surface** | No delegated agent writes to your working tree. `patch` mode returns a diff over the read-only consult path; `isolated_write` has no adapter and every runtime refuses it. The host owns application. |
+| **Workflow write surface** | No delegated agent writes to your working tree. `patch` mode returns a diff over the read-only consult path; `isolated_write` runs codex inside its own OS-level sandbox, in a disposable worktree outside your repository, with the network off. Both end in `awaiting_host_apply`: the host owns application. |
 | **Workflow checkpoints** | One token per side-effecting step, spent in the statement that starts it. There is no workflow-level token, and a token proves snapshot integrity rather than human approval. |
 | **Workflow identity** | The host execution identity comes from startup configuration only. A candidate that cannot be *proven* a different model from the host is refused. |
 | **Workflow scope** | A workdir must resolve beneath a configured root; `/` is refused and nothing is inferred from the working directory. A dirty tree needs explicit acknowledgement. |
@@ -728,7 +745,7 @@ Live tests make real requests and may use paid capacity. Do not run them in CI u
 - No direct provider API routing or provider API-key configuration.
 - No file edits, shell commands, MCP tools, or subagents for consulted agents.
 - No automatic fixes; the host agent owns edits and tests. A workflow records and validates the phases, it does not run the job unattended.
-- No contained executor yet, so no delegated agent writes anywhere: `isolated_write` is refused on every runtime.
+- No delegated write to your actual working tree. `isolated_write` runs in a throwaway worktree and is codex-only; every other runtime refuses it, and the host applies every patch.
 - No streaming; each consultation returns one complete envelope.
 - No dashboard-initiated consultations.
 - No automatic configuration reload.

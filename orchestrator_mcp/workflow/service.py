@@ -28,14 +28,17 @@ from __future__ import annotations
 import json
 import secrets as secrets_mod
 import time
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from ..code.registry import CodeError, code_adapter_for
+from ..code.registry import CodeError
+from ..code.service import run_contained
 from ..contract import MAX_ERROR_CHARS, scrub_json
 from ..consult.config import ConsultConfig, StepBinding
 from ..consult.contract import ConsultError, Runtime
 from ..consult.errors import ConsultErrorCode
+from ..consult.prompts import compile_execution_prompt
 from ..consult.store import ConsultStore, StoreError
 from ..review.contract import SERIOUS, ReviewSummary, open_serious
 from ..review.service import ReviewService
@@ -373,7 +376,11 @@ class WorkflowService:
                     f"step `{step_id}` is the host's to do; record it with "
                     "`orchestrator_workflow_record_host_step`",
                 )
-            async with self.store.lease(workflow_id, step_id, ttl_s=self._lease_ttl()):
+            # A contained run gets the longer lease, because it gets the longer
+            # timeout: a lease that expires while its process is still working would
+            # let a second caller take the step the first one is running.
+            contained = row.snapshot().execution_mode == "isolated_write"
+            async with self.store.lease(workflow_id, step_id, ttl_s=self._lease_ttl(contained)):
                 await self.store.consume_step_token(step_id, workflow_id, confirm_token)
                 return await self._run_step(started, workflow, row, confirm_token)
         except (WorkflowError, StoreError, CodeError) as exc:
@@ -385,27 +392,12 @@ class WorkflowService:
         snapshot = row.snapshot()
         step: Step = snapshot.step
         if snapshot.execution_mode == "isolated_write":
-            # Raises. Deliberately reached rather than pre-empted: the refusal names
-            # which side said no, and that is more useful than a step that silently
-            # was not offered.
-            agent = self.config.agents.get(snapshot.agent_id or "")
-            await self.store.finish_step(row.id, "failed")
-            code_adapter_for(agent, self.config)
+            return await self._run_contained(started, workflow, row)
 
         if step == "review":
             return await self._run_review(started, workflow, row, token)
 
-        inputs = await self._step_inputs(step, await self.store.steps(workflow.id))
-        stored = json.loads(row.agent_snapshot_json)
-        prompt, context = step_prompt(step, workflow.goal, inputs, stored.get("material", ""))
-        expected = stored.get("prompt_sha256")
-        if expected and expected != _text_sha256(f"{prompt}\n{context or ''}"):
-            await self.store.finish_step(row.id, "failed")
-            raise WorkflowError(
-                ConsultErrorCode.INVALID_REQUEST,
-                f"step `{row.id}` would send something other than what its preview "
-                "described; the artifacts it reads have changed since. Plan it again",
-            )
+        prompt, context = await self._planned_prompt(workflow, row, step)
 
         response = await self.consult.consult_step(snapshot, prompt, context)
         if not response.ok or response.content is None:
@@ -446,6 +438,99 @@ class WorkflowService:
             return await self._synthesize(started, workflow, row, output)
         await self._advance(workflow, row, output)
         return await self._view_response(workflow.id, started, step_id=row.id, patch=patch)
+
+    async def _planned_prompt(
+        self, workflow: WorkflowRun, row: StepRow, step: Step
+    ) -> tuple[str, str | None]:
+        """Rebuild what the preview described, and refuse to send anything else.
+
+        Assembled from the artifacts rather than stored, so the hash is what proves
+        they have not moved underneath the approval. Shared by the delegated and the
+        contained path so that one cannot drift into sending something the other's
+        check would have caught.
+        """
+        inputs = await self._step_inputs(step, await self.store.steps(workflow.id))
+        stored = json.loads(row.agent_snapshot_json)
+        prompt, context = step_prompt(step, workflow.goal, inputs, stored.get("material", ""))
+        expected = stored.get("prompt_sha256")
+        if expected and expected != _text_sha256(f"{prompt}\n{context or ''}"):
+            await self.store.finish_step(row.id, "failed")
+            raise WorkflowError(
+                ConsultErrorCode.INVALID_REQUEST,
+                f"step `{row.id}` would send something other than what its preview "
+                "described; the artifacts it reads have changed since. Plan it again",
+            )
+        return prompt, context
+
+    async def _run_contained(
+        self, started: float, workflow: WorkflowRun, row: StepRow
+    ) -> WorkflowResponse:
+        """Run a step in a worktree, and read the result out of git rather than the reply.
+
+        The agent here really does edit files and run commands -- the one place in this
+        server where that is true -- so three things are worth reading closely:
+
+          * it edits a *copy* checked out at the baseline, in a directory outside the
+            user's repository, and the CLI's sandbox is what holds it there;
+          * what comes back is the diff, captured by us. The model's summary is stored
+            beside it as a description, and nothing downstream reads it as the change;
+          * the host still applies it. `_advance` sends this to `awaiting_host_apply`
+            exactly as it does a delegated patch, because a contained write has not
+            touched the branch anyone is working on.
+        """
+        snapshot = row.snapshot()
+        step: Step = snapshot.step
+        agent = self.config.agents.get(snapshot.agent_id or "")
+        if agent is None:
+            await self.store.finish_step(row.id, "failed")
+            raise WorkflowError(
+                ConsultErrorCode.AGENT_UNAVAILABLE,
+                f"agent `{snapshot.agent_id}` is no longer configured, so the step "
+                "cannot run as it was approved. Plan it again",
+            )
+
+        prompt, context = await self._planned_prompt(workflow, row, step)
+        try:
+            result = await run_contained(
+                self.config,
+                agent,
+                compile_execution_prompt(prompt, context),
+                repo=Path(workflow.workdir),
+                baseline_commit=workflow.baseline_commit,
+                workflow_id=workflow.id,
+                step_id=row.id,
+                timeout_s=float(self.policy.execution_timeout_s),
+            )
+        except CodeError:
+            await self.store.finish_step(row.id, "failed")
+            raise
+
+        if not result.changed:
+            # Not an advance. A step that left the tree as it found it has not
+            # implemented anything, and moving to `awaiting_host_apply` with an empty
+            # patch would ask the host to apply nothing and then test it.
+            await self.store.finish_step(row.id, "failed")
+            raise WorkflowError(
+                ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
+                f"the contained run changed no files. It reported: "
+                f"{result.summary.strip()[:MAX_ERROR_CHARS] or '(nothing)'}",
+            )
+
+        output = CodeChange(
+            summary=result.summary or f"{step} changed {len(result.files)} file(s)",
+            files=result.files,
+            patch=result.patch,
+            raw_patch_sha256=_text_sha256(result.patch),
+        ).model_dump(mode="json")
+        await self.store.finish_step(
+            row.id, "done", output=output, raw_patch_sha256=output["raw_patch_sha256"]
+        )
+        await self._advance(workflow, row, output)
+        # The raw patch, once, the same way a delegated one comes back: what is stored
+        # is scrubbed, and a scrubbed patch does not apply.
+        return await self._view_response(
+            workflow.id, started, step_id=row.id, patch=result.patch
+        )
 
     async def _run_review(
         self, started: float, workflow: WorkflowRun, row: StepRow, token: str
@@ -833,8 +918,9 @@ class WorkflowService:
             latency_ms=_ms(started),
         ).check_invariants()
 
-    def _lease_ttl(self) -> float:
-        return float(self.config.timeout_s) + STEP_LEASE_SLACK_S
+    def _lease_ttl(self, contained: bool = False) -> float:
+        seconds = self.policy.execution_timeout_s if contained else self.config.timeout_s
+        return float(seconds) + STEP_LEASE_SLACK_S
 
 
 _ALL_STATES: tuple[WorkflowState, ...] = (

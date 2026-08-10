@@ -47,7 +47,9 @@ consult:
                             # what this agent may be *asked* for, which is trust and
                             # not capability: `isolated_write` written here cannot
                             # make a runtime containable, and a runtime that is not
-                            # refuses with its own reason. Default `[consultation]`.
+                            # refuses at startup with its own reason. Codex is the
+                            # only runtime that can be, and it is not on by default.
+                            # Default `[consultation]`.
       scores:               # 0..100 per capability; omitted means 0, i.e. never
         coding: 95          # the vocabulary is fixed: coding, research, writing,
         research: 85        # reasoning, review, planning, prompt_authoring,
@@ -136,6 +138,9 @@ consult:
     advance_on_failed_test: false
                               # off by default: reviewing code already known to be
                               # broken spends reviewers on a known answer
+    execution_timeout_s: 900  # `isolated_write` steps only. An agent editing files
+                              # and running the tests needs longer than a question
+                              # does, and `consult.timeout_s` is sized for a question.
     review_policy:
       different_from_implementer: true   # checked on execution identity, not agent
       different_from_planner: false      # id: two ids for one model are one reviewer

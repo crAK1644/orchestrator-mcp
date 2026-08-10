@@ -236,6 +236,11 @@ class WorkflowConfig(BaseModel):
     # Off by default: a failed test that advances to review spends reviewers on code
     # already known to be broken.
     advance_on_failed_test: bool = False
+    # Its own timeout, because `consult.timeout_s` is sized for a question and an
+    # `isolated_write` step is a coding session: it reads files, edits them, runs the
+    # tests and fixes what it broke. Raising the global one to suit that would give
+    # every consultation a quarter of an hour to answer.
+    execution_timeout_s: int = Field(default=900, ge=1)
     review_policy: ReviewPolicy = Field(default_factory=ReviewPolicy)
     bindings: dict[Step, StepBinding] = Field(default_factory=dict)
 

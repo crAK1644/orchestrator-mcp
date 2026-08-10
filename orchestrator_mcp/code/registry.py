@@ -14,6 +14,8 @@ runtime can be *held* to a directory is decided here, by whoever wrote the adapt
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..consult.contract import ExecutionMode, Runtime
 from ..consult.errors import ConsultErrorCode
 
@@ -89,19 +91,29 @@ def unsupported_reason(runtime: str, mode: ExecutionMode) -> str:
     return f"`{runtime}` does not support `{mode}`"
 
 
-def code_adapter_for(agent: object, config: object) -> object:
-    """The write-capable adapter for an agent. Stage 3.
+def code_adapter_for(agent: object, config: object) -> Any:
+    """The write-capable adapter for an agent.
 
-    Present now so nothing has to reach into `consult.adapters` for a write path
-    later and quietly widen it. Until an adapter exists, every runtime refuses here
-    rather than at a call site that assumed one.
+    The capability table is consulted first and the adapter is looked up second, so a
+    runtime that has no entry above is refused by policy rather than by an import
+    error -- and the refusal says which side declined.
     """
     runtime = getattr(agent, "runtime", "")
     if "isolated_write" not in runtime_capabilities(runtime):
         # Not "not built yet" -- this runtime is not going to get one on these terms.
         raise CodeError(ConsultErrorCode.AGENT_UNAVAILABLE, unsupported_reason(runtime, "isolated_write"))
-    raise CodeError(
-        ConsultErrorCode.AGENT_UNAVAILABLE,
-        f"`{runtime}` can be contained, but its write adapter is not implemented yet; "
-        "use `patch` or run the step on the host",
-    )
+
+    # Imported here, not at module scope: `code.service` imports this module, and the
+    # adapter imports the consult transport, so a top-level import would make the two
+    # packages circular for the sake of one lookup.
+    from .adapters.codex_cli import CodexWriteAdapter
+
+    adapters = {"codex": CodexWriteAdapter}
+    build = adapters.get(runtime)
+    if build is None:
+        raise CodeError(
+            ConsultErrorCode.AGENT_UNAVAILABLE,
+            f"`{runtime}` can be contained, but its write adapter is not implemented yet; "
+            "use `patch` or run the step on the host",
+        )
+    return build(timeout_s=getattr(config, "timeout_s", 180))

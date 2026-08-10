@@ -1,6 +1,8 @@
 """Live workflow smoke test. Spends real money -- run it deliberately, not in CI.
 
-    ORCHESTRATOR_HOST_RUNTIME=claude uv run python smoke_workflow_live.py [--keep]
+    ORCHESTRATOR_HOST_RUNTIME=claude uv run python smoke_workflow_live.py [--keep] [path...]
+
+Named paths run alone: `delegated-patch`, `host-implementation`, `contained-write`.
 
 The offline suite drives the whole state machine against stub adapters, so it proves
 the transitions and nothing about what a real model does when asked for an
@@ -15,6 +17,8 @@ installed, logged-in CLIs can:
     scrubbed audit copy
   * does a real test exit code drive the loop -- `reviewing` on green, `fixing` on
     red -- and does `loop_done` stay false while a serious finding is open
+  * does `execution: isolated_write` come back as a diff that leaves the scratch
+    repository untouched, with the worktree it worked in gone afterwards
 
 It works in a scratch git repository it creates and deletes, never in this one, and
 it never writes to your `config.yaml`: the workflow block, the host model and the
@@ -94,6 +98,18 @@ PATCH_PATH = {
 HOST_PATH = {
     "plan": {"agent": "codex-sol"},
     "review": {"agents": ["codex-sol"]},
+}
+# The contained path. Same shape as the delegated one from here on -- a patch comes
+# back and the host applies it -- and that sameness is the point: an agent that really
+# edited files still cannot reach the branch anyone is working on. What differs is
+# where the diff came from: codex worked in a throwaway worktree and ran its own
+# commands there, and this server read the result out of git rather than out of a reply.
+CONTAINED_PATH = {
+    "plan": {"agent": "codex-sol"},
+    "implement": {"agent": "codex-sol", "execution": "isolated_write"},
+    "fix": {"agent": "codex-sol", "execution": "isolated_write"},
+    # Not codex here: `different_from_implementer` is on, and codex wrote this one.
+    "review": {"agents": ["deepseek-flash"]},
 }
 
 # What the host would have written itself, in the second path. Applied verbatim, so
@@ -213,12 +229,17 @@ def live_config(root: Path) -> dict:
     agents["codex-sol"].setdefault("scores", {}).update(
         {"planning": 85, "prompt_authoring": 80, "synthesis": 85}
     )
-    agents["codex-sol"]["execution_modes"] = ["consultation", "patch"]
+    # The one runtime that can be contained, and the only place in this script that
+    # asks for it. Every other agent keeps `patch` at most.
+    agents["codex-sol"]["execution_modes"] = ["consultation", "patch", "isolated_write"]
     consult["host"] = {"model": "claude-opus-5"}
     consult["workflow"] = {
         "max_fix_rounds": 2,
         "roots": [str(root)],
         "advance_on_failed_test": False,
+        # Shorter than the 900s default: this repository is four files, and a smoke
+        # run that hangs should say so while someone is still watching it.
+        "execution_timeout_s": 600,
         "review_policy": {"different_from_implementer": True},
     }
     return doc
@@ -415,6 +436,17 @@ async def one_path(service: WorkflowService, name: str, bindings: dict, delegate
             "the stored copy is what the scrubber made of the raw patch",
             "(equal to the raw text here: nothing credential-shaped in it)",
         )
+        if bindings.get("implement", {}).get("execution") == "isolated_write":
+            # A contained run edited real files, so the two things worth seeing are
+            # that it did not edit *these* ones, and that the directory it did edit
+            # is gone. Checked here rather than trusted: the removal runs in a
+            # `finally`, which is exactly the kind of code that quietly stops working.
+            runner.check(
+                git(repo, "status", "--porcelain") == "",
+                "the agent wrote in a worktree, not in the repository",
+            )
+            leftover = Path("~/.orchestrator-mcp/worktrees").expanduser() / runner.id
+            runner.check(not leftover.exists(), "the worktree was removed after capture")
 
         # --- host applies it; only the party holding the tree can ---
         ok, note = apply_diff(repo, raw)
@@ -496,15 +528,30 @@ async def one_path(service: WorkflowService, name: str, bindings: dict, delegate
     return runner.failures
 
 
+PATHS = (
+    ("delegated-patch", PATCH_PATH, True),
+    ("host-implementation", HOST_PATH, False),
+    # Last, and the only one that spends a coding run on a real model in a sandbox.
+    # Name it on the command line to run it alone.
+    ("contained-write", CONTAINED_PATH, True),
+)
+
+
 async def main() -> int:
     keep = "--keep" in sys.argv
+    wanted = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+    paths = [p for p in PATHS if not wanted or p[0] in wanted]
+    if not paths:
+        print(f"no such path; choose from {', '.join(name for name, _, _ in PATHS)}")
+        return 2
+
     ROOT.mkdir(parents=True, exist_ok=True)
     config = load_consult_config(live_config(ROOT))
     service = await WorkflowService(config, host_runtime()).open()
     failures = 0
     try:
-        failures += await one_path(service, "delegated-patch", PATCH_PATH, delegated=True)
-        failures += await one_path(service, "host-implementation", HOST_PATH, delegated=False)
+        for name, bindings, delegated in paths:
+            failures += await one_path(service, name, bindings, delegated=delegated)
     finally:
         await service.close()
         if not keep:

@@ -107,13 +107,13 @@ def test_each_runtime_refuses_isolated_write_with_its_own_reason(runtime, expect
     assert raised.value.code == ConsultErrorCode.AGENT_UNAVAILABLE
 
 
-def test_codex_can_be_contained_and_still_has_no_write_adapter():
-    """The one runtime the table allows, refusing for the other reason."""
+def test_codex_is_the_one_runtime_with_a_write_adapter():
+    """The table allows it and an adapter exists for it -- the only pairing that does.
+    What the adapter then relies on is codex's own sandbox; see `test_code_execution`."""
     assert "isolated_write" in RUNTIME_CAPABILITIES["codex"]
     built = config({"a": workflow_agent("codex", "gpt-5.6-sol", 10)})
-    with pytest.raises(CodeError) as raised:
-        code_adapter_for(built.agents["a"], built)
-    assert "write adapter is not implemented yet" in str(raised.value)
+    adapter = code_adapter_for(built.agents["a"], built)
+    assert adapter.runtime == "codex"
 
 
 def test_a_runtime_outside_the_table_inherits_nothing():
