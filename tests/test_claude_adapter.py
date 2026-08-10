@@ -145,6 +145,28 @@ async def test_a_successful_consultation_returns_content_session_and_usage(
     assert result.usage.cost_usd == 0.0123
 
 
+async def test_the_cached_share_of_a_prompt_is_counted_in_the_total(
+    tmp_path, monkeypatch, adapter
+):
+    """Live numbers from a resumed turn: 2 fresh input tokens, 2771 from cache.
+
+    `input_tokens` alone made that turn look like 1323 tokens. It was nearer 4100, and
+    the cost reported beside it was billed on the larger figure.
+    """
+    usage = {
+        "input_tokens": 2,
+        "output_tokens": 1321,
+        "cache_read_input_tokens": 1334,
+        "cache_creation_input_tokens": 1437,
+    }
+    agent_stub.install("claude", tmp_path, monkeypatch, runs=[{"stdout": envelope(usage=usage)}])
+
+    result = await adapter.start(agent(), prompt(), SourceMode.DOCUMENT)
+
+    assert (result.usage.prompt_tokens, result.usage.completion_tokens) == (2, 1321)
+    assert result.usage.total_tokens == 2 + 1321 + 1334 + 1437
+
+
 async def test_a_boolean_cost_stays_unknown(tmp_path, monkeypatch, adapter):
     """`bool` is an `int`, but a malformed cost field is not a one-dollar charge."""
     agent_stub.install("claude", tmp_path, monkeypatch, runs=[{"stdout": envelope(total_cost_usd=True)}])
@@ -276,6 +298,7 @@ async def test_a_seven_turn_web_run_still_matches_the_answering_model(
         "input_tokens": 494,
         "output_tokens": 3093,
         "cache_read_input_tokens": 8002,
+        "cache_creation_input_tokens": 4126,
     }
     payload["modelUsage"] = {
         "claude-haiku-4-5-20251001": {"inputTokens": 99411, "outputTokens": 729},
