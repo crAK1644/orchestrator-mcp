@@ -120,10 +120,20 @@ def _private(directory: Path) -> None:
     directory it created itself under a different umask. A directory owned by someone
     else, or a symlink standing where one should be, is refused -- `lstat`, so the
     symlink fails here instead of being followed to somewhere respectable.
+
+    `lstat` before `mkdir`, because `mkdir(exist_ok=True)` only swallows the collision
+    when `is_dir()` agrees, and `is_dir()` follows links: a plain file or a dangling
+    symlink used to raise `FileExistsError` out of here and reach the caller as a
+    transport failure carrying an exception string, instead of the refusal that says
+    which path to remove. The second `lstat` is for the race -- two steps starting
+    together, whichever won the `mkdir` is what gets checked.
     """
     for target in (WORKTREE_ROOT, directory):
-        target.mkdir(parents=True, exist_ok=True, mode=0o700)
-        info = target.lstat()
+        try:
+            info = target.lstat()
+        except FileNotFoundError:
+            target.mkdir(parents=True, exist_ok=True, mode=0o700)
+            info = target.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
             raise CodeError(
                 ConsultErrorCode.INVALID_REQUEST,

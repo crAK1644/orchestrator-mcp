@@ -263,6 +263,26 @@ async def test_a_symlink_standing_in_for_a_worktree_directory_is_refused(
         await run(repo, tmp_path, monkeypatch)
 
 
+@pytest.mark.parametrize("kind", ["file", "dangling"])
+async def test_something_that_is_not_a_directory_is_refused_by_name(
+    repo, worktrees, tmp_path, monkeypatch, kind
+):
+    """`mkdir(exist_ok=True)` raised past the check for anything `is_dir()` denies.
+
+    A symlink to a real directory reached the refusal; a plain file or a link to
+    nothing raised `FileExistsError` out of `mkdir` first and arrived as a transport
+    failure carrying an exception string, which does not say what to remove.
+    """
+    worktrees.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "file":
+        worktrees.write_text("not a directory")
+    else:
+        worktrees.symlink_to(tmp_path / "nothing-here")
+
+    with pytest.raises(CodeError, match="not a directory this user owns"):
+        await run(repo, tmp_path, monkeypatch)
+
+
 async def test_two_steps_of_one_workflow_get_separate_directories():
     assert worktree_path("wf-1", "step-1") != worktree_path("wf-1", "step-2")
     assert worktree_path("wf-1", "step-1") != worktree_path("wf-2", "step-1")

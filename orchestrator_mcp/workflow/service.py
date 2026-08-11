@@ -167,23 +167,18 @@ class WorkflowService:
         except ValueError as exc:
             return _failed(workflow_id, "failed", ConsultErrorCode.INVALID_REQUEST, str(exc), started)
 
-    def _bindings(
-        self,
-        overrides: dict[str, dict[str, Any]] | None,
-        base: dict[Step, StepBinding] | None = None,
-    ) -> dict[Step, StepBinding]:
+    def _bindings(self, overrides: dict[str, dict[str, Any]] | None) -> dict[Step, StepBinding]:
         """Configured bindings, with this call's overrides on top.
 
         A step nobody bound falls to the host. That is the conservative default and
         not a placeholder: the host can always do the work itself, and defaulting to
         an agent would mean a config that forgot a step still sent it somewhere.
 
-        `base` is what a replan starts from: the workflow's own frozen snapshot, so
-        rebinding one step does not silently revert every other step to whatever the
-        config file says today.
+        Creation only. A replan does not come back through here: it re-resolves the
+        steps it was asked about and leaves the workflow's stored snapshot alone.
         """
         merged: dict[Step, StepBinding] = {step: StepBinding(executor="host") for step in STEPS}
-        merged.update(base if base is not None else self.policy.bindings)
+        merged.update(self.policy.bindings)
         for name, raw in (overrides or {}).items():
             if name not in STEPS:
                 raise WorkflowError(
@@ -961,19 +956,21 @@ class WorkflowService:
         try:
             await self.open()
             workflow = await self._live(workflow_id)
-            # From the workflow's own snapshot, not the config file: a replan that
-            # rebinds `fix` used to re-resolve every other step from whatever the
-            # config says now, throwing away both the overrides `start` was given and
-            # the routing this workflow has been running under.
-            stored = {
-                step: _binding_of(view)
-                for step, view in json.loads(workflow.bindings_json).items()
-            }
-            resolved = self.router.resolve_all(
-                self._bindings(bindings, base=stored),  # type: ignore[arg-type]
-                want_web=json.loads(workflow.policy_json).get("web", False),
-            )
-            snapshot = {step: view.as_binding() for step, view in resolved.items()}
+            # Only the steps this call names are re-decided; every other one is copied
+            # out of the workflow's own snapshot untouched. Re-resolving all of them --
+            # even from their stored agent ids -- put each unnamed step back through
+            # the router against today's agent table, so a replan of `fix` failed
+            # outright once an unrelated step's agent had been removed from the config,
+            # and quietly refreshed the rest against whatever the file says now.
+            want_web = json.loads(workflow.policy_json).get("web", False)
+            snapshot = json.loads(workflow.bindings_json)
+            for name, raw in bindings.items():
+                if name not in STEPS:
+                    raise WorkflowError(
+                        ConsultErrorCode.INVALID_REQUEST, f"`{name}` is not a workflow step"
+                    )
+                view = self.router.resolve(name, StepBinding(**raw), want_web)  # type: ignore[arg-type]
+                snapshot[name] = view.as_binding()
             token = secrets_mod.token_urlsafe(32)
             await self.store.stage_replan(workflow_id, snapshot, token)
             return WorkflowResponse(
@@ -1199,25 +1196,6 @@ def _artifacts(steps: list[StepRow]) -> dict[str, Any]:
 
 def _latest(steps: list[StepRow], artifact: ArtifactType) -> dict | None:
     return _artifacts(steps).get(artifact)
-
-
-def _binding_of(view: dict) -> StepBinding:
-    """A stored, resolved binding read back as the request that would produce it.
-
-    The agent ids are the ones this workflow resolved, so a step that was bound
-    `auto` comes back naming the agent it actually routed to. That is the point: a
-    replan should re-decide the steps it was asked about, not every step whose scores
-    have moved since.
-    """
-    ids = [agent["agent_id"] for agent in view.get("agents") or []]
-    if view.get("executor") == "host":
-        return StepBinding(executor="host")
-    return StepBinding(
-        executor="agent",
-        agent=ids[0] if len(ids) == 1 else None,
-        agents=ids if len(ids) > 1 else None,
-        execution=view.get("execution") or "consultation",
-    )
 
 
 def _review_id(steps: list[StepRow]) -> str | None:

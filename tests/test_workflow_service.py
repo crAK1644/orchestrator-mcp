@@ -1413,6 +1413,28 @@ async def test_a_replan_keeps_the_bindings_it_was_not_asked_about(build, repo):
     assert done.workflow.bindings["research"]["agents"][0]["agent_id"] == "flash"
 
 
+async def test_a_replan_does_not_re_resolve_the_steps_it_was_not_asked_about(build, repo):
+    """Keeping the stored agent id is not the same as keeping the stored binding.
+
+    Reading the snapshot back and putting all of it through the router again sent every
+    unnamed step past today's agent table: a replan of `plan` failed outright once
+    `research`'s agent had been removed from the config, and the rest came back
+    re-decided from whatever the file says now.
+    """
+    service = await build()
+    workflow_id = await started(service, repo, bindings={"research": {"agent": "flash"}})
+    before = (await service.status(workflow_id)).workflow.bindings["research"]
+    # The operator drops the agent `research` is bound to and rebinds a different step.
+    service.config.agents.pop("flash")
+
+    preview = await service.plan_replan(workflow_id, {"plan": {"agent": "codex-sol"}})
+    assert preview.error is None, preview.error
+    done = await service.replan(workflow_id, preview.preview.confirm_token)
+    assert done.error is None, done.error
+
+    assert done.workflow.bindings["research"] == before
+
+
 # --- steps that do not come back --------------------------------------------
 
 
