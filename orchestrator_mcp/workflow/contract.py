@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..consult.contract import Capability, ConsultError, ExecutionMode, Runtime
 from ..consult.errors import ConsultErrorCode
@@ -339,11 +339,23 @@ class CodeChange(BaseModel):
 
 
 class TestReport(BaseModel):
+    """What one test run did, and the exit code that says so.
+
+    `status` and `exit_code` are cross-checked rather than stored side by side. They
+    disagreed freely before, which meant `exit_code: 1` with `status: "passed"` was a
+    report the store accepted and `_loop_done` believed -- and `_loop_done` reads
+    `status` alone, so the number nobody compared it against was the only evidence
+    there was.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     command: str
     workdir: str
-    exit_code: int
+    # Nullable, because "no exit code was read" is a real outcome and zero is not how
+    # to say it. A denied command leaves no event, a timeout kills the process before
+    # it reports, and either way the honest value is nothing.
+    exit_code: int | None
     status: Literal["passed", "failed", "timeout", "skipped"]
     stdout_tail: str = ""
     stderr_tail: str = ""
@@ -357,6 +369,17 @@ class TestReport(BaseModel):
     # Set by the service. A value supplied by a caller is dropped, so `orchestrator`
     # here always means this process read the exit code.
     reported_by: ReportedBy = "host"
+
+    @model_validator(mode="after")
+    def _status_matches_exit_code(self) -> TestReport:
+        if self.status == "passed" and self.exit_code != 0:
+            raise ValueError(
+                "a report cannot be `passed` with a non-zero or absent exit code; "
+                "use `failed`, or `skipped` when no exit code was read"
+            )
+        if self.status == "failed" and self.exit_code in (None, 0):
+            raise ValueError("a report cannot be `failed` with exit code 0 or none at all")
+        return self
 
 
 class SynthesisRecord(BaseModel):

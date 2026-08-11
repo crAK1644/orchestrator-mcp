@@ -204,6 +204,7 @@ The PyPI distribution is named `orchestrator-mcp-server`; the shorter PyPI name 
 | **Explicit model choice** | Verify the responding model when the CLI exposes that information; fail on a detected substitution. |
 | **Review panel** | Ask one reviewer, or up to five in deep mode, over the same approved material. |
 | **Three-phase workflow** | Run a whole job — research and planning, implementation and testing, review and fixing — with any model bound to any step it scores for. |
+| **Slash commands** | Drive consultations, reviews and workflows by name, with their checkpoints written down rather than hoped for. |
 | **Local history** | Store consultations and reviews in SQLite, with an optional loopback dashboard. |
 | **Answer-only isolation** | Codex, Claude Code, and OpenCode are prevented from using tools; experimental Antigravity detects and fails reported tool use but cannot yet prevent it. |
 
@@ -221,6 +222,21 @@ These deletion tools remove local SQLite records only. They cannot erase a consu
 runtime's own CLI or provider history.
 
 Three independent opt-ins: the consult tools are always advertised, the review tools only with a `consult.review` block, the workflow tools only with a `consult.workflow` block. Reviewers are not a workflow, and a workflow is not reviewers.
+
+### Slash commands
+
+The server also serves MCP prompts, which a client that speaks `prompts/list` renders as slash commands. In Claude Code they appear as `/mcp__<server-name>__<command>`, where the server name is whatever you called it in your MCP client config — `/mcp__orchestrator__review` for the `orchestrator` entry shown above.
+
+| Command | Arguments | What it expands to |
+|---|---|---|
+| `consult` | `question`, `agent` | Ask another agent, keep the `consultation_id`, and report the disagreements rather than smoothing them out. |
+| `review` | `goal`, `deep` | Plan the review, show the plan and `secret_hits`, stop for the user, then run and finalize. |
+| `workflow` | `goal`, `workdir` | Start the workflow, then plan-step, stop, run-step, check status, one step at a time. |
+| `status` | `workflow_id` | Report which reviews and workflows are unfinished and what each is waiting on. |
+
+Every argument is optional; a command with none expands into an instruction to ask you for the missing part. `review` and `workflow` are advertised only when their tools are, on the same two answers — a command that could only reply "no reviewers are configured" costs a round trip and reads like a bug.
+
+Two things worth being clear about. **Nothing is installed.** These arrive over the same stdio connection as the tools: no command directory, no generated markdown, nothing written to your machine, and a client that does not speak `prompts/list` is unaffected. **A prompt is text, not an action.** Expanding one consults nobody, sends nothing, and starts no workflow — it reaches the host's conversation as if you had typed it, and the host then calls the tools, checkpoints and all. They exist because the flows worth having here are handshakes, and a host driving them from tool descriptions alone tends to skip the checkpoint that makes them worth having.
 
 ## How consultation works
 
@@ -416,9 +432,11 @@ research, planning and implementation have all been paid for.
 Steps route on the four capabilities added for this: `planning`, `prompt_authoring`,
 `testing` and `synthesis`, alongside `coding`, `research` and `review`.
 
-Bindings are resolved and **snapshotted at workflow creation**. Editing `config.yaml`
-does not reroute a running workflow; that takes `orchestrator_workflow_plan_replan` and
-its own approval.
+Bindings are resolved and **snapshotted at workflow creation**, and so is the policy
+they run under — the round cap, `advance_on_failed_test` and the review policy. Editing
+`config.yaml` does not reroute a running workflow or move its cap; that takes
+`orchestrator_workflow_plan_replan` and its own approval. A replan re-decides the steps
+you name and leaves every other one on the routing the workflow already had.
 
 ### Execution modes, and what each one can reach
 
@@ -548,6 +566,19 @@ worktree is deleted either way, so nothing there is applicable, but "the tests p
 
 A failed test returns to `fixing` rather than advancing, unless `advance_on_failed_test`
 is set.
+
+Two fields are cross-checked rather than stored side by side. A report cannot be
+`passed` with a non-zero exit code or with none at all — a command whose exit code was
+never read is `skipped`, which is what a denied command or a killed process produces —
+and it cannot be `failed` with a zero. The commit is stamped by the service from what
+the workflow currently holds, not taken from the payload: `loop_done` compares them, so
+a pass from an earlier round cannot carry a later one.
+
+`apply_patch` is the one step whose whole job is a side effect on your tree, and the
+only evidence it happened is a commit that was not there before. Recorded without one,
+or with the commit it started from, the step is refused and marked `failed` rather than
+advancing — there is no `applied: false` to write, because a step that did not do its
+work is a failed step. Plan it again once the patch is applied and committed.
 
 ### Where the loop stops
 

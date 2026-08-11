@@ -374,12 +374,16 @@ async def test_reported_by_is_assigned_by_the_service(build, repo):
         service, workflow_id, "test",
         {
             "command": "pytest", "workdir": str(repo), "exit_code": 0, "status": "passed",
-            "reported_by": "orchestrator",
+            "reported_by": "orchestrator", "commit": "0" * 40,
         },
     )
     report = [s for s in response.workflow.steps if s.step == "test"][0]
     assert report.output["reported_by"] == "host"
     assert report.reported_by == "host"
+    # The commit is this process's record of what the workflow holds, not a claim the
+    # host gets to make: a report naming some other commit would be a pass the next
+    # round could not tell was stale.
+    assert report.output["commit"] == response.workflow.baseline_commit
 
 
 # --- steps, tokens and state ------------------------------------------------
@@ -1221,3 +1225,266 @@ async def test_an_expired_lease_leaves_the_step_abandoned_and_replannable(build,
     view = (await service.status(workflow_id)).workflow
     assert [s.status for s in view.steps] == ["abandoned"]
     assert (await service.plan_step(workflow_id, "research")).error is None
+
+
+# --- what a step is allowed to claim ----------------------------------------
+
+
+async def _to_apply(service, repo) -> str:
+    """A workflow waiting on the host to apply a delegated patch."""
+    service.adapters["flash"].answers = [PATCH]
+    workflow_id = await started(service, repo)
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
+    step_id, token = await step(service, workflow_id, "implement")
+    assert (await service.run_step(workflow_id, step_id, token)).status == "awaiting_host_apply"
+    return workflow_id
+
+
+@pytest.mark.parametrize("commit", ["", "baseline"])
+async def test_apply_patch_without_a_new_commit_is_a_failed_step(build, repo, commit):
+    """`CodeChange` has no way to say "it did not apply", so this had to become one.
+
+    The host records the step, writes "the diff did not apply" in the summary, and the
+    workflow moved to `testing` regardless -- from there a passing test report on the
+    unchanged tree carried the whole loop to `completed` over work that was never
+    applied. A step that did not do its work is a failed step.
+    """
+    service = await build(bindings={"implement": {"agent": "flash", "execution": "patch"}})
+    workflow_id = await _to_apply(service, repo)
+    baseline = (await service.status(workflow_id)).workflow.baseline_commit
+
+    step_id, token = await step(service, workflow_id, "apply_patch")
+    response = await service.record_host_step(
+        workflow_id, step_id, token,
+        {
+            "summary": "the diff did not apply",
+            "files": [],
+            "commit": baseline if commit == "baseline" else "",
+        },
+    )
+    assert response.error is not None
+    assert "records the commit the applied patch produced" in response.error.message
+    # Recorded as failed, not left `running`, so the host can plan it again.
+    row = (
+        await sql(service, "SELECT status FROM workflow_steps WHERE id = ?", step_id)
+    ).fetchone()
+    assert row[0] == "failed"
+    assert (await service.status(workflow_id)).status == "awaiting_host_apply"
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"exit_code": 1, "status": "passed"}, "cannot be `passed`"),
+        ({"exit_code": None, "status": "passed"}, "cannot be `passed`"),
+        ({"exit_code": 0, "status": "failed"}, "cannot be `failed`"),
+    ],
+)
+async def test_a_test_report_whose_status_contradicts_its_exit_code_is_refused(
+    build, repo, payload, message
+):
+    """`_loop_done` reads `status` alone, so nothing ever compared it to the number.
+
+    `exit_code: 1` with `status: "passed"` was a report the store accepted and the
+    loop believed -- and the exit code was the only evidence in the row.
+    """
+    service = await build()
+    workflow_id = await _to_testing(service, repo)
+    step_id, token = await step(service, workflow_id, "test")
+    response = await service.record_host_step(
+        workflow_id, step_id, token,
+        {"command": "pytest", "workdir": str(repo), **payload},
+    )
+    assert response.error is not None
+    assert message in response.error.message
+    assert (await service.status(workflow_id)).status == "testing"
+
+
+async def test_a_contained_test_with_no_exit_code_is_skipped_rather_than_passed(
+    build, repo, tmp_path, monkeypatch
+):
+    """The one thing `reported_by="orchestrator"` exists to rule out.
+
+    A command the stream reports running without reporting how it ended used to fall
+    through to `passed` with a fabricated zero -- this process attesting to an exit
+    code it never read.
+    """
+    from .fixtures import agent_stub
+
+    agent_stub.install("codex", tmp_path, monkeypatch, runs=[{"stdout": "".join(
+        json.dumps(event) + "\n" for event in (
+            {"type": "thread.started", "thread_id": "th-1", "model": "gpt-5.6-sol"},
+            {"type": "item.completed", "item": {
+                "type": "command_execution", "command": ["pytest", "-q"],
+                "aggregated_output": "collecting ...",
+            }},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "Ran it."}},
+        )
+    )}])
+    service = await build(
+        bindings={"test": {"agent": "codex-sol", "execution": "isolated_write"}},
+        agents=_contained_test(AGENTS),
+    )
+    workflow_id = await _to_testing(service, repo)
+    step_id, token = await step(service, workflow_id, "test")
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is None, response.error
+    report = [s for s in response.workflow.steps if s.step == "test"][0].output
+    assert report["status"] == "skipped" and report["exit_code"] is None
+    # And a report that read no exit code is not a pass, so the loop goes on.
+    assert response.status == "fixing"
+
+
+async def test_a_passing_report_from_an_earlier_commit_does_not_finish_the_loop(
+    build, repo
+):
+    """The stale pass: a report says `passed` forever, and rounds move on without it.
+
+    Nothing compared what the tests ran against to what the workflow now holds, so the
+    round that changed the code again inherited the previous round's green.
+    """
+    service = await build()
+    workflow_id = await _to_synthesis(service, repo)
+    # The fix round landed a new commit; the test report still names the old one.
+    await sql(
+        service, "UPDATE workflow_runs SET result_commit = ? WHERE id = ?", "f" * 40, workflow_id
+    )
+    ids = await finding_ids(service, workflow_id)
+    response = await host_step(service, workflow_id, "synthesize", summary_with("fixed", ids))
+
+    assert response.status == "fixing"
+    record = [s for s in response.workflow.steps if s.step == "synthesize"][0]
+    assert record.output["loop_done"] is False
+    assert any("the workflow now holds" in reason for reason in record.output["reasons"])
+
+
+# --- the policy a workflow was started under --------------------------------
+
+
+async def test_a_config_edit_does_not_move_the_round_cap_of_a_running_workflow(build, repo):
+    """`policy_json` was written at `start`, hashed into `workflow_hash`, then ignored.
+
+    Every read went to the live config, so editing the file under a running workflow
+    moved its cap and flipped whether a failed test advances -- without the replan
+    handshake that exists to make exactly that change visible.
+    """
+    service = await build(max_fix_rounds=1)
+    workflow_id = await _to_synthesis(service, repo)
+    await sql(service, "UPDATE workflow_runs SET fix_rounds = 1 WHERE id = ?", workflow_id)
+    # The operator raises the cap in the config file mid-workflow.
+    service.policy.max_fix_rounds = 5
+
+    ids = await finding_ids(service, workflow_id)
+    response = await host_step(service, workflow_id, "synthesize", summary_with("open", ids))
+    assert response.status == "needs_attention"
+    assert "1-round cap" in response.workflow.reason
+    assert response.workflow.max_fix_rounds == 1
+
+
+async def test_a_config_edit_does_not_change_whether_a_failed_test_advances(build, repo):
+    service = await build(advance_on_failed_test=False)
+    workflow_id = await _to_testing(service, repo)
+    service.policy.advance_on_failed_test = True
+
+    await host_step(
+        service, workflow_id, "test",
+        {"command": "pytest", "workdir": str(repo), "exit_code": 1, "status": "failed"},
+    )
+    assert (await service.status(workflow_id)).status == "fixing"
+
+
+async def test_a_replan_keeps_the_bindings_it_was_not_asked_about(build, repo):
+    """Rebinding one step re-resolved every other one from the config file.
+
+    The overrides `start` was given went first, and so did the routing the workflow had
+    been running under -- a replan of `fix` quietly moved `research` somewhere else.
+    """
+    service = await build()
+    workflow_id = await started(service, repo, bindings={"research": {"agent": "flash"}})
+
+    preview = await service.plan_replan(workflow_id, {"plan": {"agent": "codex-sol"}})
+    assert preview.error is None, preview.error
+    done = await service.replan(workflow_id, preview.preview.confirm_token)
+    assert done.error is None, done.error
+
+    assert done.workflow.bindings["plan"]["agents"][0]["agent_id"] == "codex-sol"
+    assert done.workflow.bindings["research"]["agents"][0]["agent_id"] == "flash"
+
+
+# --- steps that do not come back --------------------------------------------
+
+
+async def test_a_step_whose_run_raised_does_not_stay_running_forever(build, repo):
+    """The row nothing could resolve.
+
+    An exception that escaped left the step `running` with its lease released -- and
+    `reap_abandoned` only matches an *expired* lease, so the row read as a live step
+    for good. A process that really dies still leaves its lease held, which is why the
+    reaper is unchanged.
+    """
+    service = await build(bindings={"research": {"agent": "codex-sol"}})
+    workflow_id = await started(service, repo)
+    step_id, token = await step(service, workflow_id, "research")
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("the adapter exploded")
+
+    service.consult.consult_step = boom
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is not None
+    assert "the adapter exploded" in response.error.message
+    row = (
+        await sql(
+            service,
+            "SELECT status, lease_holder, lease_expires_at FROM workflow_steps WHERE id = ?",
+            step_id,
+        )
+    ).fetchone()
+    assert row[0] == "failed" and row[1] is None and row[2] is None
+    # And the step can simply be planned again.
+    assert (await service.plan_step(workflow_id, "research")).error is None
+
+
+async def test_a_step_planned_before_a_cancel_cannot_start_after_it(build, repo):
+    """`run_step` reads the workflow's status, then spends the token -- two statements.
+
+    A cancel landing between them left the step to start anyway: an agent paid for a
+    workflow that had already ended, with a result nothing would accept. The status is
+    checked in the same UPDATE that spends the token, so the window is not a window.
+    Called at the store here, because going through `run_step` would be refused by the
+    earlier read and prove only that the first check works.
+    """
+    service = await build(bindings={"research": {"agent": "codex-sol"}})
+    workflow_id = await started(service, repo)
+    step_id, token = await step(service, workflow_id, "research")
+    assert (await service.cancel(workflow_id)).error is None
+
+    with pytest.raises(StoreError, match="the workflow itself has ended"):
+        await service.store.consume_step_token(step_id, workflow_id, token)
+    row = (
+        await sql(service, "SELECT status FROM workflow_steps WHERE id = ?", step_id)
+    ).fetchone()
+    # Still `planned`: cancel marks what is running, and this one never started.
+    assert row[0] == "planned"
+
+
+async def test_a_workflows_consultation_is_not_deleted_with_the_ordinary_ones(build, repo):
+    """It is the step's record of the work, not a loose consultation.
+
+    Deleted, the workflow reads as intact with a step pointing at a row that is gone.
+    """
+    service = await build(bindings={"research": {"agent": "codex-sol"}})
+    service.adapters["codex-sol"].answers = [RESEARCH]
+    workflow_id = await started(service, repo)
+    step_id, token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, step_id, token)).error is None
+    consultation_id = (await sql(service, "SELECT id FROM consultations")).fetchone()[0]
+
+    _, count = await service.store.store.request_delete_all_consultations()
+    assert count == 0
+    with pytest.raises(StoreError, match="is a step of workflow"):
+        await service.store.store.delete_consultation(consultation_id)
+    assert (await sql(service, "SELECT COUNT(*) FROM consultations")).fetchone()[0] == 1

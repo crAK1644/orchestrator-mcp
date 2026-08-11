@@ -734,7 +734,13 @@ class ConsultStore:
     async def request_delete_all_consultations(
         self, ttl_s: float = DELETE_CONFIRM_TTL_S
     ) -> tuple[str, int]:
-        """Snapshot every consultation not owned by a review and return a one-use token."""
+        """Snapshot every consultation nothing else owns, and return a one-use token.
+
+        A review owns its consultations, and so does a workflow: a workflow step's
+        consultation *is* the step's work, and deleting it would leave a step
+        pointing at a row that no longer exists while the workflow reads as intact.
+        Both are excluded here and refused on the individual path.
+        """
 
         def work() -> tuple[str, int]:
             self._db.execute(
@@ -744,7 +750,8 @@ class ConsultStore:
             ids = [
                 row[0]
                 for row in self._db.execute(
-                    "SELECT c.id FROM consultations c WHERE NOT EXISTS ("
+                    "SELECT c.id FROM consultations c WHERE c.workflow_id IS NULL "
+                    "AND NOT EXISTS ("
                     "SELECT 1 FROM review_consultations r WHERE r.consultation_id = c.id"
                     ") ORDER BY c.id"
                 )
@@ -819,6 +826,18 @@ class ConsultStore:
                 raise StoreError(
                     ConsultErrorCode.INVALID_REQUEST,
                     f"consultation `{linked[0]}` belongs to a review; delete the review instead",
+                )
+            owned = db.execute(
+                f"SELECT id, workflow_id FROM consultations WHERE id IN ({marks}) "
+                "AND workflow_id IS NOT NULL LIMIT 1",
+                ids,
+            ).fetchone()
+            if owned is not None:
+                raise StoreError(
+                    ConsultErrorCode.INVALID_REQUEST,
+                    f"consultation `{owned[0]}` is a step of workflow `{owned[1]}`; it is "
+                    "that workflow's record of the work, and deleting it would leave the "
+                    "workflow reading as intact with a step pointing at nothing",
                 )
             busy = db.execute(
                 f"SELECT consultation_id FROM consultation_leases WHERE "

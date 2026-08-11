@@ -28,6 +28,8 @@ from __future__ import annotations
 import json
 import secrets as secrets_mod
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -36,7 +38,7 @@ from ..code.adapters.base import CodeResult
 from ..code.registry import CodeError
 from ..code.service import run_contained, worktree_path
 from ..contract import MAX_ERROR_CHARS, scrub_json
-from ..consult.config import ConsultConfig, StepBinding
+from ..consult.config import ConsultConfig, ReviewPolicy, StepBinding, WorkflowConfig
 from ..consult.contract import ConsultError, Runtime
 from ..consult.errors import ConsultErrorCode
 from ..consult.prompts import compile_execution_prompt
@@ -165,15 +167,23 @@ class WorkflowService:
         except ValueError as exc:
             return _failed(workflow_id, "failed", ConsultErrorCode.INVALID_REQUEST, str(exc), started)
 
-    def _bindings(self, overrides: dict[str, dict[str, Any]] | None) -> dict[Step, StepBinding]:
+    def _bindings(
+        self,
+        overrides: dict[str, dict[str, Any]] | None,
+        base: dict[Step, StepBinding] | None = None,
+    ) -> dict[Step, StepBinding]:
         """Configured bindings, with this call's overrides on top.
 
         A step nobody bound falls to the host. That is the conservative default and
         not a placeholder: the host can always do the work itself, and defaulting to
         an agent would mean a config that forgot a step still sent it somewhere.
+
+        `base` is what a replan starts from: the workflow's own frozen snapshot, so
+        rebinding one step does not silently revert every other step to whatever the
+        config file says today.
         """
         merged: dict[Step, StepBinding] = {step: StepBinding(executor="host") for step in STEPS}
-        merged.update(self.policy.bindings)
+        merged.update(base if base is not None else self.policy.bindings)
         for name, raw in (overrides or {}).items():
             if name not in STEPS:
                 raise WorkflowError(
@@ -181,6 +191,29 @@ class WorkflowService:
                 )
             merged[name] = StepBinding(**raw)  # type: ignore[index]
         return merged
+
+    def _policy_of(self, workflow: WorkflowRun) -> WorkflowConfig:
+        """The policy this workflow was created under, not the one in the file now.
+
+        `policy_json` was written at `start` and hashed into `workflow_hash`, and then
+        every read went to `self.policy` anyway -- so editing the config under a
+        running workflow moved its round cap, flipped whether a failed test advances,
+        and changed who is allowed to review it, all without the replan handshake that
+        exists to make exactly that change visible.
+
+        `model_copy` rather than a re-validated `WorkflowConfig`: the stored keys are
+        the four that matter to a running workflow, and the rest of the object
+        (timeouts, bindings) is not read through here.
+        """
+        stored = json.loads(workflow.policy_json)
+        update: dict[str, Any] = {
+            key: stored[key]
+            for key in ("max_fix_rounds", "advance_on_failed_test")
+            if key in stored
+        }
+        if "review_policy" in stored:
+            update["review_policy"] = ReviewPolicy(**stored["review_policy"])
+        return self.policy.model_copy(update=update)
 
     # --- planning a step ------------------------------------------------------
 
@@ -320,7 +353,7 @@ class WorkflowService:
         """
         bindings = json.loads(workflow.bindings_json)
         excluded: dict[str, tuple[str, str]] = {}
-        policy = self.policy.review_policy
+        policy = self._policy_of(workflow).review_policy
         for role, step_name, wanted in (
             ("implementer", "implement", policy.different_from_implementer),
             ("planner", "plan", policy.different_from_planner),
@@ -379,9 +412,16 @@ class WorkflowService:
             contained = row.snapshot().execution_mode == "isolated_write"
             async with self.store.lease(workflow_id, step_id, ttl_s=self._lease_ttl(contained)):
                 await self.store.consume_step_token(step_id, workflow_id, confirm_token)
-                return await self._run_step(started, workflow, row, confirm_token)
+                async with self._finished(step_id):
+                    return await self._run_step(started, workflow, row, confirm_token)
         except (WorkflowError, StoreError, CodeError) as exc:
             return _failed(workflow_id, await self._status(workflow_id), exc.code, str(exc), started)
+        except Exception as exc:  # noqa: BLE001 -- the envelope is the contract
+            return _failed(
+                workflow_id, await self._status(workflow_id), ConsultErrorCode.TRANSPORT_ERROR,
+                f"the step failed unexpectedly: {type(exc).__name__}: {exc}"[:MAX_ERROR_CHARS],
+                started,
+            )
 
     async def _run_step(
         self, started: float, workflow: WorkflowRun, row: StepRow, token: str
@@ -527,9 +567,17 @@ class WorkflowService:
         result, commit, duration_ms = await self._contained_run(workflow, row)
 
         failed = next((c for c in result.commands if c.exit_code not in (0, None)), None)
+        unknown = next((c for c in result.commands if c.exit_code is None), None)
         if failed is not None:
             status, command, exit_code = "failed", failed.command, failed.exit_code or 1
             tail = failed.output_tail
+        elif unknown is not None:
+            # A command the stream reported running without reporting how it ended.
+            # This used to fall through to `passed` with a fabricated zero, which is
+            # the one thing `reported_by="orchestrator"` is supposed to rule out: it
+            # would have been this process attesting to an exit code it never read.
+            status, command, exit_code = "skipped", unknown.command, None
+            tail = unknown.output_tail
         elif result.commands:
             last = result.commands[-1]
             status, command, exit_code = "passed", last.command, 0
@@ -537,7 +585,7 @@ class WorkflowService:
         else:
             # Nothing observed is not nothing run -- a denied command leaves no event.
             # Either way no exit code was read, so the one status that claims none.
-            status, command, exit_code = "skipped", "", 0
+            status, command, exit_code = "skipped", "", None
             tail = result.summary
 
         output = TestReport(
@@ -648,9 +696,16 @@ class WorkflowService:
                 )
             async with self.store.lease(workflow_id, step_id, ttl_s=self._lease_ttl()):
                 await self.store.consume_step_token(step_id, workflow_id, confirm_token)
-                return await self._record_host_step(started, workflow, row, result)
+                async with self._finished(step_id):
+                    return await self._record_host_step(started, workflow, row, result)
         except (WorkflowError, StoreError) as exc:
             return _failed(workflow_id, await self._status(workflow_id), exc.code, str(exc), started)
+        except Exception as exc:  # noqa: BLE001 -- the envelope is the contract
+            return _failed(
+                workflow_id, await self._status(workflow_id), ConsultErrorCode.TRANSPORT_ERROR,
+                f"the step failed unexpectedly: {type(exc).__name__}: {exc}"[:MAX_ERROR_CHARS],
+                started,
+            )
 
     async def _record_host_step(
         self, started: float, workflow: WorkflowRun, row: StepRow, result: dict[str, Any]
@@ -673,13 +728,62 @@ class WorkflowService:
             # and that is what it says; only a report this process observed itself may
             # ever say `orchestrator`.
             payload["reported_by"] = "host"
+            # Nor is the commit. What the host attests to is that it ran the tests;
+            # *which* commit the workflow is holding is this process's own record, and
+            # stamping it here is what makes a later round able to tell that this pass
+            # was about earlier code. Asked of the host instead, an omitted field would
+            # read as a stale report and send an otherwise finished workflow round the
+            # loop again.
+            payload["commit"] = workflow.result_commit or workflow.baseline_commit
         output = _validated(model, payload, step).model_dump(mode="json")
+        if step == "apply_patch":
+            # The one step whose whole job is a side effect on the working tree, and
+            # the only evidence it happened is a commit that was not there before.
+            # Recorded without one, the workflow moved to `testing` over a patch that
+            # never applied -- and "the diff did not apply" is a summary the host can
+            # write while the tree is untouched. There is no `applied: false` field to
+            # add here: a step that did not do its work is a failed step.
+            prior = workflow.result_commit or workflow.baseline_commit
+            if not output.get("commit") or output["commit"] == prior:
+                await self.store.finish_step(row.id, "failed", output=output)
+                raise WorkflowError(
+                    ConsultErrorCode.INVALID_REQUEST,
+                    "`apply_patch` records the commit the applied patch produced, and "
+                    f"this one is {'absent' if not output.get('commit') else 'still'} "
+                    f"`{(output.get('commit') or prior)[:12]}` -- the tree it started "
+                    "from. The step has been recorded as failed; plan it again once "
+                    "the patch is applied and committed",
+                )
         await self.store.finish_step(
             row.id, "done", output=output,
             reported_by="host" if model is TestReport else None,
         )
         await self._advance(workflow, row, output)
         return await self._view_response(workflow.id, started, step_id=row.id)
+
+    @asynccontextmanager
+    async def _finished(self, step_id: str) -> AsyncIterator[None]:
+        """Leave no `running` row behind, whatever happens inside.
+
+        By the time this opens the token is spent and the row is `running`. Anything
+        that gets out without finishing the step leaves a row nothing can resolve: the
+        lease is released on the way out, and `reap_abandoned` only matches a lease
+        that *expired*. A process that really dies never releases its lease, so the
+        reaper keeps its job; this covers the exception that got away, which is the
+        one case that looked identical to a live step forever.
+
+        `BaseException`, so a cancelled task closes its step too. The `StoreError` is
+        swallowed because the ordinary path through here is a step that already
+        recorded its own failure.
+        """
+        try:
+            yield
+        except BaseException:
+            try:
+                await self.store.finish_step(step_id, "failed")
+            except StoreError:
+                pass
+            raise
 
     async def _step_inputs(self, step: Step, steps: list[StepRow]) -> dict[str, Any]:
         """What one step is shown: its artifacts, plus the findings a round is about.
@@ -749,8 +853,14 @@ class WorkflowService:
             )
 
         assert response.summary is not None
+        # Re-read: `_advance` moved `result_commit` on since this `workflow` was
+        # fetched, and the commit the tests have to match is the current one.
+        current = await self.store.get_workflow(workflow.id)
         done, reasons = self._loop_done(
-            response.summary, await self.store.steps(workflow.id), response.unparsed_reviewers
+            response.summary,
+            await self.store.steps(workflow.id),
+            response.unparsed_reviewers,
+            current.result_commit,
         )
         record = SynthesisRecord(
             review_id=review_id,
@@ -762,12 +872,13 @@ class WorkflowService:
             row.id, "done", output=record.model_dump(mode="json"), review_id=review_id
         )
 
+        cap = self._policy_of(workflow).max_fix_rounds
         if done:
             await self._transition(workflow.id, "completed", ("synthesizing",))
-        elif workflow.fix_rounds >= self.policy.max_fix_rounds:
+        elif workflow.fix_rounds >= cap:
             await self._transition(
                 workflow.id, "needs_attention", ("synthesizing",),
-                reason=f"the {self.policy.max_fix_rounds}-round cap was reached with "
+                reason=f"the {cap}-round cap was reached with "
                        f"{record.open_serious} serious finding(s) still open",
             )
         else:
@@ -776,13 +887,22 @@ class WorkflowService:
         return await self._view_response(workflow.id, started, step_id=row.id)
 
     def _loop_done(
-        self, summary: ReviewSummary, steps: list[StepRow], unparsed: list[str]
+        self,
+        summary: ReviewSummary,
+        steps: list[StepRow],
+        unparsed: list[str],
+        result_commit: str | None,
     ) -> tuple[bool, list[str]]:
         """Whether this workflow is finished, and every reason it is not.
 
         Computed, never asked. Each clause is a thing that could be true while the
         work is still broken, so the reasons are returned even when the answer is
         yes -- an empty list is the evidence, not the absence of a check.
+
+        The commit clause is the one that stops a stale pass from carrying a later
+        round. A test report from round one says `passed` forever, and without
+        comparing what it tested against what the workflow now holds, the round that
+        changed the code again would inherit it.
         """
         reasons: list[str] = []
         report = _latest(steps, "test_report")
@@ -790,6 +910,11 @@ class WorkflowService:
             reasons.append("no test report has been recorded for this round")
         elif report.get("status") != "passed":
             reasons.append(f"the last test run was `{report.get('status')}`")
+        elif result_commit and report.get("commit") != result_commit:
+            reasons.append(
+                f"the last passing test ran at `{(report.get('commit') or '(none)')[:12]}`, "
+                f"and the workflow now holds `{result_commit[:12]}`"
+            )
         if unparsed:
             # Without a reviewer's findings parsed, "no serious finding survived
             # unaddressed" is unprovable for that reviewer rather than true.
@@ -817,7 +942,8 @@ class WorkflowService:
             target = "testing" if row.executor == "host" else "awaiting_host_apply"
         elif step == "test":
             passed = (output or {}).get("status") == "passed"
-            target = "reviewing" if passed or self.policy.advance_on_failed_test else "fixing"
+            advance = self._policy_of(workflow).advance_on_failed_test
+            target = "reviewing" if passed or advance else "fixing"
         if step in ("implement", "fix", "apply_patch") and output:
             commit = output.get("commit") or None
 
@@ -835,8 +961,17 @@ class WorkflowService:
         try:
             await self.open()
             workflow = await self._live(workflow_id)
+            # From the workflow's own snapshot, not the config file: a replan that
+            # rebinds `fix` used to re-resolve every other step from whatever the
+            # config says now, throwing away both the overrides `start` was given and
+            # the routing this workflow has been running under.
+            stored = {
+                step: _binding_of(view)
+                for step, view in json.loads(workflow.bindings_json).items()
+            }
             resolved = self.router.resolve_all(
-                self._bindings(bindings), want_web=json.loads(workflow.policy_json).get("web", False)
+                self._bindings(bindings, base=stored),  # type: ignore[arg-type]
+                want_web=json.loads(workflow.policy_json).get("web", False),
             )
             snapshot = {step: view.as_binding() for step, view in resolved.items()}
             token = secrets_mod.token_urlsafe(32)
@@ -894,11 +1029,23 @@ class WorkflowService:
             return _failed(workflow_id, "failed", exc.code, str(exc), started)
 
     async def cancel(self, workflow_id: str) -> WorkflowResponse:
-        """Stop a workflow, and this process's children with it.
+        """Mark a workflow and its running steps as cancelled.
 
-        A step running under a *second* server process is marked, but its subprocesses
-        are not signalled -- nothing here can reach them. The same honest caveat
-        `orchestrator_cancel_review` carries, for the same reason.
+        What this actually stops is narrower than the word suggests, so it is worth
+        saying exactly. A running **review** step is cancelled through the review
+        layer, which does signal the children it owns. Every other running step -- a
+        consultation, a contained run -- is only marked: the subprocess belongs to
+        whichever call is awaiting it, and this call cannot reach it. That process
+        finishes its work, then finds the step is no longer `running` and its result
+        is refused.
+
+        A step that has been *planned* but not started cannot start afterwards:
+        `consume_step_token` checks the workflow's status in the same statement that
+        would have spent the token.
+
+        A step running under a *second* server process is marked, and nothing here can
+        signal its children at all -- the same honest caveat `orchestrator_cancel_review`
+        carries, for the same reason.
         """
         started = time.perf_counter()
         try:
@@ -1010,7 +1157,7 @@ class WorkflowService:
                 goal=workflow.goal,
                 workdir=workflow.workdir,
                 fix_rounds=workflow.fix_rounds,
-                max_fix_rounds=self.policy.max_fix_rounds,
+                max_fix_rounds=self._policy_of(workflow).max_fix_rounds,
                 baseline_commit=workflow.baseline_commit,
                 result_commit=workflow.result_commit,
                 reason=workflow.reason,
@@ -1052,6 +1199,25 @@ def _artifacts(steps: list[StepRow]) -> dict[str, Any]:
 
 def _latest(steps: list[StepRow], artifact: ArtifactType) -> dict | None:
     return _artifacts(steps).get(artifact)
+
+
+def _binding_of(view: dict) -> StepBinding:
+    """A stored, resolved binding read back as the request that would produce it.
+
+    The agent ids are the ones this workflow resolved, so a step that was bound
+    `auto` comes back naming the agent it actually routed to. That is the point: a
+    replan should re-decide the steps it was asked about, not every step whose scores
+    have moved since.
+    """
+    ids = [agent["agent_id"] for agent in view.get("agents") or []]
+    if view.get("executor") == "host":
+        return StepBinding(executor="host")
+    return StepBinding(
+        executor="agent",
+        agent=ids[0] if len(ids) == 1 else None,
+        agents=ids if len(ids) > 1 else None,
+        execution=view.get("execution") or "consultation",
+    )
 
 
 def _review_id(steps: list[StepRow]) -> str | None:

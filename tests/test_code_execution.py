@@ -14,6 +14,7 @@ of a step comes from git and not from anything the model said.
 from __future__ import annotations
 
 import json
+import stat
 import subprocess
 from pathlib import Path
 
@@ -228,6 +229,38 @@ async def test_a_sibling_step_still_running_keeps_the_directory(
     await run(repo, tmp_path, monkeypatch)
 
     assert sibling.exists()
+
+
+async def test_the_worktree_directories_are_private_to_this_user(
+    repo, worktrees, tmp_path, monkeypatch
+):
+    """`mkdir` honours the umask, so a lax one published the user's checkout.
+
+    A worktree is their repository plus, between the run and the capture, the only
+    copy of the step's work -- readable by every local account under a 0o755 root, and
+    a file in it swappable underneath the diff.
+    """
+    worktrees.mkdir(parents=True)
+    worktrees.chmod(0o755)
+
+    await run(repo, tmp_path, monkeypatch)
+
+    # Tightened rather than refused: it is ours, and refusing would strand a server
+    # over a directory it created itself under a different umask.
+    assert stat.S_IMODE(worktrees.stat().st_mode) == 0o700
+
+
+async def test_a_symlink_standing_in_for_a_worktree_directory_is_refused(
+    repo, worktrees, tmp_path, monkeypatch
+):
+    """`lstat`, so the link fails here rather than being followed somewhere writable."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    worktrees.mkdir(parents=True)
+    (worktrees / "wf-1").symlink_to(elsewhere)
+
+    with pytest.raises(CodeError, match="not a directory this user owns"):
+        await run(repo, tmp_path, monkeypatch)
 
 
 async def test_two_steps_of_one_workflow_get_separate_directories():

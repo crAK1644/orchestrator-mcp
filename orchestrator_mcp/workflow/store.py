@@ -34,6 +34,7 @@ from ..consult.errors import ConsultErrorCode
 from ..consult.store import ConsultStore, StoreError
 from ..contract import scrub_json
 from .contract import (
+    TERMINAL_STATES,
     Executor,
     RepositoryAccess,
     ReportedBy,
@@ -47,6 +48,10 @@ from .contract import (
 # service passes its configured timeout plus slack; this is only for callers with no
 # timeout of their own.
 STEP_LEASE_SLACK_S = 60.0
+
+# Built from the one definition rather than typed out again: a state added to
+# `TERMINAL_STATES` and forgotten here would be a state a step could still start under.
+_TERMINAL_SQL = ", ".join(f"'{state}'" for state in sorted(TERMINAL_STATES))
 
 
 def _now() -> str:
@@ -426,6 +431,11 @@ class WorkflowStore:
         instead of two paid ones; nulling the hash is what stops a third call
         replaying the same token later. `workflow_id` is in the `WHERE` clause so a
         token cannot be redeemed against a step of some other workflow.
+
+        The workflow's own status is checked here too, in the same statement. The
+        service reads it earlier, but between that read and this write a `cancel` can
+        land -- and the step would start anyway, spending money and a token on a
+        workflow that is already `cancelled`, with nothing left to record it against.
         """
 
         def work() -> None:
@@ -435,7 +445,9 @@ class WorkflowStore:
                 cursor = db.execute(
                     "UPDATE workflow_steps SET status = 'running', confirm_token_sha = NULL, "
                     "updated_at = ? WHERE id = ? AND workflow_id = ? AND status = 'planned' "
-                    "AND confirm_token_sha = ?",
+                    "AND confirm_token_sha = ? AND EXISTS (SELECT 1 FROM workflow_runs w "
+                    f"WHERE w.id = workflow_steps.workflow_id AND w.status NOT IN ({_TERMINAL_SQL})"
+                    ")",
                     (_now(), str(step_id), str(workflow_id), _sha256(token)),
                 )
                 taken = cursor.rowcount == 1
@@ -448,7 +460,8 @@ class WorkflowStore:
                 raise StoreError(
                     ConsultErrorCode.INVALID_REQUEST,
                     f"step `{step_id}` is not waiting on that confirmation; the token was "
-                    "already used, or the step has moved on. Plan the step again to send it",
+                    "already used, the step has moved on, or the workflow itself has "
+                    "ended. Read `orchestrator_workflow_status` before planning it again",
                 )
 
         await self._run(work)

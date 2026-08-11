@@ -22,6 +22,8 @@ destroy the work over a failure to read it.
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 from ..consult.adapters.base import AdapterError, run_process
@@ -105,6 +107,33 @@ async def run_contained(
     )
 
 
+def _private(directory: Path) -> None:
+    """Make the worktree directories ours alone, and refuse one that is not.
+
+    `mkdir` honours the umask, so on a lax one these arrived world-readable -- and a
+    worktree is a checkout of the user's repository plus, between the run and the
+    capture, the only copy of the step's work. Another local user could read it, or
+    swap a file underneath it before it is diffed.
+
+    Loosened permissions on a directory we own are tightened rather than refused: it
+    is ours to fix, and the alternative is a server that stops working over a
+    directory it created itself under a different umask. A directory owned by someone
+    else, or a symlink standing where one should be, is refused -- `lstat`, so the
+    symlink fails here instead of being followed to somewhere respectable.
+    """
+    for target in (WORKTREE_ROOT, directory):
+        target.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = target.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            raise CodeError(
+                ConsultErrorCode.INVALID_REQUEST,
+                f"`{target}` is not a directory this user owns, so it cannot hold a "
+                "worktree. Remove it, or point the server at a path you own",
+            )
+        if info.st_mode & 0o077:
+            target.chmod(0o700)
+
+
 async def _add_worktree(repo: Path, path: Path, baseline_commit: str) -> Path:
     """Create the worktree and return the git directory it is administered from.
 
@@ -119,7 +148,7 @@ async def _add_worktree(repo: Path, path: Path, baseline_commit: str) -> Path:
             f"`{path}` already exists; a previous attempt of this step was not cleaned "
             "up, and reusing its directory would mix two runs into one diff",
         )
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _private(path.parent)
     # `--detach`, so no branch is created in the user's repository and no branch name
     # can collide with one they are using.
     code, _, err = await _git(repo, "worktree", "add", "--detach", str(path), baseline_commit)
