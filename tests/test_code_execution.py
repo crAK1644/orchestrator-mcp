@@ -283,6 +283,32 @@ async def test_something_that_is_not_a_directory_is_refused_by_name(
         await run(repo, tmp_path, monkeypatch)
 
 
+async def test_something_arriving_between_the_check_and_the_mkdir_is_refused_the_same_way(
+    repo, worktrees, tmp_path, monkeypatch
+):
+    """The loser of the race got the exception, not the refusal.
+
+    `lstat` first closed the ordinary case, but between it and the `mkdir` another
+    process can put a plain file at the same path -- and `mkdir(exist_ok=True)` raises
+    on that, so the check underneath was never reached. Staged here by making the first
+    `lstat` report the file as missing, which is what losing the race looks like.
+    """
+    worktrees.parent.mkdir(parents=True, exist_ok=True)
+    worktrees.write_text("planted by whoever got there first")
+    real, missed = Path.lstat, set()
+
+    def lstat(self):
+        if self == worktrees and self not in missed:
+            missed.add(self)
+            raise FileNotFoundError(self)
+        return real(self)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+
+    with pytest.raises(CodeError, match="not a directory this user owns"):
+        await run(repo, tmp_path, monkeypatch)
+
+
 async def test_two_steps_of_one_workflow_get_separate_directories():
     assert worktree_path("wf-1", "step-1") != worktree_path("wf-1", "step-2")
     assert worktree_path("wf-1", "step-1") != worktree_path("wf-2", "step-1")

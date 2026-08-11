@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import stat
+from contextlib import suppress
 from pathlib import Path
 
 from ..consult.adapters.base import AdapterError, run_process
@@ -125,14 +126,17 @@ def _private(directory: Path) -> None:
     when `is_dir()` agrees, and `is_dir()` follows links: a plain file or a dangling
     symlink used to raise `FileExistsError` out of here and reach the caller as a
     transport failure carrying an exception string, instead of the refusal that says
-    which path to remove. The second `lstat` is for the race -- two steps starting
-    together, whichever won the `mkdir` is what gets checked.
+    which path to remove. The second `lstat` is for the race -- something arriving at
+    the path between the first one and the `mkdir`, whether it is another step's
+    directory or the file this check exists to refuse. Whatever won is what gets
+    checked, so the collision is swallowed here and answered there.
     """
     for target in (WORKTREE_ROOT, directory):
         try:
             info = target.lstat()
         except FileNotFoundError:
-            target.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with suppress(FileExistsError):
+                target.mkdir(parents=True, exist_ok=True, mode=0o700)
             info = target.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
             raise CodeError(
