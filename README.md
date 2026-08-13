@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/crAK1644/orchestrator-mcp/stargazers"><img src="https://img.shields.io/github/stars/crAK1644/orchestrator-mcp?style=flat&color=yellow" alt="GitHub stars"></a>
-  <a href="https://pypi.org/project/orchestrator-mcp-server/"><img src="https://img.shields.io/pypi/v/orchestrator-mcp-server?style=flat" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/orchestrator-mcp-server/"><img src="https://img.shields.io/pypi/v/orchestrator-mcp-server?style=flat&cacheSeconds=3600" alt="PyPI version"></a>
   <a href="https://pypi.org/project/orchestrator-mcp-server/"><img src="https://img.shields.io/pypi/pyversions/orchestrator-mcp-server?style=flat" alt="Python versions"></a>
   <a href="https://github.com/crAK1644/orchestrator-mcp/actions/workflows/test.yml"><img src="https://github.com/crAK1644/orchestrator-mcp/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/crAK1644/orchestrator-mcp?style=flat" alt="MIT License"></a>
