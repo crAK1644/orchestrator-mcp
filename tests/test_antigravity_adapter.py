@@ -510,6 +510,36 @@ async def test_a_fragment_answered_instead_of_acknowledged_stops_the_consultatio
     )
 
 
+@pytest.mark.parametrize(
+    "said",
+    [
+        # The reply the check exists to reject, and the one a substring test accepted:
+        # a full answer to a part, wearing the token it was told to send instead.
+        'I will reply ACK 1 as asked. But first, the review: {"answer": "blue"}',
+        # For a ten-part message, `ACK 1` is a substring of an ACK for another part.
+        "ACK 12",
+    ],
+)
+async def test_an_ack_has_to_be_the_whole_reply(tmp_path, monkeypatch, adapter, said):
+    """Substring membership is what this used to be, and a model that answers a fragment
+    while narrating the acknowledgement it was asked for carries the token inside the
+    answer -- so the consultation went on to reassemble a part nobody stored."""
+    agent_stub.install(
+        "agy", tmp_path, monkeypatch,
+        runs=[{"stdout": jsonl(init(), result_event(response=said, structured_output=None))}],
+    )
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), big_prompt(), SourceMode.MODEL)
+    assert exc.value.code is ConsultErrorCode.PROTOCOL_VALIDATION_FAILED
+
+
+@pytest.mark.parametrize("said", ["ACK 1", " ack 1 ", "ACK 1.", '"ACK 1"', "**ACK 1**"])
+def test_the_right_answer_typed_with_manners_is_still_the_right_answer(said):
+    """Nothing recovers a rejected fragment: the consultation dies after every earlier
+    part has been paid for. Punctuation and case around the token are not a refusal."""
+    assert antigravity_cli._acknowledged(said, 1)
+
+
 async def test_what_a_refusing_fragment_said_is_quoted_bounded_and_credential_free(
     tmp_path, monkeypatch, adapter
 ):
@@ -757,11 +787,38 @@ async def test_the_deadline_covers_the_whole_consultation_not_each_turn(
     assert exc.value.code is ConsultErrorCode.TIMEOUT
 
 
+def test_every_fragment_ends_on_the_instruction_not_on_the_task():
+    """A fragment body is up to 100 KB of "here is the code, answer this", so an
+    instruction placed only at the top is not what the model reads last -- and a real
+    consultation died exactly there, answering part 2 of 3 with a full review. The
+    closing line has to be the ACK, and it has to say what still hasn't arrived."""
+    turns = antigravity_cli._turns("x" * (MAX_ARG_BYTES * 2 + 5))
+    fragments = [text for text, answering in turns if not answering]
+
+    assert len(fragments) == 3, "this text is meant to need splitting"
+    for index, text in enumerate(fragments, start=1):
+        assert text.rstrip().endswith(
+            "an answer given here is an answer to part of a message."
+        )
+        # After the body, not merely present: an instruction above 100 KB of material is
+        # the arrangement that failed, and it satisfies a membership test just as well.
+        assert text.index(f"Reply now with exactly: ACK {index}") > text.index(
+            f"--- END PART {index} ---"
+        )
+    # How much is still missing, so a model that has read most of a long message cannot
+    # talk itself into being ready.
+    assert "2 more part(s) follow" in fragments[0]
+    assert "1 more part(s) follow" in fragments[1]
+    assert "was the last part" in fragments[2]
+
+
 def test_the_argv_ceiling_stays_under_the_one_linux_enforces():
     """`MAX_ARG_STRLEN` is 128 KiB per single argument and is not raisable. The
     remainder is headroom for the fragment wrapper, which is added on top of a body
     already at the limit."""
     assert MAX_ARG_BYTES < 131072
-    assert 131072 - MAX_ARG_BYTES > len(
-        json.dumps({"wrapper": "x"})
-    ) + 2000, "not enough headroom for the fragment instruction"
+    # The real wrapper around a body already at the limit, not a stand-in string: the
+    # instruction has grown once already, and a margin measured against `{"wrapper":
+    # "x"} + 2000` would not have noticed if it grew past the headroom.
+    biggest = antigravity_cli._turns("x" * MAX_ARG_BYTES * 2)[0][0]
+    assert len(biggest.encode()) < 131072, "the fragment wrapper outgrew the headroom"

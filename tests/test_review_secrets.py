@@ -19,7 +19,7 @@ import pytest
 from orchestrator_mcp.consult.adapters.base import AdapterResult, AgentStatus
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import ConsultationContent
-from orchestrator_mcp.contract import Usage, scrub_json
+from orchestrator_mcp.contract import Usage, redact, scrub_json
 from orchestrator_mcp.review.service import ReviewService
 
 from .conftest import agent
@@ -28,6 +28,34 @@ SECRET = "sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH"
 OTHER = "ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII"
 
 REVIEWERS = {"codex-sol": agent("codex", "gpt-5.6-sol", 10)}
+
+
+@pytest.mark.parametrize(
+    "source, masked",
+    [
+        pytest.param(
+            '{"apiKey": "sk-someone-elses-key"}',
+            '{"apiKey": "[redacted]"}',
+            id="a JSON member stays a member",
+        ),
+        pytest.param(
+            "password=hunter2hunter2", "password=[redacted]", id="an assignment stays one"
+        ),
+        pytest.param(
+            "Authorization: Bearer AAAABBBBCCCCDDDD",
+            "Authorization: [redacted]",
+            # `bearer <token>` matches first and takes the header name with it, which is
+            # the whole match rather than the value -- the header still reads as one.
+            id="a header keeps its name",
+        ),
+    ],
+)
+def test_masking_a_value_leaves_the_text_around_it_alone(source, masked):
+    """A reviewer reads the masked copy, so a substitution that changes the *shape* of
+    the code sends it after a defect nobody wrote. Swallowing the key here turned
+    `{"apiKey": "..."}` into `{"[redacted]"}` -- a set literal, and a real reviewer
+    duly reported that the dict it was meant to be would not serialize."""
+    assert redact(source) == masked
 
 
 def test_scrubbing_covers_mapping_keys_and_non_list_collections():
@@ -331,11 +359,9 @@ def test_the_reviewers_own_history_is_out_of_reach():
 
     readme = Path(__file__).resolve().parents[1] / "README.md"
     guardrail = readme.read_text()
-    assert "Redaction covers the review path, and only this database" in guardrail
+    assert "Redaction covers every retained database copy, and only this database" in guardrail
     assert "best-effort" in guardrail and "~/.codex/sessions/" in guardrail
-    # Two claims this file used to make that were not true. A plain consult is stored
-    # as sent -- `ConsultService` defaults its storage sanitizer to identity, and only
-    # the review layer passes `scrub_json` -- and "nothing here can reach those files"
-    # was contradicted by `_rollout_model`, which opens one to read the model back.
-    assert "A plain `orchestrator_consult` is not redacted" in guardrail
+    # The original material still reaches the vendor CLI and its own history; only
+    # this database's retained copy is scrubbed.
+    assert "target CLI still receives the original material" in guardrail
     assert "the Codex adapter opens the rollout file" in guardrail

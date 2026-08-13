@@ -20,8 +20,8 @@ from orchestrator_mcp.consult.contract import ConsultationContent, ConsultSource
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.store import ConsultStore
 from orchestrator_mcp.contract import Usage
-from orchestrator_mcp.review.contract import MAX_GOAL_CHARS, MAX_REVIEWERS
-from orchestrator_mcp.review.service import ReviewService
+from orchestrator_mcp.review.contract import MAX_GOAL_CHARS, MAX_REVIEWERS, ReviewerResult
+from orchestrator_mcp.review.service import ReviewService, _total
 
 from .conftest import agent
 
@@ -36,6 +36,15 @@ REVIEWERS = {
 }
 
 
+def test_a_partial_review_cost_is_unknown():
+    """A subtotal is not the cost of the whole review when another price is unknown."""
+    priced = ReviewerResult(agent_id="priced", ok=True, usage=Usage(cost_usd=0.25))
+    unpriced = ReviewerResult(agent_id="unpriced", ok=True, usage=Usage())
+
+    assert _total([priced, unpriced]).cost_usd is None
+    assert _total([priced, priced]).cost_usd == 0.5
+
+
 class StubAdapter:
     """Answers with whatever it was given, and records the prompts it saw."""
 
@@ -48,6 +57,9 @@ class StubAdapter:
         entered: asyncio.Event | None = None,
         release: asyncio.Event | None = None,
         sources: list[ConsultSource] | None = None,
+        assumptions: list[str] | None = None,
+        uncertainties: list[str] | None = None,
+        follow_up_questions: list[str] | None = None,
     ) -> None:
         self.answer = answer
         self._sources = sources or []
@@ -56,6 +68,9 @@ class StubAdapter:
         self._delay = delay
         self._entered = entered
         self._release = release
+        self._assumptions = assumptions or []
+        self._uncertainties = uncertainties or []
+        self._follow_up_questions = follow_up_questions or []
         self.prompts: list[str] = []
         self.modes: list[SourceMode] = []
 
@@ -84,8 +99,11 @@ class StubAdapter:
             raise self._error
         return AdapterResult(
             content=ConsultationContent(
-                answer=self.answer, assumptions=[], uncertainties=[],
-                follow_up_questions=[], sources=list(self._sources),
+                answer=self.answer,
+                assumptions=list(self._assumptions),
+                uncertainties=list(self._uncertainties),
+                follow_up_questions=list(self._follow_up_questions),
+                sources=list(self._sources),
             ),
             native_session_id="native-1",
             model_used="gpt-5.6-sol",
@@ -297,6 +315,39 @@ async def test_running_an_approved_plan_asks_every_reviewer(build):
     assert response.status == "awaiting_synthesis" and response.outcome == "all"
     assert {r.agent_id for r in response.results} == set(REVIEWERS)
     assert all(a.prompts for a in adapters.values())
+
+
+async def test_get_rebuilds_usage_and_structured_fields_from_the_consultation(build):
+    adapter = StubAdapter(
+        assumptions=["the parser is public"],
+        uncertainties=["the input cap is unknown"],
+        follow_up_questions=["which caller owns the bytes?"],
+    )
+    service = await build(adapters={aid: adapter for aid in REVIEWERS})
+    plan = await planned(service)
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+    await service.close()
+    reopened = await build()
+    fetched = await reopened.get(plan.review_id)
+
+    assert fetched.usage == run.usage
+    assert fetched.results[0].usage == run.results[0].usage
+    assert fetched.results[0].assumptions == ["the parser is public"]
+    assert fetched.results[0].uncertainties == ["the input cap is unknown"]
+    assert fetched.results[0].follow_up_questions == ["which caller owns the bytes?"]
+
+
+async def test_get_counts_every_reask_turn_once(build):
+    service = await build(
+        adapters={aid: StubAdapter(answer="useful prose without findings JSON") for aid in REVIEWERS}
+    )
+    plan = await planned(service)
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+    fetched = await service.get(plan.review_id)
+
+    assert run.usage.total_tokens == 24
+    assert fetched.usage.total_tokens == 24
+    assert fetched.results[0].usage.total_tokens == 24
 
 
 async def test_a_reviewer_is_asked_with_the_instructions_appended_to_the_goal(build):
@@ -625,6 +676,41 @@ async def test_a_reviewer_that_dies_before_recording_still_counts_against_the_re
     assert run.error is None, run.error
     assert run.outcome == "some"
     assert {r.agent_id: r.ok for r in run.results} == {"codex-sol": True, "gemini-x": False}
+
+
+async def test_a_crash_after_the_token_is_spent_does_not_leave_the_review_running(build):
+    """The token is gone and the status says `running`, but the lease is released and
+    no reviewer exists. Left that way the review refuses to be deleted -- "still
+    running; cancel it first" -- for reviewers that were never started."""
+    service = await build()
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("the database went away")
+
+    service.store.reserve_reviewers = boom  # after `consume_confirm_token`, before any task
+    plan = await planned(service)
+    response = await service.run(plan.review_id, plan.plan.confirm_token)
+
+    assert response.error is not None
+    assert (await service.store.get_review(plan.review_id)).status == "failed"
+
+
+async def test_a_cancel_that_won_the_race_is_not_overwritten_by_that_failure(build):
+    """The transition is guarded by `allowed_from`, so a review that a cancel already
+    moved stays cancelled: the failure path reports its own crash, never someone
+    else's state."""
+    service = await build()
+    plan = await planned(service)
+
+    async def cancel_then_fail(*args, **kwargs):
+        await service.store.transition(plan.review_id, "cancelled", ("running",))
+        raise RuntimeError("the database went away")
+
+    service.store.reserve_reviewers = cancel_then_fail
+    response = await service.run(plan.review_id, plan.plan.confirm_token)
+
+    assert response.error is not None
+    assert (await service.store.get_review(plan.review_id)).status == "cancelled"
 
 
 # --- cancellation -----------------------------------------------------------

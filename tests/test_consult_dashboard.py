@@ -353,11 +353,12 @@ async def test_it_refuses_to_bind_anything_but_loopback(config):
         build_httpd(consult_config)
 
 
-async def test_the_page_names_the_version_and_the_database(serve):
-    get, consult_config = serve()
+async def test_the_page_names_the_version_without_exposing_the_database_path(serve):
+    get, _ = serve()
     _, body = get("/")
     assert "orchestrator-mcp-server" in body
-    assert "consultations.sqlite3" in body
+    assert "Local history" in body
+    assert "consultations.sqlite3" not in body
 
 
 # --- how much of the codex subscription is left -----------------------------
@@ -389,12 +390,15 @@ async def test_the_index_says_how_much_of_the_codex_window_is_spent(serve, tmp_p
     assert "codex usage: 23%" in body
     assert "of the last 7d" in body
     assert "plus plan" in body
-    # Stale by construction: it is whatever the last consultation was told, and a page
-    # that showed it as current would be claiming a freshness it cannot have.
-    assert "as of the last consultation" in body
+    # This is the newest global Codex rollout and may have been created outside
+    # Orchestrator, so the page must not invent consultation provenance for it.
+    assert "latest Codex CLI session" in body
+    assert "as of the last consultation" not in body
 
 
-async def test_nothing_is_claimed_when_no_consultation_has_run(serve, tmp_path, monkeypatch):
+async def test_nothing_is_claimed_when_no_codex_session_has_reported_usage(
+    serve, tmp_path, monkeypatch
+):
     monkeypatch.setenv("HOME", str(tmp_path))
     get, _ = serve()
 

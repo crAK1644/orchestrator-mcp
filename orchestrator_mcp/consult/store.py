@@ -20,9 +20,12 @@ would honour.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import secrets
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -34,7 +37,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import UUID
 
-from ..contract import scrub_json
+from ..contract import Usage, scrub_json
 from .contract import ConsultRoute, SourceMode
 from .errors import ConsultErrorCode
 from .routing import RoutingDecision
@@ -170,10 +173,78 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE review_consultations ADD COLUMN sources_json TEXT;
     """,
+    """
+    ALTER TABLE consultation_turns ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0;
+    UPDATE consultation_turns SET total_tokens = input_tokens + output_tokens;
+
+    CREATE TABLE IF NOT EXISTS consultation_delete_confirmations (
+        token_sha               TEXT PRIMARY KEY,
+        consultation_ids_json  TEXT NOT NULL,
+        displayed_count         INTEGER NOT NULL,
+        created_at              TEXT NOT NULL,
+        expires_at              REAL NOT NULL
+    );
+    """,
+    """
+    CREATE TABLE workflow_runs (
+        id              TEXT PRIMARY KEY,
+        goal            TEXT NOT NULL,
+        workdir         TEXT NOT NULL,
+        host_runtime    TEXT NOT NULL,
+        host_model      TEXT,
+        status          TEXT NOT NULL,
+        bindings_json   TEXT NOT NULL,
+        policy_json     TEXT NOT NULL,
+        baseline_commit TEXT,
+        result_commit   TEXT,
+        fix_rounds      INTEGER NOT NULL DEFAULT 0,
+        reason          TEXT,
+        workflow_hash   TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+
+    CREATE TABLE workflow_steps (
+        id                  TEXT PRIMARY KEY,
+        workflow_id         TEXT NOT NULL REFERENCES workflow_runs(id),
+        step                TEXT NOT NULL,
+        executor            TEXT NOT NULL,
+        execution_mode      TEXT,
+        repository_access   TEXT NOT NULL,
+        round_index         INTEGER NOT NULL DEFAULT 0,
+        attempt             INTEGER NOT NULL DEFAULT 1,
+        sequence            INTEGER NOT NULL,
+        parent_step_id      TEXT,
+        agent_id            TEXT,
+        agent_snapshot_json TEXT NOT NULL,
+        status              TEXT NOT NULL,
+        confirm_token_sha   TEXT,
+        review_id           TEXT,
+        output_json         TEXT,
+        raw_patch_sha256    TEXT,
+        reported_by         TEXT,
+        lease_holder        TEXT,
+        lease_expires_at    REAL,
+        created_at          TEXT NOT NULL,
+        updated_at          TEXT NOT NULL
+    );
+
+    CREATE INDEX workflow_steps_workflow_id_idx ON workflow_steps(workflow_id);
+
+    ALTER TABLE consultations ADD COLUMN workflow_id TEXT;
+    ALTER TABLE consultations ADD COLUMN step_id TEXT;
+    ALTER TABLE reviews ADD COLUMN workflow_id TEXT;
+    ALTER TABLE reviews ADD COLUMN step_id TEXT;
+    """,
+    """
+    ALTER TABLE workflow_runs ADD COLUMN replan_token_sha TEXT;
+    ALTER TABLE workflow_runs ADD COLUMN replan_bindings_json TEXT;
+    """,
 ]
 
 DEFAULT_PROFILE = "default"
 LEASE_TTL_S = 300.0
+DELETE_CONFIRM_TTL_S = 300.0
 
 _T = TypeVar("_T")
 
@@ -202,6 +273,12 @@ class Consultation:
     status: str
     created_at: str
     updated_at: str
+    # Set when a workflow step created this consultation. Its presence is what
+    # `ConsultService._bind_public` refuses on: the workflow path relaxes the host
+    # exclusion from runtime to execution identity, and a public resume must not be
+    # able to reach a row that was bound under the relaxed rule.
+    workflow_id: str | None = None
+    step_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +292,7 @@ class Turn:
     validated_response_json: str | None
     input_tokens: int
     output_tokens: int
+    total_tokens: int
     cost_usd: float | None
     latency_ms: int
     error_code: str | None
@@ -223,6 +301,10 @@ class Turn:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _token_sha(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _set_wal(connection: sqlite3.Connection, deadline_s: float = 5.0) -> None:
@@ -282,6 +364,14 @@ class ConsultStore:
         # `0700` before the file exists, so there is no window where a fresh
         # database is world-readable.
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory = self.path.parent.stat()
+        directory_mode = stat.S_IMODE(directory.st_mode)
+        if directory.st_uid != os.getuid() or directory_mode != 0o700:
+            raise StoreError(
+                ConsultErrorCode.TRANSPORT_ERROR,
+                f"database directory `{self.path.parent}` must be owned by this user with "
+                f"permissions 0700 (found {directory_mode:04o})",
+            )
         connection = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         # Every open, not only the first: a database that was already there with
         # looser permissions is exactly the one worth tightening.
@@ -329,19 +419,44 @@ class ConsultStore:
                 # already exists. Splitting on `;` is safe for these -- no statement
                 # here contains one inside a literal.
                 for statement in filter(str.strip, statements.split(";")):
-                    db.execute(statement)
+                    try:
+                        db.execute(statement)
+                    except sqlite3.OperationalError as error:
+                        # A manually repaired or restored database can contain a
+                        # column whose migration-ledger row is missing. SQLite has
+                        # no portable `ADD COLUMN IF NOT EXISTS`, so make only that
+                        # operation idempotent and let every other schema error fail.
+                        is_duplicate_add = (
+                            statement.lstrip().upper().startswith("ALTER TABLE ")
+                            and " ADD COLUMN " in statement.upper()
+                            and "duplicate column name" in str(error).lower()
+                        )
+                        if not is_duplicate_add:
+                            raise
                 db.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (version, _now()),
-                )
-                db.execute(
-                    "INSERT OR IGNORE INTO profiles (id, created_at) VALUES (?, ?)",
-                    (DEFAULT_PROFILE, _now()),
                 )
             except Exception:
                 db.execute("ROLLBACK")
                 raise
             db.execute("COMMIT")
+        # Outside the loop, because it is not a migration: every consultation
+        # references this row, and inside the loop it ran only when a migration was
+        # applied. A database already at the current version whose row had gone --
+        # purged, restored, repaired by hand -- never got it back, and every
+        # consultation after that failed on the foreign key with nothing said about
+        # why. Idempotent, so the cost of running it on every open is one no-op.
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            db.execute(
+                "INSERT OR IGNORE INTO profiles (id, created_at) VALUES (?, ?)",
+                (DEFAULT_PROFILE, _now()),
+            )
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("COMMIT")
 
     async def close(self) -> None:
         if self._connection is not None:
@@ -381,14 +496,17 @@ class ConsultStore:
         config_hash: str,
         conversation_label: str | None = None,
         profile_id: str = DEFAULT_PROFILE,
+        workflow_id: str | None = None,
+        step_id: str | None = None,
     ) -> Consultation:
         def work() -> Consultation:
             now = _now()
             self._db.execute(
                 "INSERT INTO consultations (id, profile_id, origin_runtime, target_agent_id, "
                 "target_runtime, target_model, capability, native_session_id, conversation_label, "
-                "protocol_version, config_hash, status, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "protocol_version, config_hash, status, created_at, updated_at, "
+                "workflow_id, step_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(consultation_id),
                     profile_id,
@@ -411,6 +529,8 @@ class ConsultStore:
                     "open",
                     now,
                     now,
+                    workflow_id,
+                    step_id,
                 ),
             )
             return self._fetch(str(consultation_id))
@@ -433,6 +553,23 @@ class ConsultStore:
                 f"no consultation `{consultation_id}` in this store; start a new one",
             )
         return Consultation(**dict(row))
+
+    async def step_consultation(self, workflow_id: str, step_id: str) -> Consultation | None:
+        """The consultation a workflow step already owns, if it has one.
+
+        None rather than a raise: a step's first turn has nothing to resume, and that
+        is the ordinary case, not a missing row.
+        """
+
+        def work() -> Consultation | None:
+            row = self._db.execute(
+                "SELECT * FROM consultations WHERE workflow_id = ? AND step_id = ? "
+                "ORDER BY created_at LIMIT 1",
+                (workflow_id, step_id),
+            ).fetchone()
+            return None if row is None else Consultation(**dict(row))
+
+        return await self._run(work)
 
     async def bind_native_session(self, consultation_id: UUID | str, native_session_id: str) -> None:
         """Record the session id the runtime gave us, once."""
@@ -491,6 +628,7 @@ class ConsultStore:
         validated_response: dict[str, Any] | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        total_tokens: int = 0,
         cost_usd: float | None = None,
         latency_ms: int = 0,
         error_code: ConsultErrorCode | None = None,
@@ -504,8 +642,8 @@ class ConsultStore:
             self._db.execute(
                 "INSERT INTO consultation_turns (consultation_id, sequence_number, source_mode, "
                 "user_prompt, context, compiled_prompt, raw_output, validated_response_json, "
-                "input_tokens, output_tokens, cost_usd, latency_ms, error_code, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "input_tokens, output_tokens, total_tokens, cost_usd, latency_ms, error_code, "
+                "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(consultation_id),
                     sequence_number,
@@ -517,6 +655,7 @@ class ConsultStore:
                     json.dumps(validated_response) if (keep and validated_response) else None,
                     input_tokens,
                     output_tokens,
+                    total_tokens,
                     cost_usd,
                     latency_ms,
                     error_code.value if error_code else None,
@@ -534,14 +673,204 @@ class ConsultStore:
         def work() -> list[Turn]:
             rows = self._db.execute(
                 "SELECT sequence_number, source_mode, user_prompt, context, compiled_prompt, "
-                "raw_output, validated_response_json, input_tokens, output_tokens, cost_usd, "
-                "latency_ms, error_code, created_at FROM consultation_turns "
+                "raw_output, validated_response_json, input_tokens, output_tokens, total_tokens, "
+                "cost_usd, latency_ms, error_code, created_at FROM consultation_turns "
                 "WHERE consultation_id = ? ORDER BY sequence_number",
                 (str(consultation_id),),
             ).fetchall()
             return [Turn(**dict(row)) for row in rows]
 
         return await self._run(work)
+
+    async def usage(self, consultation_id: UUID | str) -> Usage | None:
+        """Cumulative accounting for every recorded turn in one native session."""
+
+        def work() -> Usage | None:
+            row = self._db.execute(
+                "SELECT COUNT(*) AS turns, COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+                "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+                "COALESCE(SUM(total_tokens), 0) AS total_tokens, "
+                "COUNT(cost_usd) AS priced_turns, SUM(cost_usd) AS cost_usd "
+                "FROM consultation_turns WHERE consultation_id = ?",
+                (str(consultation_id),),
+            ).fetchone()
+            if row["turns"] == 0:
+                return None
+            return Usage(
+                prompt_tokens=row["input_tokens"],
+                completion_tokens=row["output_tokens"],
+                total_tokens=row["total_tokens"],
+                cost_usd=row["cost_usd"] if row["priced_turns"] == row["turns"] else None,
+            )
+
+        return await self._run(work)
+
+    async def latest_response(self, consultation_id: UUID | str) -> dict[str, Any] | None:
+        """The latest retained structured answer, for rebuilding a review result."""
+
+        def work() -> dict[str, Any] | None:
+            row = self._db.execute(
+                "SELECT validated_response_json FROM consultation_turns "
+                "WHERE consultation_id = ? AND validated_response_json IS NOT NULL "
+                "ORDER BY sequence_number DESC LIMIT 1",
+                (str(consultation_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                value = json.loads(row[0])
+            except (TypeError, ValueError):
+                return None
+            return value if isinstance(value, dict) else None
+
+        return await self._run(work)
+
+    # --- deletion ----------------------------------------------------------
+
+    async def delete_consultation(self, consultation_id: UUID | str) -> int:
+        """Delete one ordinary consultation; review-owned consultations stay with the review."""
+        return await self._run(lambda: self._delete_consultations([str(consultation_id)]))
+
+    async def request_delete_all_consultations(
+        self, ttl_s: float = DELETE_CONFIRM_TTL_S
+    ) -> tuple[str, int]:
+        """Snapshot every consultation nothing else owns, and return a one-use token.
+
+        A review owns its consultations, and so does a workflow: a workflow step's
+        consultation *is* the step's work, and deleting it would leave a step
+        pointing at a row that no longer exists while the workflow reads as intact.
+        Both are excluded here and refused on the individual path.
+        """
+
+        def work() -> tuple[str, int]:
+            self._db.execute(
+                "DELETE FROM consultation_delete_confirmations WHERE expires_at <= ?",
+                (time.time(),),
+            )
+            ids = [
+                row[0]
+                for row in self._db.execute(
+                    "SELECT c.id FROM consultations c WHERE c.workflow_id IS NULL "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM review_consultations r WHERE r.consultation_id = c.id"
+                    ") ORDER BY c.id"
+                )
+            ]
+            token = secrets.token_urlsafe(32)
+            self._db.execute(
+                "INSERT INTO consultation_delete_confirmations (token_sha, "
+                "consultation_ids_json, displayed_count, created_at, expires_at) "
+                "VALUES (?,?,?,?,?)",
+                (_token_sha(token), json.dumps(ids, separators=(",", ":")), len(ids),
+                 _now(), time.time() + ttl_s),
+            )
+            return token, len(ids)
+
+        return await self._run(work)
+
+    async def delete_all_consultations(self, token: str) -> int:
+        """Delete only the ordinary-consultation snapshot approved by `token`."""
+        return await self._run(
+            lambda: self._delete_consultations([], confirmation_sha=_token_sha(token))
+        )
+
+    def _delete_consultations(
+        self, ids: list[str], confirmation_sha: str | None = None
+    ) -> int:
+        db = self._db
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            now = time.time()
+            db.execute("DELETE FROM consultation_leases WHERE expires_at <= ?", (now,))
+            db.execute(
+                "DELETE FROM consultation_delete_confirmations WHERE expires_at <= ?", (now,)
+            )
+            if confirmation_sha is not None:
+                row = db.execute(
+                    "SELECT consultation_ids_json, expires_at FROM "
+                    "consultation_delete_confirmations WHERE token_sha = ?",
+                    (confirmation_sha,),
+                ).fetchone()
+                if row is None:
+                    raise StoreError(
+                        ConsultErrorCode.INVALID_REQUEST,
+                        "that confirmation is not outstanding; call "
+                        "`orchestrator_request_delete_all_consultations` again",
+                    )
+                if row["expires_at"] <= now:
+                    raise StoreError(
+                        ConsultErrorCode.INVALID_REQUEST,
+                        "that confirmation has expired; request the count again",
+                    )
+                ids = json.loads(row["consultation_ids_json"])
+                consumed = db.execute(
+                    "DELETE FROM consultation_delete_confirmations WHERE token_sha = ?",
+                    (confirmation_sha,),
+                )
+                if consumed.rowcount != 1:
+                    raise StoreError(
+                        ConsultErrorCode.INVALID_REQUEST,
+                        "that confirmation was already spent; request a new count",
+                    )
+
+            if not ids:
+                db.execute("COMMIT")
+                return 0
+            marks = ",".join("?" * len(ids))
+            linked = db.execute(
+                f"SELECT consultation_id FROM review_consultations WHERE "
+                f"consultation_id IN ({marks}) LIMIT 1",
+                ids,
+            ).fetchone()
+            if linked is not None:
+                raise StoreError(
+                    ConsultErrorCode.INVALID_REQUEST,
+                    f"consultation `{linked[0]}` belongs to a review; delete the review instead",
+                )
+            owned = db.execute(
+                f"SELECT id, workflow_id FROM consultations WHERE id IN ({marks}) "
+                "AND workflow_id IS NOT NULL LIMIT 1",
+                ids,
+            ).fetchone()
+            if owned is not None:
+                raise StoreError(
+                    ConsultErrorCode.INVALID_REQUEST,
+                    f"consultation `{owned[0]}` is a step of workflow `{owned[1]}`; it is "
+                    "that workflow's record of the work, and deleting it would leave the "
+                    "workflow reading as intact with a step pointing at nothing",
+                )
+            busy = db.execute(
+                f"SELECT consultation_id FROM consultation_leases WHERE "
+                f"consultation_id IN ({marks}) LIMIT 1",
+                ids,
+            ).fetchone()
+            if busy is not None:
+                raise StoreError(
+                    ConsultErrorCode.SESSION_BUSY,
+                    f"consultation `{busy[0]}` has a turn in flight; wait for it to finish",
+                )
+            existing = [
+                row[0]
+                for row in db.execute(
+                    f"SELECT id FROM consultations WHERE id IN ({marks})", ids
+                )
+            ]
+            if not existing:
+                db.execute("COMMIT")
+                return 0
+            existing_marks = ",".join("?" * len(existing))
+            for table in ("consultation_turns", "routing_decisions", "consultation_leases"):
+                db.execute(
+                    f"DELETE FROM {table} WHERE consultation_id IN ({existing_marks})", existing
+                )
+            deleted = db.execute(
+                f"DELETE FROM consultations WHERE id IN ({existing_marks})", existing
+            ).rowcount
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("COMMIT")
+        return deleted
 
     # --- diagnostics --------------------------------------------------------
 

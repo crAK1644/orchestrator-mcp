@@ -3,8 +3,8 @@
 # else, so the distribution carries the `-server` suffix. The import package,
 # the repo, and the config env var are unchanged.
 name = "orchestrator-mcp-server"
-version = "0.4.2"
-description = "Use Codex from Claude Code, or Claude Code from Codex, through the subscriptions you already have."
+version = "0.5.0"
+description = "Let one coding-agent CLI consult another through Codex, Claude Code, OpenCode, or Antigravity."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -31,7 +31,7 @@ Issues = "https://github.com/crAK1644/orchestrator-mcp/issues"
 
 [project.scripts]
 orchestrator-mcp-server = "orchestrator_mcp.server:main"
-# Opt-in, loopback, read-only: it serves every stored prompt and answer.
+# Opt-in and loopback-only: it serves stored history and can edit managed config.
 orchestrator-mcp-dashboard = "orchestrator_mcp.consult.dashboard:main"
 
 [dependency-groups]

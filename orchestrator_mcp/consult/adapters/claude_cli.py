@@ -321,9 +321,29 @@ def _tools_used(node: Any) -> set[str]:
 def _reported_model(envelope: dict) -> str | None:
     usage: Any = envelope.get("modelUsage")
     if isinstance(usage, dict) and usage:
-        # One key in practice; sorted so a hypothetical second one still reports the
-        # same model every run rather than whichever hashed first.
-        return sorted(usage)[0]
+        if len(usage) == 1:
+            return next(iter(usage))
+
+        # Claude Code 2.1.220 can report helper-model usage beside the model that
+        # answered. The top-level usage is the primary answer's usage, so match it
+        # back to the one model entry rather than treating an internal Haiku call as
+        # a silent fallback from the requested Opus model.
+        primary: Any = envelope.get("usage")
+        if isinstance(primary, dict):
+            matches = [
+                model
+                for model, model_usage in usage.items()
+                if isinstance(model_usage, dict)
+                and model_usage.get("inputTokens") == primary.get("input_tokens")
+                and model_usage.get("outputTokens") == primary.get("output_tokens")
+            ]
+            if len(matches) == 1:
+                return matches[0]
+
+        raise AdapterError(
+            ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
+            "the agent returned ambiguous model metadata for the primary answer",
+        )
     model = envelope.get("model")
     return model if isinstance(model, str) else None
 
@@ -333,10 +353,25 @@ def _usage(envelope: dict) -> Usage:
     raw = raw if isinstance(raw, dict) else {}
     prompt_tokens = int(raw.get("input_tokens") or 0)
     completion_tokens = int(raw.get("output_tokens") or 0)
+    # `input_tokens` counts only what was not served from cache, and on a consultation
+    # that is almost nothing: a live resumed turn reported 2 against 1334 read from
+    # cache and 1437 written to it. Summing input and output alone called that turn 1323
+    # tokens when it was nearer 4100, and the cost beside it came from the real figure.
+    # Same correction opencode's `_usage` already makes for the same reason.
+    cached = int(raw.get("cache_read_input_tokens") or 0) + int(
+        raw.get("cache_creation_input_tokens") or 0
+    )
+    # Whole-invocation, so it covers any internal helper model too, while the token
+    # counts above are the answering model's alone. Not an inconsistency to reconcile:
+    # what a consultation spent and how large the answer was are different questions.
     cost = envelope.get("total_cost_usd")
     return Usage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
-        cost_usd=float(cost) if isinstance(cost, (int, float)) else None,
+        total_tokens=prompt_tokens + completion_tokens + cached,
+        cost_usd=(
+            float(cost)
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool)
+            else None
+        ),
     )

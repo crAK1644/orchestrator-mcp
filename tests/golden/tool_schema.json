@@ -21,7 +21,11 @@
             "research",
             "writing",
             "reasoning",
-            "review"
+            "review",
+            "planning",
+            "prompt_authoring",
+            "testing",
+            "synthesis"
           ],
           "title": "Capability",
           "type": "string"
@@ -155,6 +159,7 @@
             "session_not_found",
             "session_busy",
             "session_target_mismatch",
+            "workflow_owned_session",
             "protocol_validation_failed",
             "web_search_unavailable",
             "transport_error",
@@ -177,7 +182,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -458,7 +464,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -546,7 +553,8 @@
           "enum": [
             "codex",
             "claude",
-            "antigravity"
+            "antigravity",
+            "opencode"
           ],
           "title": "Host Runtime",
           "type": "string"
@@ -598,7 +606,8 @@
           "enum": [
             "codex",
             "claude",
-            "antigravity"
+            "antigravity",
+            "opencode"
           ],
           "title": "Target Runtime",
           "type": "string"
@@ -678,6 +687,100 @@
         "routing"
       ],
       "title": "ConsultationRecord",
+      "type": "object"
+    }
+  },
+  "orchestrator_delete_consultation": {
+    "input_schema": {
+      "properties": {
+        "consultation_id": {
+          "format": "uuid",
+          "title": "Consultation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "consultation_id"
+      ],
+      "title": "delete_consultationArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "properties": {
+        "deleted": {
+          "minimum": 0,
+          "title": "Deleted",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deleted"
+      ],
+      "title": "ConsultationDeletionResult",
+      "type": "object"
+    }
+  },
+  "orchestrator_request_delete_all_consultations": {
+    "input_schema": {
+      "properties": {},
+      "title": "request_delete_all_consultationsArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "description": "An exact snapshot of ordinary consultation history offered for deletion.",
+      "properties": {
+        "consultations": {
+          "minimum": 0,
+          "title": "Consultations",
+          "type": "integer"
+        },
+        "confirm_token": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Confirm Token",
+          "type": "string"
+        },
+        "expires_in_s": {
+          "minimum": 1,
+          "title": "Expires In S",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "consultations",
+        "confirm_token",
+        "expires_in_s"
+      ],
+      "title": "ConsultationDeleteApproval",
+      "type": "object"
+    }
+  },
+  "orchestrator_delete_all_consultations": {
+    "input_schema": {
+      "properties": {
+        "confirm_token": {
+          "title": "Confirm Token",
+          "type": "string"
+        }
+      },
+      "required": [
+        "confirm_token"
+      ],
+      "title": "delete_all_consultationsArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "properties": {
+        "deleted": {
+          "minimum": 0,
+          "title": "Deleted",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deleted"
+      ],
+      "title": "ConsultationDeletionResult",
       "type": "object"
     }
   },
@@ -838,7 +941,7 @@
       "$defs": {
         "CombinedFinding": {
           "additionalProperties": false,
-          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_criticals` proves that no reviewer's Critical was dropped during\nsynthesis, and how a reader gets from a combined row back to who said it.",
+          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_serious` proves that no reviewer's Critical or Important was dropped\nduring synthesis, and how a reader gets from a combined row back to who said it.",
           "properties": {
             "problem": {
               "maxLength": 5000,
@@ -890,6 +993,23 @@
               "default": "",
               "maxLength": 5000,
               "title": "Proposed Action",
+              "type": "string"
+            },
+            "disposition": {
+              "default": "open",
+              "enum": [
+                "open",
+                "fixed",
+                "rejected",
+                "accepted_risk"
+              ],
+              "title": "Disposition",
+              "type": "string"
+            },
+            "disposition_reason": {
+              "default": "",
+              "maxLength": 5000,
+              "title": "Disposition Reason",
               "type": "string"
             }
           },
@@ -951,6 +1071,7 @@
             "session_not_found",
             "session_busy",
             "session_target_mismatch",
+            "workflow_owned_session",
             "protocol_validation_failed",
             "web_search_unavailable",
             "transport_error",
@@ -1500,7 +1621,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -1821,7 +1943,7 @@
       "$defs": {
         "CombinedFinding": {
           "additionalProperties": false,
-          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_criticals` proves that no reviewer's Critical was dropped during\nsynthesis, and how a reader gets from a combined row back to who said it.",
+          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_serious` proves that no reviewer's Critical or Important was dropped\nduring synthesis, and how a reader gets from a combined row back to who said it.",
           "properties": {
             "problem": {
               "maxLength": 5000,
@@ -1873,6 +1995,23 @@
               "default": "",
               "maxLength": 5000,
               "title": "Proposed Action",
+              "type": "string"
+            },
+            "disposition": {
+              "default": "open",
+              "enum": [
+                "open",
+                "fixed",
+                "rejected",
+                "accepted_risk"
+              ],
+              "title": "Disposition",
+              "type": "string"
+            },
+            "disposition_reason": {
+              "default": "",
+              "maxLength": 5000,
+              "title": "Disposition Reason",
               "type": "string"
             }
           },
@@ -1934,6 +2073,7 @@
             "session_not_found",
             "session_busy",
             "session_target_mismatch",
+            "workflow_owned_session",
             "protocol_validation_failed",
             "web_search_unavailable",
             "transport_error",
@@ -2483,7 +2623,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -2790,7 +2931,7 @@
       "$defs": {
         "CombinedFinding": {
           "additionalProperties": false,
-          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_criticals` proves that no reviewer's Critical was dropped during\nsynthesis, and how a reader gets from a combined row back to who said it.",
+          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_serious` proves that no reviewer's Critical or Important was dropped\nduring synthesis, and how a reader gets from a combined row back to who said it.",
           "properties": {
             "problem": {
               "maxLength": 5000,
@@ -2842,6 +2983,23 @@
               "default": "",
               "maxLength": 5000,
               "title": "Proposed Action",
+              "type": "string"
+            },
+            "disposition": {
+              "default": "open",
+              "enum": [
+                "open",
+                "fixed",
+                "rejected",
+                "accepted_risk"
+              ],
+              "title": "Disposition",
+              "type": "string"
+            },
+            "disposition_reason": {
+              "default": "",
+              "maxLength": 5000,
+              "title": "Disposition Reason",
               "type": "string"
             }
           },
@@ -2903,6 +3061,7 @@
             "session_not_found",
             "session_busy",
             "session_target_mismatch",
+            "workflow_owned_session",
             "protocol_validation_failed",
             "web_search_unavailable",
             "transport_error",
@@ -3452,7 +3611,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -3687,7 +3847,7 @@
       "$defs": {
         "CombinedFinding": {
           "additionalProperties": false,
-          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_criticals` proves that no reviewer's Critical was dropped during\nsynthesis, and how a reader gets from a combined row back to who said it.",
+          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_serious` proves that no reviewer's Critical or Important was dropped\nduring synthesis, and how a reader gets from a combined row back to who said it.",
           "properties": {
             "problem": {
               "maxLength": 5000,
@@ -3739,6 +3899,23 @@
               "default": "",
               "maxLength": 5000,
               "title": "Proposed Action",
+              "type": "string"
+            },
+            "disposition": {
+              "default": "open",
+              "enum": [
+                "open",
+                "fixed",
+                "rejected",
+                "accepted_risk"
+              ],
+              "title": "Disposition",
+              "type": "string"
+            },
+            "disposition_reason": {
+              "default": "",
+              "maxLength": 5000,
+              "title": "Disposition Reason",
               "type": "string"
             }
           },
@@ -3853,7 +4030,7 @@
       "$defs": {
         "CombinedFinding": {
           "additionalProperties": false,
-          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_criticals` proves that no reviewer's Critical was dropped during\nsynthesis, and how a reader gets from a combined row back to who said it.",
+          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_serious` proves that no reviewer's Critical or Important was dropped\nduring synthesis, and how a reader gets from a combined row back to who said it.",
           "properties": {
             "problem": {
               "maxLength": 5000,
@@ -3905,6 +4082,23 @@
               "default": "",
               "maxLength": 5000,
               "title": "Proposed Action",
+              "type": "string"
+            },
+            "disposition": {
+              "default": "open",
+              "enum": [
+                "open",
+                "fixed",
+                "rejected",
+                "accepted_risk"
+              ],
+              "title": "Disposition",
+              "type": "string"
+            },
+            "disposition_reason": {
+              "default": "",
+              "maxLength": 5000,
+              "title": "Disposition Reason",
               "type": "string"
             }
           },
@@ -3966,6 +4160,7 @@
             "session_not_found",
             "session_busy",
             "session_target_mismatch",
+            "workflow_owned_session",
             "protocol_validation_failed",
             "web_search_unavailable",
             "transport_error",
@@ -4515,7 +4710,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -4772,7 +4968,7 @@
       "$defs": {
         "CombinedFinding": {
           "additionalProperties": false,
-          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_criticals` proves that no reviewer's Critical was dropped during\nsynthesis, and how a reader gets from a combined row back to who said it.",
+          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_serious` proves that no reviewer's Critical or Important was dropped\nduring synthesis, and how a reader gets from a combined row back to who said it.",
           "properties": {
             "problem": {
               "maxLength": 5000,
@@ -4824,6 +5020,23 @@
               "default": "",
               "maxLength": 5000,
               "title": "Proposed Action",
+              "type": "string"
+            },
+            "disposition": {
+              "default": "open",
+              "enum": [
+                "open",
+                "fixed",
+                "rejected",
+                "accepted_risk"
+              ],
+              "title": "Disposition",
+              "type": "string"
+            },
+            "disposition_reason": {
+              "default": "",
+              "maxLength": 5000,
+              "title": "Disposition Reason",
               "type": "string"
             }
           },
@@ -4885,6 +5098,7 @@
             "session_not_found",
             "session_busy",
             "session_target_mismatch",
+            "workflow_owned_session",
             "protocol_validation_failed",
             "web_search_unavailable",
             "transport_error",
@@ -5434,7 +5648,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -5707,7 +5922,7 @@
       "$defs": {
         "CombinedFinding": {
           "additionalProperties": false,
-          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_criticals` proves that no reviewer's Critical was dropped during\nsynthesis, and how a reader gets from a combined row back to who said it.",
+          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_serious` proves that no reviewer's Critical or Important was dropped\nduring synthesis, and how a reader gets from a combined row back to who said it.",
           "properties": {
             "problem": {
               "maxLength": 5000,
@@ -5759,6 +5974,23 @@
               "default": "",
               "maxLength": 5000,
               "title": "Proposed Action",
+              "type": "string"
+            },
+            "disposition": {
+              "default": "open",
+              "enum": [
+                "open",
+                "fixed",
+                "rejected",
+                "accepted_risk"
+              ],
+              "title": "Disposition",
+              "type": "string"
+            },
+            "disposition_reason": {
+              "default": "",
+              "maxLength": 5000,
+              "title": "Disposition Reason",
               "type": "string"
             }
           },
@@ -5820,6 +6052,7 @@
             "session_not_found",
             "session_busy",
             "session_target_mismatch",
+            "workflow_owned_session",
             "protocol_validation_failed",
             "web_search_unavailable",
             "transport_error",
@@ -6369,7 +6602,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -6618,7 +6852,7 @@
       "$defs": {
         "CombinedFinding": {
           "additionalProperties": false,
-          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_criticals` proves that no reviewer's Critical was dropped during\nsynthesis, and how a reader gets from a combined row back to who said it.",
+          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_serious` proves that no reviewer's Critical or Important was dropped\nduring synthesis, and how a reader gets from a combined row back to who said it.",
           "properties": {
             "problem": {
               "maxLength": 5000,
@@ -6670,6 +6904,23 @@
               "default": "",
               "maxLength": 5000,
               "title": "Proposed Action",
+              "type": "string"
+            },
+            "disposition": {
+              "default": "open",
+              "enum": [
+                "open",
+                "fixed",
+                "rejected",
+                "accepted_risk"
+              ],
+              "title": "Disposition",
+              "type": "string"
+            },
+            "disposition_reason": {
+              "default": "",
+              "maxLength": 5000,
+              "title": "Disposition Reason",
               "type": "string"
             }
           },
@@ -6731,6 +6982,7 @@
             "session_not_found",
             "session_busy",
             "session_target_mismatch",
+            "workflow_owned_session",
             "protocol_validation_failed",
             "web_search_unavailable",
             "transport_error",
@@ -7280,7 +7532,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -7546,7 +7799,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -7634,7 +7888,8 @@
           "enum": [
             "codex",
             "claude",
-            "antigravity"
+            "antigravity",
+            "opencode"
           ],
           "title": "Host Runtime",
           "type": "string"
@@ -7674,7 +7929,7 @@
       "$defs": {
         "CombinedFinding": {
           "additionalProperties": false,
-          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_criticals` proves that no reviewer's Critical was dropped during\nsynthesis, and how a reader gets from a combined row back to who said it.",
+          "description": "One row of the host AI's synthesis.\n\n`source_finding_ids` is load-bearing, not bookkeeping: it is how\n`missing_serious` proves that no reviewer's Critical or Important was dropped\nduring synthesis, and how a reader gets from a combined row back to who said it.",
           "properties": {
             "problem": {
               "maxLength": 5000,
@@ -7726,6 +7981,23 @@
               "default": "",
               "maxLength": 5000,
               "title": "Proposed Action",
+              "type": "string"
+            },
+            "disposition": {
+              "default": "open",
+              "enum": [
+                "open",
+                "fixed",
+                "rejected",
+                "accepted_risk"
+              ],
+              "title": "Disposition",
+              "type": "string"
+            },
+            "disposition_reason": {
+              "default": "",
+              "maxLength": 5000,
+              "title": "Disposition Reason",
               "type": "string"
             }
           },
@@ -7787,6 +8059,7 @@
             "session_not_found",
             "session_busy",
             "session_target_mismatch",
+            "workflow_owned_session",
             "protocol_validation_failed",
             "web_search_unavailable",
             "transport_error",
@@ -8336,7 +8609,8 @@
               "enum": [
                 "codex",
                 "claude",
-                "antigravity"
+                "antigravity",
+                "opencode"
               ],
               "title": "Runtime",
               "type": "string"
@@ -8777,6 +9051,5418 @@
         "deleted"
       ],
       "title": "DeletionResult",
+      "type": "object"
+    }
+  },
+  "orchestrator_workflow_start": {
+    "input_schema": {
+      "$defs": {
+        "StepBinding": {
+          "additionalProperties": false,
+          "description": "Which worker takes one step, and how.\n\nThree shapes, and the validator refuses the mixtures:\n  * `{executor: host}`            -- the host does it\n  * `{agent: x, execution: patch}` -- that agent, that mode\n  * `{agents: [x, y]}`             -- review only\nAn `agent:` left out with `executor: agent` means `auto`: routed by score.",
+          "properties": {
+            "executor": {
+              "default": "agent",
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "agent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent"
+            },
+            "agents": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agents"
+            },
+            "execution": {
+              "default": "consultation",
+              "enum": [
+                "consultation",
+                "patch",
+                "isolated_write"
+              ],
+              "title": "Execution",
+              "type": "string"
+            }
+          },
+          "title": "StepBinding",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "goal": {
+          "title": "Goal",
+          "type": "string"
+        },
+        "workdir": {
+          "title": "Workdir",
+          "type": "string"
+        },
+        "web": {
+          "default": false,
+          "title": "Web",
+          "type": "boolean"
+        },
+        "bindings": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/StepBinding"
+              },
+              "propertyNames": {
+                "enum": [
+                  "research",
+                  "plan",
+                  "author_execution_prompt",
+                  "implement",
+                  "apply_patch",
+                  "test",
+                  "review",
+                  "synthesize",
+                  "fix"
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bindings"
+        },
+        "allow_dirty": {
+          "default": false,
+          "title": "Allow Dirty",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "goal",
+        "workdir"
+      ],
+      "title": "workflow_startArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AgentRef": {
+          "additionalProperties": false,
+          "description": "An agent as the workflow recorded it, not as the config reads today.",
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            }
+          },
+          "required": [
+            "agent_id",
+            "runtime",
+            "model"
+          ],
+          "title": "AgentRef",
+          "type": "object"
+        },
+        "ConsultError": {
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ConsultErrorCode"
+            },
+            "message": {
+              "maxLength": 500,
+              "title": "Message",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "required_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequiredAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ConsultError",
+          "type": "object"
+        },
+        "ConsultErrorCode": {
+          "description": "Closed set, so callers branch on a value instead of matching substrings.",
+          "enum": [
+            "agent_not_installed",
+            "connection_required",
+            "configured_model_unavailable",
+            "agent_unavailable",
+            "session_not_found",
+            "session_busy",
+            "session_target_mismatch",
+            "workflow_owned_session",
+            "protocol_validation_failed",
+            "web_search_unavailable",
+            "transport_error",
+            "not_started",
+            "timeout",
+            "invalid_request",
+            "no_agent_available"
+          ],
+          "title": "ConsultErrorCode",
+          "type": "string"
+        },
+        "RequiredAction": {
+          "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
+          "properties": {
+            "command": {
+              "title": "Command",
+              "type": "string"
+            },
+            "retry_after_connection": {
+              "default": true,
+              "title": "Retry After Connection",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "title": "RequiredAction",
+          "type": "object"
+        },
+        "StepPreview": {
+          "additionalProperties": false,
+          "description": "What `plan_step` approved: who it goes to and what it would carry.\n\n`confirm_token` is shown once and spent once, and it proves that what runs is\nwhat this preview described -- snapshot integrity, not that a human read it.",
+          "properties": {
+            "step_id": {
+              "default": "",
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "research",
+                    "plan",
+                    "author_execution_prompt",
+                    "implement",
+                    "apply_patch",
+                    "test",
+                    "review",
+                    "synthesize",
+                    "fix"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Step"
+            },
+            "executor": {
+              "default": "host",
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "default": "active_tree",
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "capability": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "coding",
+                    "research",
+                    "writing",
+                    "reasoning",
+                    "review",
+                    "planning",
+                    "prompt_authoring",
+                    "testing",
+                    "synthesis"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Capability"
+            },
+            "agents": {
+              "items": {
+                "$ref": "#/$defs/AgentRef"
+              },
+              "title": "Agents",
+              "type": "array"
+            },
+            "web": {
+              "default": false,
+              "title": "Web",
+              "type": "boolean"
+            },
+            "inputs": {
+              "items": {
+                "enum": [
+                  "research_brief",
+                  "implementation_plan",
+                  "execution_brief",
+                  "code_change",
+                  "test_report",
+                  "review_outcome",
+                  "synthesis",
+                  "open_findings"
+                ],
+                "type": "string"
+              },
+              "title": "Inputs",
+              "type": "array"
+            },
+            "prompt_chars": {
+              "default": 0,
+              "title": "Prompt Chars",
+              "type": "integer"
+            },
+            "prompt_sha256": {
+              "default": "",
+              "title": "Prompt Sha256",
+              "type": "string"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "confirm_token": {
+              "title": "Confirm Token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm_token"
+          ],
+          "title": "StepPreview",
+          "type": "object"
+        },
+        "StepView": {
+          "additionalProperties": false,
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "properties": {
+            "step_id": {
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "enum": [
+                "research",
+                "plan",
+                "author_execution_prompt",
+                "implement",
+                "apply_patch",
+                "test",
+                "review",
+                "synthesize",
+                "fix"
+              ],
+              "title": "Step",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "planned",
+                "running",
+                "done",
+                "failed",
+                "abandoned",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "executor": {
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "round_index": {
+              "default": 0,
+              "title": "Round Index",
+              "type": "integer"
+            },
+            "attempt": {
+              "default": 1,
+              "title": "Attempt",
+              "type": "integer"
+            },
+            "sequence": {
+              "default": 0,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "reported_by": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "host",
+                    "orchestrator"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reported By"
+            },
+            "raw_patch_sha256": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Patch Sha256"
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output"
+            }
+          },
+          "required": [
+            "step_id",
+            "step",
+            "status",
+            "executor",
+            "repository_access"
+          ],
+          "title": "StepView",
+          "type": "object"
+        },
+        "WorkflowView": {
+          "additionalProperties": false,
+          "properties": {
+            "workflow_id": {
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "created",
+                "researching",
+                "planning",
+                "prompt_ready",
+                "coding",
+                "awaiting_host_apply",
+                "testing",
+                "reviewing",
+                "synthesizing",
+                "fixing",
+                "completed",
+                "needs_attention",
+                "failed",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "goal": {
+              "title": "Goal",
+              "type": "string"
+            },
+            "workdir": {
+              "title": "Workdir",
+              "type": "string"
+            },
+            "fix_rounds": {
+              "default": 0,
+              "title": "Fix Rounds",
+              "type": "integer"
+            },
+            "max_fix_rounds": {
+              "default": 0,
+              "title": "Max Fix Rounds",
+              "type": "integer"
+            },
+            "baseline_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Baseline Commit"
+            },
+            "result_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Commit"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason"
+            },
+            "bindings": {
+              "additionalProperties": true,
+              "title": "Bindings",
+              "type": "object"
+            },
+            "steps": {
+              "items": {
+                "$ref": "#/$defs/StepView"
+              },
+              "title": "Steps",
+              "type": "array"
+            },
+            "next_steps": {
+              "items": {
+                "enum": [
+                  "research",
+                  "plan",
+                  "author_execution_prompt",
+                  "implement",
+                  "apply_patch",
+                  "test",
+                  "review",
+                  "synthesize",
+                  "fix"
+                ],
+                "type": "string"
+              },
+              "title": "Next Steps",
+              "type": "array"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "status",
+            "goal",
+            "workdir"
+          ],
+          "title": "WorkflowView",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "created",
+            "researching",
+            "planning",
+            "prompt_ready",
+            "coding",
+            "awaiting_host_apply",
+            "testing",
+            "reviewing",
+            "synthesizing",
+            "fixing",
+            "completed",
+            "needs_attention",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "workflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepPreview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "step": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "patch": {
+          "default": "",
+          "title": "Patch",
+          "type": "string"
+        },
+        "latency_ms": {
+          "default": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsultError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "workflow_id",
+        "status"
+      ],
+      "title": "WorkflowResponse",
+      "type": "object"
+    }
+  },
+  "orchestrator_workflow_plan_step": {
+    "input_schema": {
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "step": {
+          "enum": [
+            "research",
+            "plan",
+            "author_execution_prompt",
+            "implement",
+            "apply_patch",
+            "test",
+            "review",
+            "synthesize",
+            "fix"
+          ],
+          "title": "Step",
+          "type": "string"
+        },
+        "context": {
+          "default": "",
+          "title": "Context",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_id",
+        "step"
+      ],
+      "title": "workflow_plan_stepArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AgentRef": {
+          "additionalProperties": false,
+          "description": "An agent as the workflow recorded it, not as the config reads today.",
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            }
+          },
+          "required": [
+            "agent_id",
+            "runtime",
+            "model"
+          ],
+          "title": "AgentRef",
+          "type": "object"
+        },
+        "ConsultError": {
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ConsultErrorCode"
+            },
+            "message": {
+              "maxLength": 500,
+              "title": "Message",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "required_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequiredAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ConsultError",
+          "type": "object"
+        },
+        "ConsultErrorCode": {
+          "description": "Closed set, so callers branch on a value instead of matching substrings.",
+          "enum": [
+            "agent_not_installed",
+            "connection_required",
+            "configured_model_unavailable",
+            "agent_unavailable",
+            "session_not_found",
+            "session_busy",
+            "session_target_mismatch",
+            "workflow_owned_session",
+            "protocol_validation_failed",
+            "web_search_unavailable",
+            "transport_error",
+            "not_started",
+            "timeout",
+            "invalid_request",
+            "no_agent_available"
+          ],
+          "title": "ConsultErrorCode",
+          "type": "string"
+        },
+        "RequiredAction": {
+          "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
+          "properties": {
+            "command": {
+              "title": "Command",
+              "type": "string"
+            },
+            "retry_after_connection": {
+              "default": true,
+              "title": "Retry After Connection",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "title": "RequiredAction",
+          "type": "object"
+        },
+        "StepPreview": {
+          "additionalProperties": false,
+          "description": "What `plan_step` approved: who it goes to and what it would carry.\n\n`confirm_token` is shown once and spent once, and it proves that what runs is\nwhat this preview described -- snapshot integrity, not that a human read it.",
+          "properties": {
+            "step_id": {
+              "default": "",
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "research",
+                    "plan",
+                    "author_execution_prompt",
+                    "implement",
+                    "apply_patch",
+                    "test",
+                    "review",
+                    "synthesize",
+                    "fix"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Step"
+            },
+            "executor": {
+              "default": "host",
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "default": "active_tree",
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "capability": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "coding",
+                    "research",
+                    "writing",
+                    "reasoning",
+                    "review",
+                    "planning",
+                    "prompt_authoring",
+                    "testing",
+                    "synthesis"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Capability"
+            },
+            "agents": {
+              "items": {
+                "$ref": "#/$defs/AgentRef"
+              },
+              "title": "Agents",
+              "type": "array"
+            },
+            "web": {
+              "default": false,
+              "title": "Web",
+              "type": "boolean"
+            },
+            "inputs": {
+              "items": {
+                "enum": [
+                  "research_brief",
+                  "implementation_plan",
+                  "execution_brief",
+                  "code_change",
+                  "test_report",
+                  "review_outcome",
+                  "synthesis",
+                  "open_findings"
+                ],
+                "type": "string"
+              },
+              "title": "Inputs",
+              "type": "array"
+            },
+            "prompt_chars": {
+              "default": 0,
+              "title": "Prompt Chars",
+              "type": "integer"
+            },
+            "prompt_sha256": {
+              "default": "",
+              "title": "Prompt Sha256",
+              "type": "string"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "confirm_token": {
+              "title": "Confirm Token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm_token"
+          ],
+          "title": "StepPreview",
+          "type": "object"
+        },
+        "StepView": {
+          "additionalProperties": false,
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "properties": {
+            "step_id": {
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "enum": [
+                "research",
+                "plan",
+                "author_execution_prompt",
+                "implement",
+                "apply_patch",
+                "test",
+                "review",
+                "synthesize",
+                "fix"
+              ],
+              "title": "Step",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "planned",
+                "running",
+                "done",
+                "failed",
+                "abandoned",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "executor": {
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "round_index": {
+              "default": 0,
+              "title": "Round Index",
+              "type": "integer"
+            },
+            "attempt": {
+              "default": 1,
+              "title": "Attempt",
+              "type": "integer"
+            },
+            "sequence": {
+              "default": 0,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "reported_by": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "host",
+                    "orchestrator"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reported By"
+            },
+            "raw_patch_sha256": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Patch Sha256"
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output"
+            }
+          },
+          "required": [
+            "step_id",
+            "step",
+            "status",
+            "executor",
+            "repository_access"
+          ],
+          "title": "StepView",
+          "type": "object"
+        },
+        "WorkflowView": {
+          "additionalProperties": false,
+          "properties": {
+            "workflow_id": {
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "created",
+                "researching",
+                "planning",
+                "prompt_ready",
+                "coding",
+                "awaiting_host_apply",
+                "testing",
+                "reviewing",
+                "synthesizing",
+                "fixing",
+                "completed",
+                "needs_attention",
+                "failed",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "goal": {
+              "title": "Goal",
+              "type": "string"
+            },
+            "workdir": {
+              "title": "Workdir",
+              "type": "string"
+            },
+            "fix_rounds": {
+              "default": 0,
+              "title": "Fix Rounds",
+              "type": "integer"
+            },
+            "max_fix_rounds": {
+              "default": 0,
+              "title": "Max Fix Rounds",
+              "type": "integer"
+            },
+            "baseline_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Baseline Commit"
+            },
+            "result_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Commit"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason"
+            },
+            "bindings": {
+              "additionalProperties": true,
+              "title": "Bindings",
+              "type": "object"
+            },
+            "steps": {
+              "items": {
+                "$ref": "#/$defs/StepView"
+              },
+              "title": "Steps",
+              "type": "array"
+            },
+            "next_steps": {
+              "items": {
+                "enum": [
+                  "research",
+                  "plan",
+                  "author_execution_prompt",
+                  "implement",
+                  "apply_patch",
+                  "test",
+                  "review",
+                  "synthesize",
+                  "fix"
+                ],
+                "type": "string"
+              },
+              "title": "Next Steps",
+              "type": "array"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "status",
+            "goal",
+            "workdir"
+          ],
+          "title": "WorkflowView",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "created",
+            "researching",
+            "planning",
+            "prompt_ready",
+            "coding",
+            "awaiting_host_apply",
+            "testing",
+            "reviewing",
+            "synthesizing",
+            "fixing",
+            "completed",
+            "needs_attention",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "workflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepPreview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "step": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "patch": {
+          "default": "",
+          "title": "Patch",
+          "type": "string"
+        },
+        "latency_ms": {
+          "default": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsultError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "workflow_id",
+        "status"
+      ],
+      "title": "WorkflowResponse",
+      "type": "object"
+    }
+  },
+  "orchestrator_workflow_run_step": {
+    "input_schema": {
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "step_id": {
+          "title": "Step Id",
+          "type": "string"
+        },
+        "confirm_token": {
+          "title": "Confirm Token",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_id",
+        "step_id",
+        "confirm_token"
+      ],
+      "title": "workflow_run_stepArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AgentRef": {
+          "additionalProperties": false,
+          "description": "An agent as the workflow recorded it, not as the config reads today.",
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            }
+          },
+          "required": [
+            "agent_id",
+            "runtime",
+            "model"
+          ],
+          "title": "AgentRef",
+          "type": "object"
+        },
+        "ConsultError": {
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ConsultErrorCode"
+            },
+            "message": {
+              "maxLength": 500,
+              "title": "Message",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "required_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequiredAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ConsultError",
+          "type": "object"
+        },
+        "ConsultErrorCode": {
+          "description": "Closed set, so callers branch on a value instead of matching substrings.",
+          "enum": [
+            "agent_not_installed",
+            "connection_required",
+            "configured_model_unavailable",
+            "agent_unavailable",
+            "session_not_found",
+            "session_busy",
+            "session_target_mismatch",
+            "workflow_owned_session",
+            "protocol_validation_failed",
+            "web_search_unavailable",
+            "transport_error",
+            "not_started",
+            "timeout",
+            "invalid_request",
+            "no_agent_available"
+          ],
+          "title": "ConsultErrorCode",
+          "type": "string"
+        },
+        "RequiredAction": {
+          "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
+          "properties": {
+            "command": {
+              "title": "Command",
+              "type": "string"
+            },
+            "retry_after_connection": {
+              "default": true,
+              "title": "Retry After Connection",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "title": "RequiredAction",
+          "type": "object"
+        },
+        "StepPreview": {
+          "additionalProperties": false,
+          "description": "What `plan_step` approved: who it goes to and what it would carry.\n\n`confirm_token` is shown once and spent once, and it proves that what runs is\nwhat this preview described -- snapshot integrity, not that a human read it.",
+          "properties": {
+            "step_id": {
+              "default": "",
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "research",
+                    "plan",
+                    "author_execution_prompt",
+                    "implement",
+                    "apply_patch",
+                    "test",
+                    "review",
+                    "synthesize",
+                    "fix"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Step"
+            },
+            "executor": {
+              "default": "host",
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "default": "active_tree",
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "capability": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "coding",
+                    "research",
+                    "writing",
+                    "reasoning",
+                    "review",
+                    "planning",
+                    "prompt_authoring",
+                    "testing",
+                    "synthesis"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Capability"
+            },
+            "agents": {
+              "items": {
+                "$ref": "#/$defs/AgentRef"
+              },
+              "title": "Agents",
+              "type": "array"
+            },
+            "web": {
+              "default": false,
+              "title": "Web",
+              "type": "boolean"
+            },
+            "inputs": {
+              "items": {
+                "enum": [
+                  "research_brief",
+                  "implementation_plan",
+                  "execution_brief",
+                  "code_change",
+                  "test_report",
+                  "review_outcome",
+                  "synthesis",
+                  "open_findings"
+                ],
+                "type": "string"
+              },
+              "title": "Inputs",
+              "type": "array"
+            },
+            "prompt_chars": {
+              "default": 0,
+              "title": "Prompt Chars",
+              "type": "integer"
+            },
+            "prompt_sha256": {
+              "default": "",
+              "title": "Prompt Sha256",
+              "type": "string"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "confirm_token": {
+              "title": "Confirm Token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm_token"
+          ],
+          "title": "StepPreview",
+          "type": "object"
+        },
+        "StepView": {
+          "additionalProperties": false,
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "properties": {
+            "step_id": {
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "enum": [
+                "research",
+                "plan",
+                "author_execution_prompt",
+                "implement",
+                "apply_patch",
+                "test",
+                "review",
+                "synthesize",
+                "fix"
+              ],
+              "title": "Step",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "planned",
+                "running",
+                "done",
+                "failed",
+                "abandoned",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "executor": {
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "round_index": {
+              "default": 0,
+              "title": "Round Index",
+              "type": "integer"
+            },
+            "attempt": {
+              "default": 1,
+              "title": "Attempt",
+              "type": "integer"
+            },
+            "sequence": {
+              "default": 0,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "reported_by": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "host",
+                    "orchestrator"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reported By"
+            },
+            "raw_patch_sha256": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Patch Sha256"
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output"
+            }
+          },
+          "required": [
+            "step_id",
+            "step",
+            "status",
+            "executor",
+            "repository_access"
+          ],
+          "title": "StepView",
+          "type": "object"
+        },
+        "WorkflowView": {
+          "additionalProperties": false,
+          "properties": {
+            "workflow_id": {
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "created",
+                "researching",
+                "planning",
+                "prompt_ready",
+                "coding",
+                "awaiting_host_apply",
+                "testing",
+                "reviewing",
+                "synthesizing",
+                "fixing",
+                "completed",
+                "needs_attention",
+                "failed",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "goal": {
+              "title": "Goal",
+              "type": "string"
+            },
+            "workdir": {
+              "title": "Workdir",
+              "type": "string"
+            },
+            "fix_rounds": {
+              "default": 0,
+              "title": "Fix Rounds",
+              "type": "integer"
+            },
+            "max_fix_rounds": {
+              "default": 0,
+              "title": "Max Fix Rounds",
+              "type": "integer"
+            },
+            "baseline_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Baseline Commit"
+            },
+            "result_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Commit"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason"
+            },
+            "bindings": {
+              "additionalProperties": true,
+              "title": "Bindings",
+              "type": "object"
+            },
+            "steps": {
+              "items": {
+                "$ref": "#/$defs/StepView"
+              },
+              "title": "Steps",
+              "type": "array"
+            },
+            "next_steps": {
+              "items": {
+                "enum": [
+                  "research",
+                  "plan",
+                  "author_execution_prompt",
+                  "implement",
+                  "apply_patch",
+                  "test",
+                  "review",
+                  "synthesize",
+                  "fix"
+                ],
+                "type": "string"
+              },
+              "title": "Next Steps",
+              "type": "array"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "status",
+            "goal",
+            "workdir"
+          ],
+          "title": "WorkflowView",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "created",
+            "researching",
+            "planning",
+            "prompt_ready",
+            "coding",
+            "awaiting_host_apply",
+            "testing",
+            "reviewing",
+            "synthesizing",
+            "fixing",
+            "completed",
+            "needs_attention",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "workflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepPreview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "step": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "patch": {
+          "default": "",
+          "title": "Patch",
+          "type": "string"
+        },
+        "latency_ms": {
+          "default": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsultError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "workflow_id",
+        "status"
+      ],
+      "title": "WorkflowResponse",
+      "type": "object"
+    }
+  },
+  "orchestrator_workflow_record_host_step": {
+    "input_schema": {
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "step_id": {
+          "title": "Step Id",
+          "type": "string"
+        },
+        "confirm_token": {
+          "title": "Confirm Token",
+          "type": "string"
+        },
+        "result": {
+          "additionalProperties": true,
+          "title": "Result",
+          "type": "object"
+        }
+      },
+      "required": [
+        "workflow_id",
+        "step_id",
+        "confirm_token",
+        "result"
+      ],
+      "title": "workflow_record_host_stepArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AgentRef": {
+          "additionalProperties": false,
+          "description": "An agent as the workflow recorded it, not as the config reads today.",
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            }
+          },
+          "required": [
+            "agent_id",
+            "runtime",
+            "model"
+          ],
+          "title": "AgentRef",
+          "type": "object"
+        },
+        "ConsultError": {
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ConsultErrorCode"
+            },
+            "message": {
+              "maxLength": 500,
+              "title": "Message",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "required_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequiredAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ConsultError",
+          "type": "object"
+        },
+        "ConsultErrorCode": {
+          "description": "Closed set, so callers branch on a value instead of matching substrings.",
+          "enum": [
+            "agent_not_installed",
+            "connection_required",
+            "configured_model_unavailable",
+            "agent_unavailable",
+            "session_not_found",
+            "session_busy",
+            "session_target_mismatch",
+            "workflow_owned_session",
+            "protocol_validation_failed",
+            "web_search_unavailable",
+            "transport_error",
+            "not_started",
+            "timeout",
+            "invalid_request",
+            "no_agent_available"
+          ],
+          "title": "ConsultErrorCode",
+          "type": "string"
+        },
+        "RequiredAction": {
+          "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
+          "properties": {
+            "command": {
+              "title": "Command",
+              "type": "string"
+            },
+            "retry_after_connection": {
+              "default": true,
+              "title": "Retry After Connection",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "title": "RequiredAction",
+          "type": "object"
+        },
+        "StepPreview": {
+          "additionalProperties": false,
+          "description": "What `plan_step` approved: who it goes to and what it would carry.\n\n`confirm_token` is shown once and spent once, and it proves that what runs is\nwhat this preview described -- snapshot integrity, not that a human read it.",
+          "properties": {
+            "step_id": {
+              "default": "",
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "research",
+                    "plan",
+                    "author_execution_prompt",
+                    "implement",
+                    "apply_patch",
+                    "test",
+                    "review",
+                    "synthesize",
+                    "fix"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Step"
+            },
+            "executor": {
+              "default": "host",
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "default": "active_tree",
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "capability": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "coding",
+                    "research",
+                    "writing",
+                    "reasoning",
+                    "review",
+                    "planning",
+                    "prompt_authoring",
+                    "testing",
+                    "synthesis"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Capability"
+            },
+            "agents": {
+              "items": {
+                "$ref": "#/$defs/AgentRef"
+              },
+              "title": "Agents",
+              "type": "array"
+            },
+            "web": {
+              "default": false,
+              "title": "Web",
+              "type": "boolean"
+            },
+            "inputs": {
+              "items": {
+                "enum": [
+                  "research_brief",
+                  "implementation_plan",
+                  "execution_brief",
+                  "code_change",
+                  "test_report",
+                  "review_outcome",
+                  "synthesis",
+                  "open_findings"
+                ],
+                "type": "string"
+              },
+              "title": "Inputs",
+              "type": "array"
+            },
+            "prompt_chars": {
+              "default": 0,
+              "title": "Prompt Chars",
+              "type": "integer"
+            },
+            "prompt_sha256": {
+              "default": "",
+              "title": "Prompt Sha256",
+              "type": "string"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "confirm_token": {
+              "title": "Confirm Token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm_token"
+          ],
+          "title": "StepPreview",
+          "type": "object"
+        },
+        "StepView": {
+          "additionalProperties": false,
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "properties": {
+            "step_id": {
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "enum": [
+                "research",
+                "plan",
+                "author_execution_prompt",
+                "implement",
+                "apply_patch",
+                "test",
+                "review",
+                "synthesize",
+                "fix"
+              ],
+              "title": "Step",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "planned",
+                "running",
+                "done",
+                "failed",
+                "abandoned",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "executor": {
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "round_index": {
+              "default": 0,
+              "title": "Round Index",
+              "type": "integer"
+            },
+            "attempt": {
+              "default": 1,
+              "title": "Attempt",
+              "type": "integer"
+            },
+            "sequence": {
+              "default": 0,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "reported_by": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "host",
+                    "orchestrator"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reported By"
+            },
+            "raw_patch_sha256": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Patch Sha256"
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output"
+            }
+          },
+          "required": [
+            "step_id",
+            "step",
+            "status",
+            "executor",
+            "repository_access"
+          ],
+          "title": "StepView",
+          "type": "object"
+        },
+        "WorkflowView": {
+          "additionalProperties": false,
+          "properties": {
+            "workflow_id": {
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "created",
+                "researching",
+                "planning",
+                "prompt_ready",
+                "coding",
+                "awaiting_host_apply",
+                "testing",
+                "reviewing",
+                "synthesizing",
+                "fixing",
+                "completed",
+                "needs_attention",
+                "failed",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "goal": {
+              "title": "Goal",
+              "type": "string"
+            },
+            "workdir": {
+              "title": "Workdir",
+              "type": "string"
+            },
+            "fix_rounds": {
+              "default": 0,
+              "title": "Fix Rounds",
+              "type": "integer"
+            },
+            "max_fix_rounds": {
+              "default": 0,
+              "title": "Max Fix Rounds",
+              "type": "integer"
+            },
+            "baseline_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Baseline Commit"
+            },
+            "result_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Commit"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason"
+            },
+            "bindings": {
+              "additionalProperties": true,
+              "title": "Bindings",
+              "type": "object"
+            },
+            "steps": {
+              "items": {
+                "$ref": "#/$defs/StepView"
+              },
+              "title": "Steps",
+              "type": "array"
+            },
+            "next_steps": {
+              "items": {
+                "enum": [
+                  "research",
+                  "plan",
+                  "author_execution_prompt",
+                  "implement",
+                  "apply_patch",
+                  "test",
+                  "review",
+                  "synthesize",
+                  "fix"
+                ],
+                "type": "string"
+              },
+              "title": "Next Steps",
+              "type": "array"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "status",
+            "goal",
+            "workdir"
+          ],
+          "title": "WorkflowView",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "created",
+            "researching",
+            "planning",
+            "prompt_ready",
+            "coding",
+            "awaiting_host_apply",
+            "testing",
+            "reviewing",
+            "synthesizing",
+            "fixing",
+            "completed",
+            "needs_attention",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "workflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepPreview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "step": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "patch": {
+          "default": "",
+          "title": "Patch",
+          "type": "string"
+        },
+        "latency_ms": {
+          "default": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsultError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "workflow_id",
+        "status"
+      ],
+      "title": "WorkflowResponse",
+      "type": "object"
+    }
+  },
+  "orchestrator_workflow_status": {
+    "input_schema": {
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_id"
+      ],
+      "title": "workflow_statusArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AgentRef": {
+          "additionalProperties": false,
+          "description": "An agent as the workflow recorded it, not as the config reads today.",
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            }
+          },
+          "required": [
+            "agent_id",
+            "runtime",
+            "model"
+          ],
+          "title": "AgentRef",
+          "type": "object"
+        },
+        "ConsultError": {
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ConsultErrorCode"
+            },
+            "message": {
+              "maxLength": 500,
+              "title": "Message",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "required_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequiredAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ConsultError",
+          "type": "object"
+        },
+        "ConsultErrorCode": {
+          "description": "Closed set, so callers branch on a value instead of matching substrings.",
+          "enum": [
+            "agent_not_installed",
+            "connection_required",
+            "configured_model_unavailable",
+            "agent_unavailable",
+            "session_not_found",
+            "session_busy",
+            "session_target_mismatch",
+            "workflow_owned_session",
+            "protocol_validation_failed",
+            "web_search_unavailable",
+            "transport_error",
+            "not_started",
+            "timeout",
+            "invalid_request",
+            "no_agent_available"
+          ],
+          "title": "ConsultErrorCode",
+          "type": "string"
+        },
+        "RequiredAction": {
+          "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
+          "properties": {
+            "command": {
+              "title": "Command",
+              "type": "string"
+            },
+            "retry_after_connection": {
+              "default": true,
+              "title": "Retry After Connection",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "title": "RequiredAction",
+          "type": "object"
+        },
+        "StepPreview": {
+          "additionalProperties": false,
+          "description": "What `plan_step` approved: who it goes to and what it would carry.\n\n`confirm_token` is shown once and spent once, and it proves that what runs is\nwhat this preview described -- snapshot integrity, not that a human read it.",
+          "properties": {
+            "step_id": {
+              "default": "",
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "research",
+                    "plan",
+                    "author_execution_prompt",
+                    "implement",
+                    "apply_patch",
+                    "test",
+                    "review",
+                    "synthesize",
+                    "fix"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Step"
+            },
+            "executor": {
+              "default": "host",
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "default": "active_tree",
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "capability": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "coding",
+                    "research",
+                    "writing",
+                    "reasoning",
+                    "review",
+                    "planning",
+                    "prompt_authoring",
+                    "testing",
+                    "synthesis"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Capability"
+            },
+            "agents": {
+              "items": {
+                "$ref": "#/$defs/AgentRef"
+              },
+              "title": "Agents",
+              "type": "array"
+            },
+            "web": {
+              "default": false,
+              "title": "Web",
+              "type": "boolean"
+            },
+            "inputs": {
+              "items": {
+                "enum": [
+                  "research_brief",
+                  "implementation_plan",
+                  "execution_brief",
+                  "code_change",
+                  "test_report",
+                  "review_outcome",
+                  "synthesis",
+                  "open_findings"
+                ],
+                "type": "string"
+              },
+              "title": "Inputs",
+              "type": "array"
+            },
+            "prompt_chars": {
+              "default": 0,
+              "title": "Prompt Chars",
+              "type": "integer"
+            },
+            "prompt_sha256": {
+              "default": "",
+              "title": "Prompt Sha256",
+              "type": "string"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "confirm_token": {
+              "title": "Confirm Token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm_token"
+          ],
+          "title": "StepPreview",
+          "type": "object"
+        },
+        "StepView": {
+          "additionalProperties": false,
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "properties": {
+            "step_id": {
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "enum": [
+                "research",
+                "plan",
+                "author_execution_prompt",
+                "implement",
+                "apply_patch",
+                "test",
+                "review",
+                "synthesize",
+                "fix"
+              ],
+              "title": "Step",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "planned",
+                "running",
+                "done",
+                "failed",
+                "abandoned",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "executor": {
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "round_index": {
+              "default": 0,
+              "title": "Round Index",
+              "type": "integer"
+            },
+            "attempt": {
+              "default": 1,
+              "title": "Attempt",
+              "type": "integer"
+            },
+            "sequence": {
+              "default": 0,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "reported_by": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "host",
+                    "orchestrator"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reported By"
+            },
+            "raw_patch_sha256": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Patch Sha256"
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output"
+            }
+          },
+          "required": [
+            "step_id",
+            "step",
+            "status",
+            "executor",
+            "repository_access"
+          ],
+          "title": "StepView",
+          "type": "object"
+        },
+        "WorkflowView": {
+          "additionalProperties": false,
+          "properties": {
+            "workflow_id": {
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "created",
+                "researching",
+                "planning",
+                "prompt_ready",
+                "coding",
+                "awaiting_host_apply",
+                "testing",
+                "reviewing",
+                "synthesizing",
+                "fixing",
+                "completed",
+                "needs_attention",
+                "failed",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "goal": {
+              "title": "Goal",
+              "type": "string"
+            },
+            "workdir": {
+              "title": "Workdir",
+              "type": "string"
+            },
+            "fix_rounds": {
+              "default": 0,
+              "title": "Fix Rounds",
+              "type": "integer"
+            },
+            "max_fix_rounds": {
+              "default": 0,
+              "title": "Max Fix Rounds",
+              "type": "integer"
+            },
+            "baseline_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Baseline Commit"
+            },
+            "result_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Commit"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason"
+            },
+            "bindings": {
+              "additionalProperties": true,
+              "title": "Bindings",
+              "type": "object"
+            },
+            "steps": {
+              "items": {
+                "$ref": "#/$defs/StepView"
+              },
+              "title": "Steps",
+              "type": "array"
+            },
+            "next_steps": {
+              "items": {
+                "enum": [
+                  "research",
+                  "plan",
+                  "author_execution_prompt",
+                  "implement",
+                  "apply_patch",
+                  "test",
+                  "review",
+                  "synthesize",
+                  "fix"
+                ],
+                "type": "string"
+              },
+              "title": "Next Steps",
+              "type": "array"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "status",
+            "goal",
+            "workdir"
+          ],
+          "title": "WorkflowView",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "created",
+            "researching",
+            "planning",
+            "prompt_ready",
+            "coding",
+            "awaiting_host_apply",
+            "testing",
+            "reviewing",
+            "synthesizing",
+            "fixing",
+            "completed",
+            "needs_attention",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "workflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepPreview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "step": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "patch": {
+          "default": "",
+          "title": "Patch",
+          "type": "string"
+        },
+        "latency_ms": {
+          "default": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsultError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "workflow_id",
+        "status"
+      ],
+      "title": "WorkflowResponse",
+      "type": "object"
+    }
+  },
+  "orchestrator_workflow_plan_replan": {
+    "input_schema": {
+      "$defs": {
+        "StepBinding": {
+          "additionalProperties": false,
+          "description": "Which worker takes one step, and how.\n\nThree shapes, and the validator refuses the mixtures:\n  * `{executor: host}`            -- the host does it\n  * `{agent: x, execution: patch}` -- that agent, that mode\n  * `{agents: [x, y]}`             -- review only\nAn `agent:` left out with `executor: agent` means `auto`: routed by score.",
+          "properties": {
+            "executor": {
+              "default": "agent",
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "agent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent"
+            },
+            "agents": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agents"
+            },
+            "execution": {
+              "default": "consultation",
+              "enum": [
+                "consultation",
+                "patch",
+                "isolated_write"
+              ],
+              "title": "Execution",
+              "type": "string"
+            }
+          },
+          "title": "StepBinding",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "bindings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/StepBinding"
+          },
+          "propertyNames": {
+            "enum": [
+              "research",
+              "plan",
+              "author_execution_prompt",
+              "implement",
+              "apply_patch",
+              "test",
+              "review",
+              "synthesize",
+              "fix"
+            ]
+          },
+          "title": "Bindings",
+          "type": "object"
+        }
+      },
+      "required": [
+        "workflow_id",
+        "bindings"
+      ],
+      "title": "workflow_plan_replanArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AgentRef": {
+          "additionalProperties": false,
+          "description": "An agent as the workflow recorded it, not as the config reads today.",
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            }
+          },
+          "required": [
+            "agent_id",
+            "runtime",
+            "model"
+          ],
+          "title": "AgentRef",
+          "type": "object"
+        },
+        "ConsultError": {
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ConsultErrorCode"
+            },
+            "message": {
+              "maxLength": 500,
+              "title": "Message",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "required_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequiredAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ConsultError",
+          "type": "object"
+        },
+        "ConsultErrorCode": {
+          "description": "Closed set, so callers branch on a value instead of matching substrings.",
+          "enum": [
+            "agent_not_installed",
+            "connection_required",
+            "configured_model_unavailable",
+            "agent_unavailable",
+            "session_not_found",
+            "session_busy",
+            "session_target_mismatch",
+            "workflow_owned_session",
+            "protocol_validation_failed",
+            "web_search_unavailable",
+            "transport_error",
+            "not_started",
+            "timeout",
+            "invalid_request",
+            "no_agent_available"
+          ],
+          "title": "ConsultErrorCode",
+          "type": "string"
+        },
+        "RequiredAction": {
+          "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
+          "properties": {
+            "command": {
+              "title": "Command",
+              "type": "string"
+            },
+            "retry_after_connection": {
+              "default": true,
+              "title": "Retry After Connection",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "title": "RequiredAction",
+          "type": "object"
+        },
+        "StepPreview": {
+          "additionalProperties": false,
+          "description": "What `plan_step` approved: who it goes to and what it would carry.\n\n`confirm_token` is shown once and spent once, and it proves that what runs is\nwhat this preview described -- snapshot integrity, not that a human read it.",
+          "properties": {
+            "step_id": {
+              "default": "",
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "research",
+                    "plan",
+                    "author_execution_prompt",
+                    "implement",
+                    "apply_patch",
+                    "test",
+                    "review",
+                    "synthesize",
+                    "fix"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Step"
+            },
+            "executor": {
+              "default": "host",
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "default": "active_tree",
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "capability": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "coding",
+                    "research",
+                    "writing",
+                    "reasoning",
+                    "review",
+                    "planning",
+                    "prompt_authoring",
+                    "testing",
+                    "synthesis"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Capability"
+            },
+            "agents": {
+              "items": {
+                "$ref": "#/$defs/AgentRef"
+              },
+              "title": "Agents",
+              "type": "array"
+            },
+            "web": {
+              "default": false,
+              "title": "Web",
+              "type": "boolean"
+            },
+            "inputs": {
+              "items": {
+                "enum": [
+                  "research_brief",
+                  "implementation_plan",
+                  "execution_brief",
+                  "code_change",
+                  "test_report",
+                  "review_outcome",
+                  "synthesis",
+                  "open_findings"
+                ],
+                "type": "string"
+              },
+              "title": "Inputs",
+              "type": "array"
+            },
+            "prompt_chars": {
+              "default": 0,
+              "title": "Prompt Chars",
+              "type": "integer"
+            },
+            "prompt_sha256": {
+              "default": "",
+              "title": "Prompt Sha256",
+              "type": "string"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "confirm_token": {
+              "title": "Confirm Token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm_token"
+          ],
+          "title": "StepPreview",
+          "type": "object"
+        },
+        "StepView": {
+          "additionalProperties": false,
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "properties": {
+            "step_id": {
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "enum": [
+                "research",
+                "plan",
+                "author_execution_prompt",
+                "implement",
+                "apply_patch",
+                "test",
+                "review",
+                "synthesize",
+                "fix"
+              ],
+              "title": "Step",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "planned",
+                "running",
+                "done",
+                "failed",
+                "abandoned",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "executor": {
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "round_index": {
+              "default": 0,
+              "title": "Round Index",
+              "type": "integer"
+            },
+            "attempt": {
+              "default": 1,
+              "title": "Attempt",
+              "type": "integer"
+            },
+            "sequence": {
+              "default": 0,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "reported_by": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "host",
+                    "orchestrator"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reported By"
+            },
+            "raw_patch_sha256": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Patch Sha256"
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output"
+            }
+          },
+          "required": [
+            "step_id",
+            "step",
+            "status",
+            "executor",
+            "repository_access"
+          ],
+          "title": "StepView",
+          "type": "object"
+        },
+        "WorkflowView": {
+          "additionalProperties": false,
+          "properties": {
+            "workflow_id": {
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "created",
+                "researching",
+                "planning",
+                "prompt_ready",
+                "coding",
+                "awaiting_host_apply",
+                "testing",
+                "reviewing",
+                "synthesizing",
+                "fixing",
+                "completed",
+                "needs_attention",
+                "failed",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "goal": {
+              "title": "Goal",
+              "type": "string"
+            },
+            "workdir": {
+              "title": "Workdir",
+              "type": "string"
+            },
+            "fix_rounds": {
+              "default": 0,
+              "title": "Fix Rounds",
+              "type": "integer"
+            },
+            "max_fix_rounds": {
+              "default": 0,
+              "title": "Max Fix Rounds",
+              "type": "integer"
+            },
+            "baseline_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Baseline Commit"
+            },
+            "result_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Commit"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason"
+            },
+            "bindings": {
+              "additionalProperties": true,
+              "title": "Bindings",
+              "type": "object"
+            },
+            "steps": {
+              "items": {
+                "$ref": "#/$defs/StepView"
+              },
+              "title": "Steps",
+              "type": "array"
+            },
+            "next_steps": {
+              "items": {
+                "enum": [
+                  "research",
+                  "plan",
+                  "author_execution_prompt",
+                  "implement",
+                  "apply_patch",
+                  "test",
+                  "review",
+                  "synthesize",
+                  "fix"
+                ],
+                "type": "string"
+              },
+              "title": "Next Steps",
+              "type": "array"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "status",
+            "goal",
+            "workdir"
+          ],
+          "title": "WorkflowView",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "created",
+            "researching",
+            "planning",
+            "prompt_ready",
+            "coding",
+            "awaiting_host_apply",
+            "testing",
+            "reviewing",
+            "synthesizing",
+            "fixing",
+            "completed",
+            "needs_attention",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "workflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepPreview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "step": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "patch": {
+          "default": "",
+          "title": "Patch",
+          "type": "string"
+        },
+        "latency_ms": {
+          "default": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsultError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "workflow_id",
+        "status"
+      ],
+      "title": "WorkflowResponse",
+      "type": "object"
+    }
+  },
+  "orchestrator_workflow_replan": {
+    "input_schema": {
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "confirm_token": {
+          "title": "Confirm Token",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_id",
+        "confirm_token"
+      ],
+      "title": "workflow_replanArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AgentRef": {
+          "additionalProperties": false,
+          "description": "An agent as the workflow recorded it, not as the config reads today.",
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            }
+          },
+          "required": [
+            "agent_id",
+            "runtime",
+            "model"
+          ],
+          "title": "AgentRef",
+          "type": "object"
+        },
+        "ConsultError": {
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ConsultErrorCode"
+            },
+            "message": {
+              "maxLength": 500,
+              "title": "Message",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "required_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequiredAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ConsultError",
+          "type": "object"
+        },
+        "ConsultErrorCode": {
+          "description": "Closed set, so callers branch on a value instead of matching substrings.",
+          "enum": [
+            "agent_not_installed",
+            "connection_required",
+            "configured_model_unavailable",
+            "agent_unavailable",
+            "session_not_found",
+            "session_busy",
+            "session_target_mismatch",
+            "workflow_owned_session",
+            "protocol_validation_failed",
+            "web_search_unavailable",
+            "transport_error",
+            "not_started",
+            "timeout",
+            "invalid_request",
+            "no_agent_available"
+          ],
+          "title": "ConsultErrorCode",
+          "type": "string"
+        },
+        "RequiredAction": {
+          "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
+          "properties": {
+            "command": {
+              "title": "Command",
+              "type": "string"
+            },
+            "retry_after_connection": {
+              "default": true,
+              "title": "Retry After Connection",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "title": "RequiredAction",
+          "type": "object"
+        },
+        "StepPreview": {
+          "additionalProperties": false,
+          "description": "What `plan_step` approved: who it goes to and what it would carry.\n\n`confirm_token` is shown once and spent once, and it proves that what runs is\nwhat this preview described -- snapshot integrity, not that a human read it.",
+          "properties": {
+            "step_id": {
+              "default": "",
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "research",
+                    "plan",
+                    "author_execution_prompt",
+                    "implement",
+                    "apply_patch",
+                    "test",
+                    "review",
+                    "synthesize",
+                    "fix"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Step"
+            },
+            "executor": {
+              "default": "host",
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "default": "active_tree",
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "capability": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "coding",
+                    "research",
+                    "writing",
+                    "reasoning",
+                    "review",
+                    "planning",
+                    "prompt_authoring",
+                    "testing",
+                    "synthesis"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Capability"
+            },
+            "agents": {
+              "items": {
+                "$ref": "#/$defs/AgentRef"
+              },
+              "title": "Agents",
+              "type": "array"
+            },
+            "web": {
+              "default": false,
+              "title": "Web",
+              "type": "boolean"
+            },
+            "inputs": {
+              "items": {
+                "enum": [
+                  "research_brief",
+                  "implementation_plan",
+                  "execution_brief",
+                  "code_change",
+                  "test_report",
+                  "review_outcome",
+                  "synthesis",
+                  "open_findings"
+                ],
+                "type": "string"
+              },
+              "title": "Inputs",
+              "type": "array"
+            },
+            "prompt_chars": {
+              "default": 0,
+              "title": "Prompt Chars",
+              "type": "integer"
+            },
+            "prompt_sha256": {
+              "default": "",
+              "title": "Prompt Sha256",
+              "type": "string"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "confirm_token": {
+              "title": "Confirm Token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm_token"
+          ],
+          "title": "StepPreview",
+          "type": "object"
+        },
+        "StepView": {
+          "additionalProperties": false,
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "properties": {
+            "step_id": {
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "enum": [
+                "research",
+                "plan",
+                "author_execution_prompt",
+                "implement",
+                "apply_patch",
+                "test",
+                "review",
+                "synthesize",
+                "fix"
+              ],
+              "title": "Step",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "planned",
+                "running",
+                "done",
+                "failed",
+                "abandoned",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "executor": {
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "round_index": {
+              "default": 0,
+              "title": "Round Index",
+              "type": "integer"
+            },
+            "attempt": {
+              "default": 1,
+              "title": "Attempt",
+              "type": "integer"
+            },
+            "sequence": {
+              "default": 0,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "reported_by": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "host",
+                    "orchestrator"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reported By"
+            },
+            "raw_patch_sha256": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Patch Sha256"
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output"
+            }
+          },
+          "required": [
+            "step_id",
+            "step",
+            "status",
+            "executor",
+            "repository_access"
+          ],
+          "title": "StepView",
+          "type": "object"
+        },
+        "WorkflowView": {
+          "additionalProperties": false,
+          "properties": {
+            "workflow_id": {
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "created",
+                "researching",
+                "planning",
+                "prompt_ready",
+                "coding",
+                "awaiting_host_apply",
+                "testing",
+                "reviewing",
+                "synthesizing",
+                "fixing",
+                "completed",
+                "needs_attention",
+                "failed",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "goal": {
+              "title": "Goal",
+              "type": "string"
+            },
+            "workdir": {
+              "title": "Workdir",
+              "type": "string"
+            },
+            "fix_rounds": {
+              "default": 0,
+              "title": "Fix Rounds",
+              "type": "integer"
+            },
+            "max_fix_rounds": {
+              "default": 0,
+              "title": "Max Fix Rounds",
+              "type": "integer"
+            },
+            "baseline_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Baseline Commit"
+            },
+            "result_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Commit"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason"
+            },
+            "bindings": {
+              "additionalProperties": true,
+              "title": "Bindings",
+              "type": "object"
+            },
+            "steps": {
+              "items": {
+                "$ref": "#/$defs/StepView"
+              },
+              "title": "Steps",
+              "type": "array"
+            },
+            "next_steps": {
+              "items": {
+                "enum": [
+                  "research",
+                  "plan",
+                  "author_execution_prompt",
+                  "implement",
+                  "apply_patch",
+                  "test",
+                  "review",
+                  "synthesize",
+                  "fix"
+                ],
+                "type": "string"
+              },
+              "title": "Next Steps",
+              "type": "array"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "status",
+            "goal",
+            "workdir"
+          ],
+          "title": "WorkflowView",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "created",
+            "researching",
+            "planning",
+            "prompt_ready",
+            "coding",
+            "awaiting_host_apply",
+            "testing",
+            "reviewing",
+            "synthesizing",
+            "fixing",
+            "completed",
+            "needs_attention",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "workflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepPreview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "step": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "patch": {
+          "default": "",
+          "title": "Patch",
+          "type": "string"
+        },
+        "latency_ms": {
+          "default": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsultError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "workflow_id",
+        "status"
+      ],
+      "title": "WorkflowResponse",
+      "type": "object"
+    }
+  },
+  "orchestrator_workflow_cancel": {
+    "input_schema": {
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_id"
+      ],
+      "title": "workflow_cancelArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "AgentRef": {
+          "additionalProperties": false,
+          "description": "An agent as the workflow recorded it, not as the config reads today.",
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "runtime": {
+              "title": "Runtime",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            }
+          },
+          "required": [
+            "agent_id",
+            "runtime",
+            "model"
+          ],
+          "title": "AgentRef",
+          "type": "object"
+        },
+        "ConsultError": {
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ConsultErrorCode"
+            },
+            "message": {
+              "maxLength": 500,
+              "title": "Message",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "required_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequiredAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ConsultError",
+          "type": "object"
+        },
+        "ConsultErrorCode": {
+          "description": "Closed set, so callers branch on a value instead of matching substrings.",
+          "enum": [
+            "agent_not_installed",
+            "connection_required",
+            "configured_model_unavailable",
+            "agent_unavailable",
+            "session_not_found",
+            "session_busy",
+            "session_target_mismatch",
+            "workflow_owned_session",
+            "protocol_validation_failed",
+            "web_search_unavailable",
+            "transport_error",
+            "not_started",
+            "timeout",
+            "invalid_request",
+            "no_agent_available"
+          ],
+          "title": "ConsultErrorCode",
+          "type": "string"
+        },
+        "RequiredAction": {
+          "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
+          "properties": {
+            "command": {
+              "title": "Command",
+              "type": "string"
+            },
+            "retry_after_connection": {
+              "default": true,
+              "title": "Retry After Connection",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "title": "RequiredAction",
+          "type": "object"
+        },
+        "StepPreview": {
+          "additionalProperties": false,
+          "description": "What `plan_step` approved: who it goes to and what it would carry.\n\n`confirm_token` is shown once and spent once, and it proves that what runs is\nwhat this preview described -- snapshot integrity, not that a human read it.",
+          "properties": {
+            "step_id": {
+              "default": "",
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "research",
+                    "plan",
+                    "author_execution_prompt",
+                    "implement",
+                    "apply_patch",
+                    "test",
+                    "review",
+                    "synthesize",
+                    "fix"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Step"
+            },
+            "executor": {
+              "default": "host",
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "default": "active_tree",
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "capability": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "coding",
+                    "research",
+                    "writing",
+                    "reasoning",
+                    "review",
+                    "planning",
+                    "prompt_authoring",
+                    "testing",
+                    "synthesis"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Capability"
+            },
+            "agents": {
+              "items": {
+                "$ref": "#/$defs/AgentRef"
+              },
+              "title": "Agents",
+              "type": "array"
+            },
+            "web": {
+              "default": false,
+              "title": "Web",
+              "type": "boolean"
+            },
+            "inputs": {
+              "items": {
+                "enum": [
+                  "research_brief",
+                  "implementation_plan",
+                  "execution_brief",
+                  "code_change",
+                  "test_report",
+                  "review_outcome",
+                  "synthesis",
+                  "open_findings"
+                ],
+                "type": "string"
+              },
+              "title": "Inputs",
+              "type": "array"
+            },
+            "prompt_chars": {
+              "default": 0,
+              "title": "Prompt Chars",
+              "type": "integer"
+            },
+            "prompt_sha256": {
+              "default": "",
+              "title": "Prompt Sha256",
+              "type": "string"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "confirm_token": {
+              "title": "Confirm Token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm_token"
+          ],
+          "title": "StepPreview",
+          "type": "object"
+        },
+        "StepView": {
+          "additionalProperties": false,
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "properties": {
+            "step_id": {
+              "title": "Step Id",
+              "type": "string"
+            },
+            "step": {
+              "enum": [
+                "research",
+                "plan",
+                "author_execution_prompt",
+                "implement",
+                "apply_patch",
+                "test",
+                "review",
+                "synthesize",
+                "fix"
+              ],
+              "title": "Step",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "planned",
+                "running",
+                "done",
+                "failed",
+                "abandoned",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "executor": {
+              "enum": [
+                "host",
+                "agent"
+              ],
+              "title": "Executor",
+              "type": "string"
+            },
+            "execution_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "consultation",
+                    "patch",
+                    "isolated_write"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Execution Mode"
+            },
+            "repository_access": {
+              "enum": [
+                "active_tree",
+                "worktree",
+                "context_only"
+              ],
+              "title": "Repository Access",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "round_index": {
+              "default": 0,
+              "title": "Round Index",
+              "type": "integer"
+            },
+            "attempt": {
+              "default": 1,
+              "title": "Attempt",
+              "type": "integer"
+            },
+            "sequence": {
+              "default": 0,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "reported_by": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "host",
+                    "orchestrator"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reported By"
+            },
+            "raw_patch_sha256": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Raw Patch Sha256"
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Output"
+            }
+          },
+          "required": [
+            "step_id",
+            "step",
+            "status",
+            "executor",
+            "repository_access"
+          ],
+          "title": "StepView",
+          "type": "object"
+        },
+        "WorkflowView": {
+          "additionalProperties": false,
+          "properties": {
+            "workflow_id": {
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "created",
+                "researching",
+                "planning",
+                "prompt_ready",
+                "coding",
+                "awaiting_host_apply",
+                "testing",
+                "reviewing",
+                "synthesizing",
+                "fixing",
+                "completed",
+                "needs_attention",
+                "failed",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "goal": {
+              "title": "Goal",
+              "type": "string"
+            },
+            "workdir": {
+              "title": "Workdir",
+              "type": "string"
+            },
+            "fix_rounds": {
+              "default": 0,
+              "title": "Fix Rounds",
+              "type": "integer"
+            },
+            "max_fix_rounds": {
+              "default": 0,
+              "title": "Max Fix Rounds",
+              "type": "integer"
+            },
+            "baseline_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Baseline Commit"
+            },
+            "result_commit": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Commit"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason"
+            },
+            "bindings": {
+              "additionalProperties": true,
+              "title": "Bindings",
+              "type": "object"
+            },
+            "steps": {
+              "items": {
+                "$ref": "#/$defs/StepView"
+              },
+              "title": "Steps",
+              "type": "array"
+            },
+            "next_steps": {
+              "items": {
+                "enum": [
+                  "research",
+                  "plan",
+                  "author_execution_prompt",
+                  "implement",
+                  "apply_patch",
+                  "test",
+                  "review",
+                  "synthesize",
+                  "fix"
+                ],
+                "type": "string"
+              },
+              "title": "Next Steps",
+              "type": "array"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "status",
+            "goal",
+            "workdir"
+          ],
+          "title": "WorkflowView",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "created",
+            "researching",
+            "planning",
+            "prompt_ready",
+            "coding",
+            "awaiting_host_apply",
+            "testing",
+            "reviewing",
+            "synthesizing",
+            "fixing",
+            "completed",
+            "needs_attention",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "workflow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepPreview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "step": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "patch": {
+          "default": "",
+          "title": "Patch",
+          "type": "string"
+        },
+        "latency_ms": {
+          "default": 0,
+          "title": "Latency Ms",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConsultError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "workflow_id",
+        "status"
+      ],
+      "title": "WorkflowResponse",
       "type": "object"
     }
   }

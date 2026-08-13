@@ -4,6 +4,14 @@ Router picks the agent, prompts compile the turn, an adapter runs the CLI, the
 store records all of it. This module is the only place that knows the order, and
 the only place that turns a failure into an envelope.
 
+There are two entry points and two bind methods, paired by name and never by a
+value: `consult()` (the MCP tool) always binds through `_bind_public`, and
+`consult_step()` (the workflow, which is not reachable from MCP) always binds
+through `_bind_workflow`. No argument moves a call from one to the other, and
+neither method branches on whether a row happens to belong to a workflow -- a
+single path that did would be reachable from the public tool by resuming a
+workflow's consultation id.
+
 Two rules shape everything below. Every path returns a `ConsultResponse` -- an
 exception escaping here would leave the calling agent with a protocol error and no
 consultation id, which is the one thing it needs to try again. And a failure never
@@ -19,6 +27,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json
+from ..workflow.contract import StepSnapshot
+from ..workflow.identity import host_identity_conflict
 from .adapters import AdapterError, adapter_for
 from .adapters.base import GRACE_S, AgentStatus, ConsultAdapter
 from .adapters.claude_cli import PREFLIGHT_TIMEOUT_S
@@ -58,11 +68,11 @@ class ConsultService:
         # there -- the adapter is still handed the caller's own text, because a
         # consultation answering a redacted question is not the same consultation.
         #
-        # Default is identity, so the plain `consult` path stores exactly what it
-        # always did. A caller that cannot let credentials reach disk (the review
-        # layer) passes `scrub_json`; there is deliberately no cleanup pass, which
-        # only a design that writes the secret first would need.
-        self._scrub: Callable[[Any], Any] = store_sanitizer or (lambda value: value)
+        # Credential-shaped values are scrubbed for every storage path. The adapter
+        # still receives the caller's original material; only the copy headed for
+        # SQLite passes through this function. Injection remains available for a
+        # stricter embedding, but opting out accidentally is no longer the default.
+        self._scrub: Callable[[Any], Any] = store_sanitizer or scrub_json
 
     async def open(self) -> ConsultService:
         await self.store.open()
@@ -128,7 +138,7 @@ class ConsultService:
                            ConsultErrorCode.PROTOCOL_VALIDATION_FAILED, str(exc), started)
 
         try:
-            consultation, route, agent, resuming = await self._bind(request, capability)
+            consultation, route, agent, resuming = await self._bind_public(request, capability)
         except StoreError as exc:
             return _failed(request.consultation_id, capability, source_mode, exc.code, str(exc), started)
         except _RoutingFailure as exc:
@@ -150,12 +160,30 @@ class ConsultService:
             # the caller's decision, not ours.
             return _failed(consultation_id, capability, source_mode, exc.code, str(exc), started)
 
-    async def _bind(
+    async def _bind_public(
         self, request: Any, capability: str
     ) -> tuple[Any, ConsultRoute, AgentConfig, str | None]:
-        """Find or create the consultation, and the agent it is bound to."""
+        """Find or create the consultation, and the agent it is bound to.
+
+        The path behind `orchestrator_consult`, and the only one a tool argument can
+        reach. Exclusion here is runtime-level and unconditional: no argument relaxes
+        it, and `_bind_workflow` is not selectable from here by any value a caller
+        could send.
+        """
         if request.consultation_id is not None:
             consultation = await self.store.get_consultation(request.consultation_id)
+            if consultation.workflow_id is not None:
+                # The one thing that would otherwise undo the split. A workflow step's
+                # consultation was bound under execution-identity exclusion, which can
+                # legitimately be an agent on this host's own runtime; resuming it from
+                # the public tool would inherit that binding and hand the host a
+                # conversation with itself. The id is not a secret -- status and history
+                # both surface it -- so the refusal is on the row, not on knowing it.
+                raise StoreError(
+                    ConsultErrorCode.WORKFLOW_OWNED_SESSION,
+                    f"consultation `{consultation.id}` belongs to workflow "
+                    f"`{consultation.workflow_id}`; continue it through its workflow step",
+                )
             self.store.check_target(consultation, request.target_agent)
             agent = self.config.agents.get(consultation.target_agent_id)
             if agent is None:
@@ -227,6 +255,164 @@ class ConsultService:
         await self.store.record_routing(consultation_id, decision)
         return consultation, decision.route, decision.selected, None
 
+    # --- the workflow's private path ----------------------------------------
+    #
+    # Not reachable from MCP. `consult_step` takes a `StepSnapshot`, which only the
+    # workflow service can produce, and there is no argument on `consult()` that
+    # selects this path -- the two entry points pick their bind method by name.
+
+    async def consult_step(
+        self, snapshot: StepSnapshot, prompt: str, context: str | None = None
+    ) -> ConsultResponse:
+        """Run one workflow step as a consultation.
+
+        Everything below the bind is the ordinary read-only path: same adapter, same
+        compiled prompt, same lease, same envelope. What differs is who the step may
+        be sent to, and that was decided when the workflow resolved its bindings --
+        this method re-checks the snapshot against live configuration rather than
+        trusting it, because the config can have been edited since.
+        """
+        started = time.perf_counter()
+        capability = snapshot.capability or "<invalid>"
+        try:
+            await self.open()
+            return await self._consult_step(started, snapshot, prompt, context)
+        except Exception as exc:
+            return _failed(
+                None, capability, SourceMode.AUTO, ConsultErrorCode.TRANSPORT_ERROR,
+                f"the consultation failed inside the orchestrator ({type(exc).__name__})",
+                started,
+            )
+
+    async def _consult_step(
+        self, started: float, snapshot: StepSnapshot, prompt: str, context: str | None
+    ) -> ConsultResponse:
+        capability = snapshot.capability or "<invalid>"
+        # `web` only ever narrows to what the step asked for; document/model is the
+        # same auto rule the public path uses.
+        source_mode = (
+            SourceMode.WEB if snapshot.web
+            else (SourceMode.DOCUMENT if context and context.strip() else SourceMode.MODEL)
+        )
+
+        if snapshot.executor != "agent" or snapshot.capability is None or not snapshot.agent_id:
+            return _failed(None, capability, source_mode, ConsultErrorCode.INVALID_REQUEST,
+                           "this step has no delegated agent to consult", started)
+        if snapshot.execution_mode not in ("consultation", "patch"):
+            # `isolated_write` has its own package and its own protocol. Letting it
+            # fall through to here would run a write step as a plain question and
+            # report the answer as if the work had been done.
+            return _failed(None, capability, source_mode, ConsultErrorCode.INVALID_REQUEST,
+                           f"`{snapshot.execution_mode}` steps do not run over the consult path",
+                           started)
+
+        try:
+            request = self.request_model(
+                capability=snapshot.capability, prompt=prompt, context=context,
+                source_mode=source_mode,
+            )
+        except Exception as exc:
+            return _failed(None, capability, source_mode, ConsultErrorCode.INVALID_REQUEST,
+                           str(exc), started)
+
+        try:
+            consultation, route, agent, resuming = await self._bind_workflow(snapshot)
+        except StoreError as exc:
+            return _failed(None, capability, source_mode, exc.code, str(exc), started)
+
+        consultation_id = UUID(consultation.id)
+        try:
+            async with self.store.lease(consultation_id, ttl_s=self._lease_ttl()):
+                return await self._turn(
+                    consultation_id, agent, route, request, source_mode, resuming, started
+                )
+        except StoreError as exc:
+            return _failed(consultation_id, capability, source_mode, exc.code, str(exc), started)
+
+    async def _bind_workflow(
+        self, snapshot: StepSnapshot
+    ) -> tuple[Any, ConsultRoute, AgentConfig, str | None]:
+        """Find or create the consultation a workflow step owns.
+
+        No router: the agent was chosen when the workflow resolved its bindings, and
+        rerouting a running workflow is the replan handshake's job, not a side effect
+        of a config edit. What is checked here is that the agent named in the snapshot
+        still *is* that agent, and that it is not this host.
+
+        Exclusion is at execution identity rather than runtime, which is the whole
+        reason this path exists -- and it is strictly a refinement: with no configured
+        host model `host_identity_conflict` refuses the entire runtime, exactly as the
+        public path does.
+        """
+        agent = self.config.agents.get(snapshot.agent_id or "")
+        if agent is None:
+            raise StoreError(
+                ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                f"step `{snapshot.step_id}` is bound to agent `{snapshot.agent_id}`, which is "
+                "no longer configured",
+            )
+        # Exact, not `_same_model`: the snapshot recorded what the config said, so any
+        # difference at all is an edit under a running workflow, and continuing into it
+        # would be a reroute nobody approved.
+        if agent.runtime != snapshot.agent_runtime or agent.model != snapshot.agent_model:
+            raise StoreError(
+                ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                f"step `{snapshot.step_id}` was bound to `{snapshot.agent_id}` running "
+                f"{snapshot.agent_runtime}/{snapshot.agent_model}, which is now configured as "
+                f"{agent.runtime}/{agent.model}; replan the workflow to reroute it",
+            )
+        conflict = host_identity_conflict(
+            agent.runtime, agent.model, self.host_runtime, self.config.host.model
+        )
+        if conflict is not None:
+            raise StoreError(
+                ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                f"step `{snapshot.step_id}` cannot be sent to `{agent.agent_id}`: {conflict}",
+            )
+
+        existing = await self.store.step_consultation(snapshot.workflow_id, snapshot.step_id)
+        if existing is not None:
+            if (
+                existing.target_agent_id != agent.agent_id
+                or existing.target_runtime != agent.runtime
+                or existing.target_model != scrub_json(agent.model)
+            ):
+                raise StoreError(
+                    ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                    f"step `{snapshot.step_id}` already holds a consultation with "
+                    f"`{existing.target_agent_id}`; it cannot be continued against "
+                    f"`{agent.agent_id}`",
+                )
+            return existing, self._route_for(agent, snapshot.capability), agent, \
+                existing.native_session_id
+
+        route = self._route_for(agent, snapshot.capability)
+        consultation_id = uuid4()
+        consultation = await self.store.create_consultation(
+            consultation_id=consultation_id,
+            origin_runtime=self.host_runtime,
+            route=route,
+            capability=snapshot.capability or "",
+            protocol_version=self.config.protocol_version,
+            config_hash=self.config.config_hash(),
+            conversation_label=f"{snapshot.step} ({snapshot.workflow_id[:8]})",
+            workflow_id=snapshot.workflow_id,
+            step_id=snapshot.step_id,
+        )
+        return consultation, route, agent, None
+
+    def _route_for(self, agent: AgentConfig, capability: str | None) -> ConsultRoute:
+        return ConsultRoute(
+            agent_id=agent.agent_id,
+            runtime=agent.runtime,
+            model=agent.model,
+            capability_score=agent.score_for(capability) if capability else 0,
+            priority=agent.priority,
+            # A binding is a choice someone made and wrote down, which is what this
+            # flag means everywhere else.
+            explicitly_selected=True,
+        )
+
     async def _turn(
         self,
         consultation_id: UUID,
@@ -295,6 +481,7 @@ class ConsultService:
             validated_response=self._scrub(result.content.model_dump()),
             input_tokens=result.usage.prompt_tokens,
             output_tokens=result.usage.completion_tokens,
+            total_tokens=result.usage.total_tokens,
             cost_usd=result.usage.cost_usd,
             latency_ms=int((time.perf_counter() - started) * 1000),
         )
@@ -390,6 +577,7 @@ class ConsultService:
                     "answer": t.validated_response_json,
                     "input_tokens": t.input_tokens,
                     "output_tokens": t.output_tokens,
+                    "total_tokens": t.total_tokens,
                     "cost_usd": t.cost_usd,
                     "latency_ms": t.latency_ms,
                     "error_code": t.error_code,
@@ -399,6 +587,18 @@ class ConsultService:
             ],
             routing=await self.store.routing_for(consultation_id),
         )
+
+    async def delete_consultation(self, consultation_id: UUID | str) -> int:
+        await self.open()
+        return await self.store.delete_consultation(consultation_id)
+
+    async def request_delete_all_consultations(self) -> tuple[str, int]:
+        await self.open()
+        return await self.store.request_delete_all_consultations()
+
+    async def delete_all_consultations(self, confirm_token: str) -> int:
+        await self.open()
+        return await self.store.delete_all_consultations(confirm_token)
 
 
 class _RoutingFailure(Exception):

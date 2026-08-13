@@ -15,8 +15,8 @@ Two fields exist to stop a whole class of quiet failure:
   reviewer invents can collide across reviewers, and the summary check below
   resolves references by id.
 * `CombinedFinding.source_finding_ids` is what makes "a lone Critical survives"
-  checkable instead of merely requested. `missing_criticals` refuses a synthesis
-  that references no combined finding for some reviewer's Critical.
+  checkable instead of merely requested. `missing_serious` refuses a synthesis
+  that references no combined finding for some reviewer's Critical or Important.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from ..contract import Usage
 from ..consult.contract import MAX_CONTEXT_CHARS as CONSULT_MAX_CONTEXT_CHARS
@@ -40,6 +40,15 @@ Severity = Literal["critical", "important", "minor", "uncertain"]
 # folded into `skipped` because undoing a fix that made things worse is a real
 # result worth reading back, and one a later round should not repeat.
 FixOutcome = Literal["applied", "partial", "reverted", "skipped"]
+# What a synthesis says became of a finding. `accepted_risk` is separate from
+# `rejected` because "this is real and we are shipping anyway" and "this is not
+# real" are different decisions, and only one of them should read as agreement.
+Disposition = Literal["open", "fixed", "rejected", "accepted_risk"]
+
+# The severities a workflow will not close over while they are open, and the ones
+# whose disposition has to be argued rather than asserted. `minor` and `uncertain`
+# are advice; these two are the reason a second reviewer was paid for.
+SERIOUS: frozenset[str] = frozenset({"critical", "important"})
 
 # Ordered worst-first, so truncation is severity-ordered and the cap can never be
 # what drops a Critical.
@@ -168,8 +177,8 @@ class ReviewerResult(BaseModel):
     uncertainties: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
     follow_up_questions: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
     sources: list[ConsultSource] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
-    # Null on a reviewer rebuilt from its stored row: the cost was recorded against
-    # the consultation, not copied into the review table.
+    # Rebuilt from the linked consultation's turn ledger, so a retry includes every
+    # recorded attempt without copying or double-counting billing fields here.
     usage: Usage | None = None
     error: ConsultError | None = None
 
@@ -209,8 +218,8 @@ class CombinedFinding(BaseModel):
     """One row of the host AI's synthesis.
 
     `source_finding_ids` is load-bearing, not bookkeeping: it is how
-    `missing_criticals` proves that no reviewer's Critical was dropped during
-    synthesis, and how a reader gets from a combined row back to who said it.
+    `missing_serious` proves that no reviewer's Critical or Important was dropped
+    during synthesis, and how a reader gets from a combined row back to who said it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -224,6 +233,28 @@ class CombinedFinding(BaseModel):
     disagreed_by: list[str] = Field(default_factory=list, max_length=MAX_REVIEWERS)
     source_finding_ids: list[str] = Field(default_factory=list, max_length=MAX_FINDINGS)
     proposed_action: str = Field(default="", max_length=MAX_TEXT_CHARS)
+    # Where the finding stands. Without this an unresolved finding is not
+    # representable at all, so a workflow could not tell a fix round that converged
+    # from one that simply ran again. `open` is the default because a finding nobody
+    # has said anything about is open.
+    disposition: Disposition = "open"
+    # Required when a `critical` or `important` is `rejected` or `accepted_risk`;
+    # `_reasoned_disposition` refuses the synthesis otherwise. Deciding a serious
+    # finding is wrong is allowed. Deciding it silently is not.
+    disposition_reason: str = Field(default="", max_length=MAX_TEXT_CHARS)
+
+    @model_validator(mode="after")
+    def _reasoned_disposition(self) -> CombinedFinding:
+        if (
+            self.severity in SERIOUS
+            and self.disposition in ("rejected", "accepted_risk")
+            and not self.disposition_reason.strip()
+        ):
+            raise ValueError(
+                f"a `{self.severity}` finding marked `{self.disposition}` needs a "
+                "`disposition_reason`"
+            )
+        return self
 
 
 class ReviewSummary(BaseModel):
@@ -332,7 +363,7 @@ class ReviewResponse(BaseModel):
 
         Derived from `results` rather than stored, so it cannot drift from them.
 
-        Load-bearing, not diagnostic. `missing_criticals` proves that no reviewer's
+        Load-bearing, not diagnostic. `missing_serious` proves that no reviewer's
         Critical was dropped by checking the summary against the parsed findings --
         so for a reviewer with none, it proves nothing. A non-empty list is carried
         into the finalization refusal so the caller can see exactly which reviewer
@@ -393,17 +424,23 @@ class DeletionResult(BaseModel):
     deleted: int = Field(ge=0, description="Reviews removed, rechecks included.")
 
 
-def missing_criticals(
+def missing_serious(
     results: list[ReviewerResult], summary: ReviewSummary
 ) -> list[str]:
     """Invalid or incomplete finding provenance, by `finding_id`.
 
     The whole reason for asking more than one reviewer is that a lone dissenting
-    Critical survives. Asking for that in a prompt is unenforceable, so it is
-    checked here instead: every Critical a reviewer raised must be referenced by
-    some combined finding, and every referenced id must have been raised by a
-    reviewer. Referenced, not agreed with -- a synthesis is free to conclude the
-    finding is wrong, but not to drop it silently or invent its provenance.
+    serious finding survives. Asking for that in a prompt is unenforceable, so it is
+    checked here instead: every `critical` *and* every `important` a reviewer raised
+    must be referenced by some combined finding, and every referenced id must have
+    been raised by a reviewer. Referenced, not agreed with -- a synthesis is free to
+    conclude the finding is wrong, but not to drop it silently or invent its
+    provenance.
+
+    `important` is covered because it was not before: a reviewer's important finding
+    could vanish during synthesis without tripping anything, and the workflow's
+    `loop_done` closes over open serious findings, so a dropped one reads as a
+    converged loop.
     """
     referenced = {
         finding_id
@@ -415,10 +452,26 @@ def missing_criticals(
         finding.finding_id
         for result in results
         for finding in result.findings
-        if finding.severity == "critical" and finding.finding_id not in referenced
+        if finding.severity in SERIOUS and finding.finding_id not in referenced
     ]
     unknown = sorted(referenced - known)
     return [*missing, *unknown]
+
+
+def open_serious(summary: ReviewSummary) -> list[str]:
+    """Combined findings that are serious and still open, worst first.
+
+    What a workflow's `loop_done` is computed from. A finding is closed by having
+    been fixed, argued down, or accepted with a reason -- never by the loop simply
+    running out of patience, which is what `needs_attention` says instead.
+    """
+    return [
+        combined.problem
+        for combined in sorted(
+            summary.combined_findings, key=lambda c: SEVERITY_ORDER.get(c.severity, 9)
+        )
+        if combined.severity in SERIOUS and combined.disposition == "open"
+    ]
 
 
 REVIEWER_INSTRUCTIONS = """\

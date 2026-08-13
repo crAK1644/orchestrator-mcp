@@ -64,6 +64,19 @@ def _no_real_managed_file(tmp_path, monkeypatch):
     ConsultConfig.model_rebuild(force=True)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_worktrees(tmp_path, monkeypatch):
+    """Contained runs check out under the test's own directory, never `~`.
+
+    Autouse for the same reason as the fixture above: the root is a module constant
+    read at call time rather than a parameter, so any test that reaches the code
+    service would otherwise create git worktrees in the developer's home directory
+    and register them inside whatever repository it was pointed at."""
+    monkeypatch.setattr(
+        "orchestrator_mcp.code.service.WORKTREE_ROOT", tmp_path / "worktrees"
+    )
+
+
 @pytest.fixture
 def host_claude(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv(HOST_RUNTIME_ENV, "claude")

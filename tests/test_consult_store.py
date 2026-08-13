@@ -20,6 +20,7 @@ from orchestrator_mcp.consult.contract import ConsultRoute, SourceMode
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.routing import ExcludedCandidate, RoutingDecision
 from orchestrator_mcp.consult.store import MIGRATIONS, ConsultStore, StoreError
+from orchestrator_mcp.review.store import ReviewStore
 
 ROUTE = ConsultRoute(
     agent_id="codex-sol",
@@ -56,9 +57,21 @@ async def new_consultation(store, **kwargs):
 
 
 async def test_the_database_and_its_directory_are_user_only(store):
-    """The file holds every prompt and every answer verbatim."""
+    """The file holds the scrubbed copy of every retained prompt and answer."""
     assert stat.S_IMODE(os.stat(store.path).st_mode) == 0o600
     assert stat.S_IMODE(os.stat(store.path.parent).st_mode) == 0o700
+
+
+async def test_an_existing_shared_database_directory_is_refused(tmp_path):
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o755)
+    os.chmod(shared, 0o755)
+
+    with pytest.raises(StoreError, match="permissions 0700"):
+        await ConsultStore(shared / "consultations.sqlite3").open()
+
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o755
+    assert not (shared / "consultations.sqlite3").exists()
 
 
 async def test_opening_twice_is_not_a_second_migration(tmp_path):
@@ -72,6 +85,135 @@ async def test_opening_twice_is_not_a_second_migration(tmp_path):
     # Against `len(MIGRATIONS)` rather than a literal: the ledger grows by design,
     # and what this test is about is that a second open applies none of them again.
     assert (versions, profiles) == (len(MIGRATIONS), 1)
+
+
+async def test_a_database_that_lost_its_profile_row_gets_it_back_on_open(tmp_path):
+    """Found by a live review that died in 10ms with `IntegrityError`.
+
+    Every consultation references the default profile, and the row was created only
+    inside the migration loop -- so a database already at the current version never
+    recreated it. Emptying the tables (a purge, a restore, a manual repair) left an
+    installation that could never consult again, and said only `IntegrityError`.
+    """
+    path = tmp_path / "db.sqlite3"
+    first = await ConsultStore(path).open()
+    await first.close()
+
+    scratch = sqlite3.connect(path)
+    scratch.execute("DELETE FROM profiles")
+    scratch.commit()
+    scratch.close()
+
+    second = await ConsultStore(path).open()
+    try:
+        # The insert, not the row count: this has to fail the way the live one did,
+        # on the foreign key, rather than pass because some other row was restored.
+        await new_consultation(second)
+    finally:
+        await second.close()
+
+
+async def test_usage_is_rebuilt_from_every_recorded_turn(store):
+    consultation_id = await new_consultation(store)
+    await store.record_turn(
+        consultation_id,
+        1,
+        SourceMode.MODEL,
+        "q1",
+        None,
+        "compiled",
+        input_tokens=10,
+        output_tokens=2,
+        total_tokens=15,
+        cost_usd=0.2,
+    )
+    await store.record_turn(
+        consultation_id,
+        2,
+        SourceMode.MODEL,
+        "q2",
+        None,
+        "compiled",
+        input_tokens=20,
+        output_tokens=4,
+        total_tokens=30,
+        cost_usd=0.3,
+    )
+
+    usage = await store.usage(consultation_id)
+    assert usage.model_dump() == {
+        "prompt_tokens": 30,
+        "completion_tokens": 6,
+        "total_tokens": 45,
+        "cost_usd": 0.5,
+    }
+
+
+# --- consultation deletion -------------------------------------------------
+
+
+async def test_delete_consultation_removes_its_local_history(store):
+    consultation_id = await new_consultation(store)
+    await store.record_turn(
+        consultation_id, 1, SourceMode.MODEL, "q", None, "compiled"
+    )
+
+    assert await store.delete_consultation(consultation_id) == 1
+    with pytest.raises(StoreError, match="no consultation"):
+        await store.get_consultation(consultation_id)
+
+
+async def test_delete_all_consultations_is_bound_to_the_previewed_snapshot(store):
+    first = await new_consultation(store)
+    second = await new_consultation(store)
+    token, count = await store.request_delete_all_consultations()
+    later = await new_consultation(store)
+
+    assert count == 2
+    assert await store.delete_all_consultations(token) == 2
+    assert (await store.get_consultation(later)).id == str(later)
+    for removed in (first, second):
+        with pytest.raises(StoreError, match="no consultation"):
+            await store.get_consultation(removed)
+    with pytest.raises(StoreError, match="not outstanding"):
+        await store.delete_all_consultations(token)
+
+
+async def test_a_consultation_with_a_turn_in_flight_cannot_be_deleted(store):
+    consultation_id = await new_consultation(store)
+    async with store.lease(consultation_id):
+        with pytest.raises(StoreError) as error:
+            await store.delete_consultation(consultation_id)
+
+    assert error.value.code is ConsultErrorCode.SESSION_BUSY
+    assert (await store.get_consultation(consultation_id)).id == str(consultation_id)
+
+
+async def test_a_review_owned_consultation_can_only_be_deleted_with_its_review(store):
+    consultation_id = await new_consultation(store)
+    review_id = uuid4()
+    reviews = ReviewStore(store)
+    await reviews.create_review(
+        review_id=review_id,
+        mode="standard",
+        goal="g",
+        context=None,
+        material=[],
+        material_sha256="a" * 64,
+        raw_sha256="b" * 64,
+        reviewer_snapshot=[],
+        confirm_token="token",
+        secret_hits=[],
+        web_requested=False,
+    )
+    await reviews.record_reviewer_result(
+        review_id, "codex-sol", "ok", consultation_id=consultation_id
+    )
+
+    with pytest.raises(StoreError, match="delete the review instead"):
+        await store.delete_consultation(consultation_id)
+    _, count = await store.request_delete_all_consultations()
+    assert count == 0
 
 
 async def test_a_migration_that_fails_does_not_leave_a_store_that_looks_open(tmp_path, monkeypatch):

@@ -35,6 +35,7 @@ from ..consult.contract import (
     ConsultError,
     ConsultResponse,
     ConsultSource,
+    ConsultationContent,
     Runtime,
     SourceMode,
 )
@@ -42,6 +43,7 @@ from ..consult.errors import ConsultErrorCode
 from ..consult.service import ConsultService
 from ..consult.store import ConsultStore, StoreError
 from ..consult.contract import MAX_CONTEXT_CHARS
+from ..workflow.identity import same_execution_identity
 from .contract import (
     FIX_STEPS,
     MAX_FINDINGS,
@@ -69,7 +71,7 @@ from .contract import (
     ReviewStatus,
     ReviewSummary,
     SecretHit,
-    missing_criticals,
+    missing_serious,
 )
 from .store import REVIEW_LEASE_SLACK_S, ReviewStore, _now, canonical, sha256
 
@@ -129,12 +131,20 @@ class ReviewService:
         reviewers: list[str] | None = None,
         parent_review_id: UUID | str | None = None,
         host_model: str | None = None,
+        workflow_id: str | None = None,
+        step_id: str | None = None,
+        excluded_identities: dict[str, tuple[str, str]] | None = None,
     ) -> ReviewResponse:
         """Describe what would be sent. Sends nothing.
 
         Writes a `pending` row holding the redacted material and the sha256 of a
         one-time token, and hands the token back once. Nothing here spawns a
         subprocess, so a caller can plan freely and abandon it.
+
+        The last three arguments have no tool parameter behind them. `WorkflowService`
+        passes them; `orchestrator_review` names its arguments one by one and cannot,
+        which is what keeps a caller from labelling a standalone review as a
+        workflow's or from being the one who decides which identities get excluded.
         """
         started = time.perf_counter()
         review_id = uuid4()
@@ -143,6 +153,7 @@ class ReviewService:
             return await self._plan(
                 started, review_id, mode, goal, material or [], context, context_paths,
                 web, reviewers, parent_review_id, host_model,
+                workflow_id, step_id, excluded_identities or {},
             )
         except (StoreError, ValueError) as exc:
             code = exc.code if isinstance(exc, StoreError) else ConsultErrorCode.INVALID_REQUEST
@@ -169,11 +180,15 @@ class ReviewService:
         reviewers: list[str] | None,
         parent_review_id: UUID | str | None,
         host_model: str | None,
+        workflow_id: str | None,
+        step_id: str | None,
+        excluded_identities: dict[str, tuple[str, str]],
     ) -> ReviewResponse:
         if not goal.strip():
             raise ValueError("a review needs a goal saying what to look at")
 
         snapshots = self._reviewer_snapshots(mode, reviewers)
+        _refuse_excluded(snapshots, excluded_identities)
         manifest = [MaterialItem(**item) for item in material]
 
         # Resolved before the scan, so everything after this point -- the secret
@@ -264,6 +279,8 @@ class ReviewService:
             secret_hits=[h.model_dump(mode="json") for h in hits[:MAX_SECRET_HITS]],
             web_requested=web,
             parent_review_id=parent_review_id,
+            workflow_id=workflow_id,
+            step_id=step_id,
         )
 
         return ReviewResponse(
@@ -567,29 +584,48 @@ class ReviewService:
                         host_findings=host_findings,
                         secrets_mode=secrets_mode,
                     )
-                current = await self.store.get_review(review.id)
-                if current.status != "running":
-                    raise ValueError(
-                        f"review `{review.id}` became `{current.status}` before its "
-                        "reviewers started"
-                    )
-                # Before a single task starts: a reviewer whose task dies before it can
-                # record anything must read back as `failed`, not as never asked.
-                await self.store.reserve_reviewers(review.id, agent_ids)
-                # Read again, because the reservation above is an await and `cancel`
-                # does not take this lease. Between the check and `create_task` there
-                # must be no suspension point at all, or a cancel landing inside one
-                # sends the material anyway.
-                if (await self.store.get_review(review.id)).status != "running":
-                    raise ValueError(
-                        f"review `{review.id}` was cancelled before its reviewers started"
-                    )
-                tasks = [asyncio.create_task(one(agent_id)) for agent_id in agent_ids]
-                self._tasks[review_key] = tasks
+                # From here on this call owns the run: the lease is held and the token,
+                # if there was one, is spent. Anything that goes wrong now leaves a
+                # review saying `running` with nothing running -- the lease is released
+                # on the way out, so the reviewers that status claims are in flight do
+                # not exist, and the review sits there refusing to be deleted ("still
+                # running; cancel it first") for reviewers that were never started.
+                #
+                # Narrower than the whole block on purpose. A call that lost the race
+                # for the lease, or spent a token that was already spent, does not own
+                # this review and must not touch its status -- doing so is how the
+                # loser of two simultaneous runs failed the winner.
                 try:
-                    done = await asyncio.gather(*tasks, return_exceptions=True)
-                finally:
-                    self._tasks.pop(review_key, None)
+                    current = await self.store.get_review(review.id)
+                    if current.status != "running":
+                        raise ValueError(
+                            f"review `{review.id}` became `{current.status}` before its "
+                            "reviewers started"
+                        )
+                    # Before a single task starts: a reviewer whose task dies before it
+                    # can record anything must read back as `failed`, not as never asked.
+                    await self.store.reserve_reviewers(review.id, agent_ids)
+                    # Read again, because the reservation above is an await and `cancel`
+                    # does not take this lease. Between the check and `create_task` there
+                    # must be no suspension point at all, or a cancel landing inside one
+                    # sends the material anyway.
+                    if (await self.store.get_review(review.id)).status != "running":
+                        raise ValueError(
+                            f"review `{review.id}` was cancelled before its reviewers started"
+                        )
+                    tasks = [asyncio.create_task(one(agent_id)) for agent_id in agent_ids]
+                    self._tasks[review_key] = tasks
+                    try:
+                        done = await asyncio.gather(*tasks, return_exceptions=True)
+                    finally:
+                        self._tasks.pop(review_key, None)
+                except Exception:
+                    # Guarded by `allowed_from`, so this reports only the failure that
+                    # happened here: a cancel that already moved the review is the state
+                    # that wins, and `_settle` has not run, so no reviewer's own outcome
+                    # is overwritten either.
+                    await self.store.transition(review.id, "failed", ("running",))
+                    raise
         finally:
             if owns_batch_marker:
                 batch_done.set()
@@ -666,21 +702,44 @@ class ReviewService:
         seen = set()
         for row in await self.store.reviewer_rows(review_id):
             seen.add(row.agent_id)
+            consultation_id = UUID(row.consultation_id) if row.consultation_id else None
+            usage = (
+                await self.consult.store.usage(consultation_id)
+                if consultation_id is not None
+                else None
+            )
             if row.agent_id in fresh:
-                out.append(fresh[row.agent_id])
+                current = fresh[row.agent_id]
+                out.append(current.model_copy(update={"usage": usage or current.usage}))
                 continue
             findings = json.loads(row.findings_json) if row.findings_json else []
             sources = json.loads(row.sources_json) if row.sources_json else []
+            content = None
+            if consultation_id is not None:
+                payload = await self.consult.store.latest_response(consultation_id)
+                if payload is not None:
+                    try:
+                        content = ConsultationContent(**payload)
+                    except ValidationError:
+                        # A legacy or hand-edited row must not make the whole review
+                        # unreadable. The review row still carries its answer/findings.
+                        content = None
             out.append(
                 ReviewerResult(
                     agent_id=row.agent_id,
                     ok=row.status == "ok",
-                    consultation_id=UUID(row.consultation_id) if row.consultation_id else None,
+                    consultation_id=consultation_id,
                     findings=[Finding(**f) for f in findings],
                     sources=_sources(sources),
                     findings_parsed=bool(row.findings_parsed or row.findings_json),
                     findings_truncated=row.findings_truncated,
                     answer=row.answer,
+                    assumptions=(content.assumptions[:MAX_LIST_ITEMS] if content else []),
+                    uncertainties=(content.uncertainties[:MAX_LIST_ITEMS] if content else []),
+                    follow_up_questions=(
+                        content.follow_up_questions[:MAX_LIST_ITEMS] if content else []
+                    ),
+                    usage=usage,
                     error=(
                         ConsultError(
                             code=ConsultErrorCode(row.error_code),
@@ -741,7 +800,7 @@ class ReviewService:
         """One follow-up turn when the findings block could not be read.
 
         An unparsed answer is not a failed one -- the review was written, only its
-        structure was lost, and in that state `missing_criticals` enforces nothing.
+        structure was lost, and in that state `missing_serious` enforces nothing.
         The re-ask rides the same consultation, so the material is already in the
         session's history and this costs a few hundred characters rather than another
         copy of the context.
@@ -829,12 +888,12 @@ class ReviewService:
         # Checked, not merely asked for: the reason to consult more than one reviewer
         # is that a lone dissenting Critical survives the synthesis, and a rule stated
         # only in a prompt is a rule nothing enforces.
-        invalid = missing_criticals(results, written)
+        invalid = missing_serious(results, written)
         if invalid:
             return refusal(
                 f"the summary has invalid or incomplete finding provenance: "
-                f"{', '.join(invalid)}. Every Critical must be referenced through "
-                "`source_finding_ids`, and every referenced id must come from a "
+                f"{', '.join(invalid)}. Every Critical and Important must be referenced "
+                "through `source_finding_ids`, and every referenced id must come from a "
                 "reviewer's findings"
             )
 
@@ -1015,18 +1074,20 @@ class ReviewService:
         return await self._guard(review_id, started, lambda review: self._get(started, review))
 
     async def _get(self, started: float, review) -> ReviewResponse:
+        results = await self._results(review.id)
         return ReviewResponse(
             review_id=UUID(review.id),
             mode=review.mode,
             status=review.status,
             outcome=review.outcome,
-            results=await self._results(review.id),
+            results=results,
             host_findings=json.loads(review.host_findings_json or "[]"),
             summary=(
                 ReviewSummary(**json.loads(review.summary_json)) if review.summary_json else None
             ),
             fix_rounds=_fix_rounds(review),
             rechecks=await self.store.recheck_ids(review.id),
+            usage=_total(results),
             latency_ms=_ms(started),
         )
 
@@ -1109,6 +1170,26 @@ class ReviewService:
             return (await self.store.get_review(review_id)).status  # type: ignore[return-value]
         except Exception:
             return "failed"
+
+
+def _refuse_excluded(
+    snapshots: list[ReviewerSnapshot], excluded: dict[str, tuple[str, str]]
+) -> None:
+    """Refuse a reviewer that is one of the identities this review has to differ from.
+
+    What `workflow.review_policy` is enforced through. The keys are roles -- the
+    implementer, the planner -- and the values are the `(runtime, model)` those roles
+    actually resolved to, so an operator cannot get around it by giving one agent two
+    ids. Refused here rather than at the workflow, so the refusal lands before a
+    `pending` row exists and before anything is sent.
+    """
+    for snapshot in snapshots:
+        for role, (runtime, model) in sorted(excluded.items()):
+            if reason := same_execution_identity(snapshot.runtime, snapshot.model, runtime, model):
+                raise ValueError(
+                    f"`{snapshot.agent_id}` ({snapshot.runtime}/{snapshot.model}) cannot be "
+                    f"shown to differ from the {role} ({runtime}/{model}): {reason}"
+                )
 
 
 def _fix_rounds(review) -> list[FixRound]:
@@ -1262,7 +1343,7 @@ def _candidates(answer: str):
     so in document order a reviewer quoting the required shape early -- an empty
     `{"findings": []}` in its prose -- would win over the real block at the end. That
     parses, so the result is not `findings_parsed=False`; it is a review claiming
-    zero findings while its Criticals sit in the text above, and `missing_criticals`
+    zero findings while its Criticals sit in the text above, and `missing_serious`
     then has nothing to catch. A fenced-first order loses the same way whenever the
     quoted shape is the fenced one and the real block is not.
 
@@ -1310,18 +1391,22 @@ def _sources(stored: list[Any]) -> list[ConsultSource]:
 
 
 def _total(results: list[ReviewerResult]) -> Usage:
-    """What the whole review cost, summed over the reviewers that reported.
+    """What the whole review cost, if every reviewer reported it.
 
-    A reviewer rebuilt from its stored row has no usage, so this undercounts a
-    retry rather than inventing a figure for the attempts it did not run.
+    Reviewer usage is cumulative over the linked consultation's recorded turns, so
+    retries and retrieval after restart count every attempt exactly once.
     """
     used = [r.usage for r in results if r.usage is not None]
-    costs = [u.cost_usd for u in used if u.cost_usd is not None]
+    cost_known = (
+        bool(results)
+        and len(used) == len(results)
+        and all(u.cost_usd is not None for u in used)
+    )
     return Usage(
         prompt_tokens=sum(u.prompt_tokens for u in used),
         completion_tokens=sum(u.completion_tokens for u in used),
         total_tokens=sum(u.total_tokens for u in used),
-        cost_usd=sum(costs) if costs else None,
+        cost_usd=sum(u.cost_usd for u in used) if cost_known else None,
     )
 
 

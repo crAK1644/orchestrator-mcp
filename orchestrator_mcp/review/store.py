@@ -62,6 +62,10 @@ class Review:
     fix_rounds_json: str | None
     created_at: str
     updated_at: str
+    # Set when a workflow review step created this review. Nullable, so a standalone
+    # `orchestrator_review` is unchanged.
+    workflow_id: str | None = None
+    step_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -142,6 +146,8 @@ class ReviewStore:
         secret_hits: list[dict[str, Any]],
         web_requested: bool,
         parent_review_id: UUID | str | None = None,
+        workflow_id: str | None = None,
+        step_id: str | None = None,
     ) -> str:
         """Write the `pending` row. Returns nothing the caller does not already have.
 
@@ -157,8 +163,9 @@ class ReviewStore:
             self._db.execute(
                 "INSERT INTO reviews (id, parent_review_id, mode, status, outcome, goal, context, "
                 "material_json, material_sha256, raw_sha256, reviewer_snapshot_json, "
-                "confirm_token_sha, secret_hits_json, web_requested, created_at, updated_at) "
-                "VALUES (?,?,?,'pending',NULL,?,?,?,?,?,?,?,?,?,?,?)",
+                "confirm_token_sha, secret_hits_json, web_requested, created_at, updated_at, "
+                "workflow_id, step_id) "
+                "VALUES (?,?,?,'pending',NULL,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(review_id),
                     str(parent_review_id) if parent_review_id is not None else None,
@@ -174,6 +181,8 @@ class ReviewStore:
                     int(bool(web_requested)),
                     now,
                     now,
+                    workflow_id,
+                    step_id,
                 ),
             )
 
@@ -276,13 +285,13 @@ class ReviewStore:
 
         return await self._run(work)
 
-    async def save_host_findings(self, review_id: UUID | str, findings: Any) -> None:
-        await self._run(
-            lambda: self._db.execute(
-                "UPDATE reviews SET host_findings_json = ?, updated_at = ? WHERE id = ?",
-                (_json_or_none(self._keep(findings)), _now(), str(review_id)),
-            )
-        )
+    # There is deliberately no `save_host_findings`. `consume_confirm_token` above is
+    # the only writer of `host_findings_json`, and it writes them in the same statement
+    # that spends the token and moves the review to `running` -- which is what makes
+    # "the host formed its own findings before it read anyone else's" a fact about the
+    # database rather than a convention. A standalone setter, even an unused one, is a
+    # statement that would let them be written or rewritten afterwards, and the whole
+    # point of deep mode is that they cannot be.
 
     @property
     def keeps_content(self) -> bool:

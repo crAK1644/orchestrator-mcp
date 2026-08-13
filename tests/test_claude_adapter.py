@@ -145,6 +145,36 @@ async def test_a_successful_consultation_returns_content_session_and_usage(
     assert result.usage.cost_usd == 0.0123
 
 
+async def test_the_cached_share_of_a_prompt_is_counted_in_the_total(
+    tmp_path, monkeypatch, adapter
+):
+    """Live numbers from a resumed turn: 2 fresh input tokens, 2771 from cache.
+
+    `input_tokens` alone made that turn look like 1323 tokens. It was nearer 4100, and
+    the cost reported beside it was billed on the larger figure.
+    """
+    usage = {
+        "input_tokens": 2,
+        "output_tokens": 1321,
+        "cache_read_input_tokens": 1334,
+        "cache_creation_input_tokens": 1437,
+    }
+    agent_stub.install("claude", tmp_path, monkeypatch, runs=[{"stdout": envelope(usage=usage)}])
+
+    result = await adapter.start(agent(), prompt(), SourceMode.DOCUMENT)
+
+    assert (result.usage.prompt_tokens, result.usage.completion_tokens) == (2, 1321)
+    assert result.usage.total_tokens == 2 + 1321 + 1334 + 1437
+
+
+async def test_a_boolean_cost_stays_unknown(tmp_path, monkeypatch, adapter):
+    """`bool` is an `int`, but a malformed cost field is not a one-dollar charge."""
+    agent_stub.install("claude", tmp_path, monkeypatch, runs=[{"stdout": envelope(total_cost_usd=True)}])
+    result = await adapter.start(agent(), prompt(), SourceMode.DOCUMENT)
+
+    assert result.usage.cost_usd is None
+
+
 async def test_resume_continues_the_same_session(tmp_path, monkeypatch, adapter):
     record = agent_stub.install("claude", tmp_path, monkeypatch, runs=[{"stdout": envelope()}])
     await adapter.resume(agent(), SESSION, prompt(), SourceMode.DOCUMENT)
@@ -178,6 +208,137 @@ async def test_a_model_family_name_still_matches_the_configured_alias(tmp_path, 
     """`opus` configured, `claude-opus-5` reported: the same model, not a substitution."""
     agent_stub.install("claude", tmp_path, monkeypatch, runs=[{"stdout": envelope()}])
     assert (await adapter.start(agent(), prompt(), SourceMode.DOCUMENT)).model_used == "claude-opus-5"
+
+
+async def test_primary_usage_selects_opus_when_claude_also_reports_a_haiku_helper(
+    tmp_path, monkeypatch, adapter
+):
+    """Current Claude Code reports internal helper usage beside the answering model."""
+    model_usage = {
+        "claude-haiku-4-5-20251001": {"inputTokens": 521, "outputTokens": 11},
+        "claude-opus-5": {"inputTokens": 1180, "outputTokens": 96},
+    }
+    agent_stub.install(
+        "claude", tmp_path, monkeypatch,
+        runs=[{"stdout": envelope(modelUsage=model_usage)}],
+    )
+
+    result = await adapter.start(agent(), prompt(), SourceMode.DOCUMENT)
+
+    assert result.model_used == "claude-opus-5"
+
+
+async def test_ambiguous_multi_model_usage_is_refused(tmp_path, monkeypatch, adapter):
+    """Several reported models without one primary-usage match cannot be verified."""
+    model_usage = {
+        "claude-haiku-4-5": {"inputTokens": 10, "outputTokens": 2},
+        "claude-opus-5": {"inputTokens": 20, "outputTokens": 4},
+    }
+    agent_stub.install(
+        "claude", tmp_path, monkeypatch,
+        runs=[{"stdout": envelope(modelUsage=model_usage)}],
+    )
+
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), SourceMode.DOCUMENT)
+
+    assert exc.value.code is ConsultErrorCode.PROTOCOL_VALIDATION_FAILED
+
+
+# The three below carry token counts copied from live `claude` runs on 2.1.220, not
+# invented ones. The question they answer is whether `modelUsage` covers one
+# invocation or a whole session: if it accumulated, a resumed or multi-turn run would
+# stop matching the top-level `usage` and be refused for being ambiguous. Observed:
+# it is per invocation, and the top-level usage equals the answering model's entry in
+# every shape below.
+
+
+async def test_a_resumed_turn_reports_only_the_model_that_answered_it(
+    tmp_path, monkeypatch, adapter
+):
+    """Live: the helper from turn one is absent from turn two's `modelUsage`.
+
+    Per invocation, not cumulative -- so the resumed turn has one entry, and the
+    match never has to disambiguate anything.
+    """
+    payload = json.loads(envelope())
+    payload["usage"] = {
+        "input_tokens": 2,
+        "output_tokens": 1321,
+        "cache_read_input_tokens": 1334,
+        "cache_creation_input_tokens": 1437,
+    }
+    payload["modelUsage"] = {
+        "claude-opus-5": {
+            "inputTokens": 2,
+            "outputTokens": 1321,
+            "cacheReadInputTokens": 1334,
+            "cacheCreationInputTokens": 1437,
+        }
+    }
+    agent_stub.install("claude", tmp_path, monkeypatch, runs=[{"stdout": json.dumps(payload)}])
+
+    result = await adapter.resume(agent(), SESSION, prompt(), SourceMode.DOCUMENT)
+
+    assert result.model_used == "claude-opus-5"
+
+
+async def test_a_seven_turn_web_run_still_matches_the_answering_model(
+    tmp_path, monkeypatch, adapter
+):
+    """Live: seven turns, and the helper's input tokens dwarf the answering model's.
+
+    99411 against 494, because a search result lands in the helper's context. Size is
+    exactly the wrong signal here, and the top-level usage picks the right entry
+    without it.
+    """
+    payload = json.loads(envelope())
+    payload["num_turns"] = 7
+    payload["usage"] = {
+        "input_tokens": 494,
+        "output_tokens": 3093,
+        "cache_read_input_tokens": 8002,
+        "cache_creation_input_tokens": 4126,
+    }
+    payload["modelUsage"] = {
+        "claude-haiku-4-5-20251001": {"inputTokens": 99411, "outputTokens": 729},
+        "claude-opus-5": {"inputTokens": 494, "outputTokens": 3093},
+    }
+    agent_stub.install(
+        "claude", tmp_path, monkeypatch,
+        runs=[{"stdout": stream(INIT, assistant("searching"), payload)}],
+    )
+
+    result = await adapter.start(agent(web_search=True), prompt(SourceMode.WEB), SourceMode.WEB)
+
+    assert result.model_used == "claude-opus-5"
+
+
+async def test_an_overloaded_api_is_a_failure_not_a_model_substitution(
+    tmp_path, monkeypatch, adapter
+):
+    """Live: a 529 left `modelUsage` holding the helper alone and the usage at zero.
+
+    Read as metadata that would be a substitution -- the configured model nowhere in
+    sight. It is not: nothing answered at all. The exit code is checked first, so the
+    caller is told the agent was unavailable rather than told it swapped models.
+    """
+    payload = json.loads(envelope())
+    payload["is_error"] = True
+    payload["result"] = "API Error: 529 Overloaded."
+    payload["usage"] = {"input_tokens": 0, "output_tokens": 0}
+    payload["modelUsage"] = {
+        "claude-haiku-4-5-20251001": {"inputTokens": 574, "outputTokens": 19}
+    }
+    agent_stub.install(
+        "claude", tmp_path, monkeypatch,
+        runs=[{"stdout": json.dumps(payload), "returncode": 1}],
+    )
+
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), SourceMode.DOCUMENT)
+
+    assert exc.value.code is ConsultErrorCode.AGENT_UNAVAILABLE
 
 
 async def test_missing_model_metadata_is_not_treated_as_substitution(tmp_path, monkeypatch, adapter):

@@ -25,9 +25,15 @@ SNAPSHOT = Path(__file__).parent / "golden" / "tool_schema.json"
 
 
 def snapshot_config() -> dict:
+    """Everything switched on, so the snapshot covers all three surfaces.
+
+    A block left out here is a surface whose schema can drift unwatched, which is
+    the one thing this file exists to prevent.
+    """
     return {
         "consult": consult_block(
-            review={"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol", "claude-opus"]}
+            review={"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol", "claude-opus"]},
+            workflow={"bindings": {"research": {"agent": "codex-sol"}}},
         )
     }
 
@@ -43,13 +49,42 @@ async def test_the_advertised_schema_has_not_moved(host_claude):
     assert await advertised(snapshot_config()) == json.loads(SNAPSHOT.read_text())
 
 
+CONSULT_TOOLS = {
+    "orchestrator_consult",
+    "orchestrator_list_consult_agents",
+    "orchestrator_get_consultation",
+    "orchestrator_delete_consultation",
+    "orchestrator_request_delete_all_consultations",
+    "orchestrator_delete_all_consultations",
+}
+
+
 async def test_a_config_without_reviewers_advertises_only_the_consult_tools(host_claude):
-    """Two opt-ins, not one. A server with no reviewers must not offer an
-    `orchestrator_review` tool that can do nothing but refuse."""
-    assert set(await advertised({"consult": consult_block()})) == {
-        "orchestrator_consult",
-        "orchestrator_list_consult_agents",
-        "orchestrator_get_consultation",
+    """Three opt-ins, not one. A server with no reviewers must not offer an
+    `orchestrator_review` tool that can do nothing but refuse, and the same goes for
+    a workflow nobody configured."""
+    assert set(await advertised({"consult": consult_block()})) == CONSULT_TOOLS
+
+
+async def test_reviewers_without_a_workflow_advertise_no_workflow_tools(host_claude):
+    """The two blocks are independent: reviewers are not a workflow."""
+    review = snapshot_config()["consult"]["review"]
+    tools = set(await advertised({"consult": consult_block(review=review)}))
+    assert not [name for name in tools if name.startswith("orchestrator_workflow")]
+    assert "orchestrator_review" in tools
+
+
+async def test_a_workflow_block_advertises_the_workflow_tools(host_claude):
+    tools = set(await advertised(snapshot_config()))
+    assert {name for name in tools if name.startswith("orchestrator_workflow")} == {
+        "orchestrator_workflow_start",
+        "orchestrator_workflow_plan_step",
+        "orchestrator_workflow_run_step",
+        "orchestrator_workflow_record_host_step",
+        "orchestrator_workflow_status",
+        "orchestrator_workflow_plan_replan",
+        "orchestrator_workflow_replan",
+        "orchestrator_workflow_cancel",
     }
 
 

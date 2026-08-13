@@ -1,9 +1,11 @@
 """The MCP surface.
 
-Two paths hang off `build_server`, both of them other agents' CLIs rather than an
+Three paths hang off `build_server`, all of them other agents' CLIs rather than an
 API: `consult` asks one agent a question, `review` asks several and makes the host
-synthesize them. This module owns the config contract and the tool definitions;
-the protocols themselves live in `.consult` and `.review`.
+synthesize them, and `workflow` runs a whole job through research, implementation
+and review with the host deciding when to advance. This module owns the config
+contract and the tool definitions; the protocols themselves live in `.consult`,
+`.review` and `.workflow`.
 
 No provider SDK, no API key, no network of our own -- every model reached from
 here is reached through a CLI the user has already logged into.
@@ -21,10 +23,18 @@ from uuid import UUID
 import yaml
 from mcp.server import MCPServer
 
+from .commands import add_commands
 from .contract import ConfigError
-from .consult.config import host_runtime, load_consult_config
-from .consult.contract import ConsultAgentsResponse, ConsultationRecord, ConsultResponse
+from .consult.config import StepBinding, host_runtime, load_consult_config
+from .consult.contract import (
+    ConsultAgentsResponse,
+    ConsultationDeleteApproval,
+    ConsultationDeletionResult,
+    ConsultationRecord,
+    ConsultResponse,
+)
 from .consult.service import ConsultService
+from .consult.store import DELETE_CONFIRM_TTL_S as CONSULT_DELETE_CONFIRM_TTL_S
 from .consult.store import ConsultStore
 from .review.contract import (
     CombinedFinding,
@@ -40,6 +50,8 @@ from .review.contract import (
 )
 from .review.service import ReviewService
 from .review.store import DELETE_CONFIRM_TTL_S
+from .workflow.contract import Step, WorkflowResponse
+from .workflow.service import WorkflowService
 
 __all__ = ["ConfigError", "build_server", "load_config", "main", "validate_config"]
 
@@ -115,6 +127,11 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
     consult_config = load_consult_config(config)
     if consult_config is not None:
         runtime = host_runtime()
+        # A `consult.host.runtime:` that disagrees with the environment is a config
+        # that has drifted, and every exclusion downstream would be computed against
+        # the wrong identity. Checked here because this is the first place that holds
+        # both answers.
+        consult_config.check_host_runtime(runtime)
         # One store for both layers, not one each: a review and the consultations
         # under it are then written by the same serialized worker, and a deletion can
         # remove them in one transaction instead of hoping two connections agree.
@@ -122,8 +139,28 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
         _add_consult_tools(server, ConsultService(consult_config, runtime, store=store))
         # Advertised only when reviewers are configured. A server with none should
         # not offer an `orchestrator_review` tool that can do nothing but refuse.
-        if consult_config.review is not None:
-            _add_review_tools(server, ReviewService(consult_config, runtime, store=store))
+        reviews = (
+            ReviewService(consult_config, runtime, store=store)
+            if consult_config.review is not None
+            else None
+        )
+        if reviews is not None:
+            _add_review_tools(server, reviews)
+        # Same rule for the workflow, and the same `ReviewService` rather than a
+        # second one: a workflow's review step and `orchestrator_cancel_review` have
+        # to be talking about the same in-flight children, or cancelling from one
+        # side would leave the other waiting on processes it cannot see.
+        if consult_config.workflow is not None:
+            _add_workflow_tools(
+                server, WorkflowService(consult_config, runtime, store=store, reviews=reviews)
+            )
+        # The slash commands, gated on the same two answers as the tools they drive.
+        # Last, so the `if`s above have already decided what exists.
+        add_commands(
+            server,
+            reviews=reviews is not None,
+            workflow=consult_config.workflow is not None,
+        )
 
     return server
 
@@ -141,8 +178,9 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         p.name: p.annotation for p in consult.__signature__.parameters.values()
     } | {"return": ConsultResponse}
     consult.__doc__ = (
-        "Consult another vendor's coding agent -- a Codex or Claude Code CLI running "
-        "under its own account -- and get back a structured second opinion.\n\n"
+        "Consult another vendor's coding agent -- Codex, Claude Code, OpenCode, or "
+        "experimental Antigravity -- running under its own account, and get back a "
+        "structured second opinion.\n\n"
         "Keep the `consultation_id` from the response and send it back on every later "
         "call about the same topic: that is what continues the same conversation on "
         "the other side, and without it each call starts a new one that remembers "
@@ -169,6 +207,39 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         chosen."""
         await service.open()
         return await service.get_consultation(consultation_id)
+
+    @server.tool(name="orchestrator_delete_consultation")
+    async def delete_consultation(consultation_id: UUID) -> ConsultationDeletionResult:
+        """Delete one ordinary consultation and all of its locally stored turns.
+
+        A consultation owned by a review must be deleted through the review tool so
+        the findings and audit trail cannot be separated from their source. Vendor
+        CLI history is outside this database and is not removed.
+        """
+        return ConsultationDeletionResult(
+            deleted=await service.delete_consultation(consultation_id)
+        )
+
+    @server.tool(name="orchestrator_request_delete_all_consultations")
+    async def request_delete_all_consultations() -> ConsultationDeleteApproval:
+        """Preview deletion of all ordinary consultation history. Deletes nothing.
+
+        The returned token is bound to the exact consultations counted here; review
+        history and consultations created afterwards are not included.
+        """
+        token, count = await service.request_delete_all_consultations()
+        return ConsultationDeleteApproval(
+            consultations=count,
+            confirm_token=token,
+            expires_in_s=int(CONSULT_DELETE_CONFIRM_TTL_S),
+        )
+
+    @server.tool(name="orchestrator_delete_all_consultations")
+    async def delete_all_consultations(confirm_token: str) -> ConsultationDeletionResult:
+        """Delete the ordinary consultations in the approved snapshot, and only those."""
+        return ConsultationDeletionResult(
+            deleted=await service.delete_all_consultations(confirm_token)
+        )
 
 
 def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
@@ -205,7 +276,9 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         credential-shaped was found (positions only, never values). Secret detection
         is best-effort pattern matching; a credential with no recognizable shape
         survives it, so the plan raises the odds the user notices and guarantees
-        nothing.
+        nothing. This checkpoint is advisory: MCP gives this server no separate
+        human channel, so it binds and audits the scope but cannot prove which human
+        saw or approved it.
 
         Give the material as **either** `context` (a string you write) **or**
         `context_paths` (files this server reads for you). Both together is refused.
@@ -253,6 +326,11 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
     ) -> ReviewResponse:
         """Send the approved material to every reviewer, in parallel. Call this only
         after the user has seen the plan and agreed.
+
+        This checkpoint is advisory: the server verifies the one-time token and
+        unchanged scope, but cannot prove which human supplied it or approved the
+        plan. Human approval depends on the MCP client's tool-confirmation experience
+        or another external gate.
 
         `secrets="mask"` sends the redacted copy. `secrets="send_as_is"` sends the
         original and requires `raw` to repeat the exact goal and context you planned
@@ -429,6 +507,169 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         the token from that call; an expired one is refused rather than silently
         widened to whatever exists now."""
         return DeletionResult(deleted=await service.delete_all(confirm_token))
+
+
+def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
+    """The workflow surface: plan a step, approve it, run or record it, repeat.
+
+    Every side-effecting step is two calls, for the same reason the review layer is:
+    a preview that exists before anything is sent, and a token bound to that exact
+    preview. There is no one-call form and no workflow-level token -- one approval
+    covering research, implementation, every fix round and every review would be an
+    approval of nothing in particular.
+
+    What the tokens prove is snapshot integrity: that what runs is what the preview
+    described, by the agent it named, over the artifacts it read. They cannot prove a
+    human saw anything, because MCP gives this server no channel to one.
+
+    This server never edits a file or runs a command. A delegated step returns a
+    patch; applying it, running the tests and reading the exit code stay the host's,
+    and `record_host_step` is how that work comes back onto the record.
+    """
+
+    @server.tool(name="orchestrator_workflow_start")
+    async def workflow_start(
+        goal: str,
+        workdir: str,
+        web: bool = False,
+        bindings: dict[Step, StepBinding] | None = None,
+        allow_dirty: bool = False,
+    ) -> WorkflowResponse:
+        """Create a workflow and freeze its routing. **Sends nothing.**
+
+        Every step is resolved now rather than when it is reached: finding out at the
+        review step that no agent can review is finding out after paying for research,
+        planning and implementation. The resolved set is stored, so editing the config
+        afterwards does not reroute a running workflow -- `orchestrator_workflow_plan_replan` does.
+
+        `workdir` must resolve beneath a configured `workflow.roots:` entry and be a
+        git repository; its HEAD is recorded as the baseline. A dirty tree is refused
+        unless `allow_dirty=True`, so a later "what changed" is answerable.
+
+        `bindings` overrides the configured ones for this workflow only, and goes
+        through the same compatibility checks: a step whose agent scores 0 for it, or
+        whose runtime cannot be held to the execution mode asked for, is refused here
+        rather than at the step. **A step nobody binds falls to the host.**
+        """
+        return await service.start(
+            goal=goal,
+            workdir=workdir,
+            web=web,
+            bindings={k: v.model_dump(mode="json") for k, v in (bindings or {}).items()},
+            allow_dirty=allow_dirty,
+        )
+
+    @server.tool(name="orchestrator_workflow_plan_step")
+    async def workflow_plan_step(
+        workflow_id: str, step: Step, context: str = ""
+    ) -> WorkflowResponse:
+        """Prepare one step and show what it would do. **Sends nothing.**
+
+        Returns the step's id, the agents it would use, and a `confirm_token` that is
+        shown once and spent once. Show the preview to the user before spending it.
+
+        `context` is the material this step gets to see -- the current source of the
+        files it is meant to change, most usefully. A delegated agent never sees your
+        repository, so a `plan`, `implement` or `fix` step sent without it is being
+        asked to work from a description alone, and a good model will say so rather
+        than guess. Credential-shaped values are redacted before it is stored *and*
+        before it is sent, so the preview, the token's hash and the send are the same
+        text.
+
+        For a **review** step this plans the review as well, and the token you get
+        back *is* that review's token -- one review, one approval. The reviewers are
+        excluded by execution identity from whoever planned or implemented the change,
+        under `workflow.review_policy:`, so two agent ids pointing at one model cannot
+        review each other's work.
+        """
+        return await service.plan_step(workflow_id, step, context)
+
+    @server.tool(name="orchestrator_workflow_run_step")
+    async def workflow_run_step(
+        workflow_id: str, step_id: str, confirm_token: str
+    ) -> WorkflowResponse:
+        """Spend the token and run a delegated step. Call this after the user has seen
+        the preview.
+
+        The prompt is checked against the one the preview described: if the artifacts
+        it reads changed in between, the step is refused rather than sent, and you plan
+        it again.
+
+        For `implement` and `fix` the agent replies with a unified diff, returned here
+        in `patch` -- **once, and only here.** What is stored is a scrubbed audit copy
+        plus the hash of the raw text, because a scrubbed patch does not apply. Save
+        this one, apply it yourself, then record the result with
+        `orchestrator_workflow_record_host_step` on the `apply_patch` step.
+
+        A step whose executor is the host is refused here; record it instead.
+        """
+        return await service.run_step(workflow_id, step_id, confirm_token)
+
+    @server.tool(name="orchestrator_workflow_record_host_step")
+    async def workflow_record_host_step(
+        workflow_id: str,
+        step_id: str,
+        confirm_token: str,
+        result: dict[str, Any],
+    ) -> WorkflowResponse:
+        """Record work you did yourself, spending the step's token as your attestation.
+
+        `result` must match the artifact the step produces, and is validated: a
+        `test` step takes a `TestReport` (the exact command, working directory, exit
+        code, bounded output, and the commit tested), `synthesize` takes the same
+        synthesis `orchestrator_finalize_review` takes, and so on. Prose where a
+        report belongs is refused rather than stored under an artifact's name.
+
+        `reported_by` is assigned by this server from the fact that you wrote the row,
+        and a value in `result` is dropped. A host-written report is host-attested and
+        says so -- this server never sees your repository. What it is authoritative
+        over is a coding agent's *claim* to have run the tests, which is a sentence,
+        not a result.
+        """
+        return await service.record_host_step(workflow_id, step_id, confirm_token, result)
+
+    @server.tool(name="orchestrator_workflow_status")
+    async def workflow_status(workflow_id: str) -> WorkflowResponse:
+        """Where the workflow is: state, artifacts so far, the agents each step
+        resolved to, fix rounds used against the cap, and `next_steps` -- the steps
+        that can be planned from here.
+
+        Also reaps steps whose runner died: a `running` step whose lease expired
+        becomes `abandoned` and can be planned again, so a crash cannot leave a
+        workflow wedged in a status that outlived its process.
+        """
+        return await service.status(workflow_id)
+
+    @server.tool(name="orchestrator_workflow_plan_replan")
+    async def workflow_plan_replan(
+        workflow_id: str, bindings: dict[Step, StepBinding]
+    ) -> WorkflowResponse:
+        """Preview a routing change for a running workflow. **Changes nothing.**
+
+        Rerouting is the same handshake as anything else here, because a binding swap
+        mid-workflow decides who sees the rest of the material. Returns a token for
+        `orchestrator_workflow_replan`.
+        """
+        return await service.plan_replan(
+            workflow_id, {k: v.model_dump(mode="json") for k, v in bindings.items()}
+        )
+
+    @server.tool(name="orchestrator_workflow_replan")
+    async def workflow_replan(workflow_id: str, confirm_token: str) -> WorkflowResponse:
+        """Adopt the staged bindings. Steps already run keep the routing they had --
+        this changes where the *remaining* steps go, not the record of what happened."""
+        return await service.replan(workflow_id, confirm_token)
+
+    @server.tool(name="orchestrator_workflow_cancel")
+    async def workflow_cancel(workflow_id: str) -> WorkflowResponse:
+        """Stop a workflow. Completed steps keep their artifacts.
+
+        A step running under *this* server process is waited out. One launched by a
+        second process is marked cancelled, but its subprocesses cannot be signalled
+        from here -- they will finish on their own. The same caveat
+        `orchestrator_cancel_review` carries, for the same reason.
+        """
+        return await service.cancel(workflow_id)
 
 
 def main() -> None:

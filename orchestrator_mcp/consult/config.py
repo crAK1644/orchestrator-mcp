@@ -14,8 +14,10 @@ from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from ..code.registry import runtime_capabilities, unsupported_reason
 from ..contract import ConfigError
-from .contract import PROTOCOL_VERSION, Capability, Runtime
+from ..workflow.contract import STEPS, Step
+from .contract import PROTOCOL_VERSION, Capability, ExecutionMode, Runtime
 from .managed import DEFAULT_MANAGED_PATH, managed_path, read_managed_document
 
 HOST_RUNTIME_ENV = "ORCHESTRATOR_HOST_RUNTIME"
@@ -46,6 +48,11 @@ class AgentConfig(BaseModel):
     # not the operator's. A closed set because a typo would otherwise be invisible --
     # it would run, quietly, at a depth nobody chose.
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    # What the operator will let this agent be asked to do, which is not the same as
+    # what its runtime can be held to -- see `code.registry.RUNTIME_CAPABILITIES`. A
+    # workflow step may use a mode only if it is in both. The default is the mode the
+    # consult path has always used, so an existing config grants nothing new.
+    execution_modes: list[ExecutionMode] = Field(default_factory=lambda: ["consultation"])
     # Which file this came from, so the dashboard can offer to edit the ones it owns
     # and only show the rest. `exclude=True` keeps it out of `model_dump`, which is
     # what `config_hash` hashes and what gets written back: moving an agent between
@@ -146,6 +153,113 @@ class ReviewConfig(BaseModel):
         return value
 
 
+class HostConfig(BaseModel):
+    """Which execution identity this installation *is*.
+
+    `runtime` still comes from `ORCHESTRATOR_HOST_RUNTIME` and that stays the
+    authority; naming it here is an assertion, checked at boot by
+    `check_host_runtime`, so a config that has drifted from the environment refuses
+    rather than routes.
+
+    `model` is the part the environment cannot supply. With it, a workflow step can
+    exclude the host by execution identity and let a *different* model on the same
+    runtime take the step. Without it, exclusion stays at runtime level -- which is
+    what the consult path has always done, and the conservative answer.
+
+    Neither ever comes from a tool argument, for the reason `host_runtime` gives.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    runtime: Runtime | None = None
+    model: str | None = Field(default=None, min_length=1)
+
+
+class ReviewPolicy(BaseModel):
+    """Who may review a workflow's own work.
+
+    Checked against resolved execution identity, not vendor names: two agent ids
+    pointing at one model are one reviewer, however they are spelled.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    different_from_implementer: bool = True
+    different_from_planner: bool = False
+
+
+class StepBinding(BaseModel):
+    """Which worker takes one step, and how.
+
+    Three shapes, and the validator refuses the mixtures:
+      * `{executor: host}`            -- the host does it
+      * `{agent: x, execution: patch}` -- that agent, that mode
+      * `{agents: [x, y]}`             -- review only
+    An `agent:` left out with `executor: agent` means `auto`: routed by score.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    executor: Literal["host", "agent"] = "agent"
+    agent: str | None = None
+    agents: list[str] | None = None
+    execution: ExecutionMode = "consultation"
+
+    @model_validator(mode="after")
+    def _one_shape(self) -> StepBinding:
+        if self.executor == "host":
+            if self.agent or self.agents:
+                raise ValueError("`executor: host` takes no `agent:` or `agents:`")
+            return self
+        if self.agent and self.agents:
+            raise ValueError("name either `agent:` or `agents:`, not both")
+        if self.agents is not None and len(self.agents) != len(set(self.agents)):
+            # The same agent twice is two paid requests to one model, returned as
+            # though two of them agreed. The review config refuses this too.
+            raise ValueError("`agents:` names the same agent more than once")
+        if self.agents == []:
+            raise ValueError("`agents:` must name at least one agent")
+        return self
+
+
+class WorkflowConfig(BaseModel):
+    """The three-phase workflow. Absent means the workflow tools are not advertised."""
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+    # The bound on review/fix. Reached with serious findings still open, the workflow
+    # ends in `needs_attention` rather than claiming to be done.
+    max_fix_rounds: int = Field(default=5, ge=1, le=20)
+    # Where a workflow may work. Empty means nowhere for `isolated_write`; a host
+    # workflow still needs its workdir to resolve beneath one of these.
+    roots: list[Path] = Field(default_factory=list)
+    # Off by default: a failed test that advances to review spends reviewers on code
+    # already known to be broken.
+    advance_on_failed_test: bool = False
+    # Its own timeout, because `consult.timeout_s` is sized for a question and an
+    # `isolated_write` step is a coding session: it reads files, edits them, runs the
+    # tests and fixes what it broke. Raising the global one to suit that would give
+    # every consultation a quarter of an hour to answer.
+    execution_timeout_s: int = Field(default=900, ge=1)
+    review_policy: ReviewPolicy = Field(default_factory=ReviewPolicy)
+    bindings: dict[Step, StepBinding] = Field(default_factory=dict)
+
+    @field_validator("roots")
+    @classmethod
+    def _expand_roots(cls, value: list[Path]) -> list[Path]:
+        expanded: list[Path] = []
+        for root in value:
+            path = Path(os.path.expandvars(str(root))).expanduser()
+            if str(path).strip() in ("", "."):
+                raise ValueError("a root must name a directory, not a blank path")
+            # `/` as a root is every file the user owns, which is not a root, it is
+            # the absence of one written as though it were a decision.
+            if path == Path(path.anchor):
+                raise ValueError(f"`{path}` is a filesystem root and cannot be a workflow root")
+            expanded.append(path)
+        return expanded
+
+
 class ConsultConfig(BaseModel):
     # `validate_default` so the default database path is expanded too: `~` reaching
     # `sqlite3.connect` creates a directory literally named `~` next to wherever the
@@ -168,6 +282,9 @@ class ConsultConfig(BaseModel):
     # Absent means the review tools are not advertised at all. A server with no
     # reviewers configured should not offer a `review` tool that can only refuse.
     review: ReviewConfig | None = None
+    host: HostConfig = Field(default_factory=HostConfig)
+    # Absent means the workflow tools are not advertised, same as `review:`.
+    workflow: WorkflowConfig | None = None
 
     @field_validator("database_path", "managed_agents_path")
     @classmethod
@@ -207,6 +324,112 @@ class ConsultConfig(BaseModel):
                 for agent_id in getattr(self.review, where):
                     self.check_reviewer(agent_id, where)
         return self
+
+    @model_validator(mode="after")
+    def _agents_can_execute(self) -> ConsultConfig:
+        """An agent cannot be granted a mode its runtime does not support.
+
+        Refused at boot rather than at the step, because the operator who wrote
+        `isolated_write` under an opencode agent believes their fix rounds are
+        contained. Finding out at the fourth step of a workflow is finding out late.
+        """
+        for agent_id, agent in sorted(self.agents.items()):
+            supported = runtime_capabilities(agent.runtime)
+            for mode in agent.execution_modes:
+                if mode not in supported:
+                    raise ValueError(
+                        f"agent `{agent_id}` declares `{mode}`, but "
+                        f"{unsupported_reason(agent.runtime, mode)}"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _workflow_is_runnable(self) -> ConsultConfig:
+        if self.workflow is None:
+            return self
+        if not self.store_full_content:
+            # A workflow *is* its stored plans, briefs, patches, findings and
+            # reports. With bodies dropped the review step cannot finalize at all,
+            # so the failure would otherwise arrive several paid steps late.
+            raise ValueError(
+                "`workflow:` requires `store_full_content: true`: a workflow's plans, "
+                "briefs, patches and reports are its state, and a review cannot be "
+                "finalized without them"
+            )
+        for step, binding in sorted(self.workflow.bindings.items()):
+            self.check_binding(step, binding)
+        return self
+
+    def check_binding(self, step: Step, binding: StepBinding) -> None:
+        """Refuse a binding the step, the agent or the runtime cannot honour.
+
+        Shared with workflow creation so an override supplied at `workflow_start`
+        goes through the same three checks, and a binding refused at boot cannot
+        arrive later by another door.
+        """
+        definition = STEPS[step]
+        where = f"`workflow.bindings.{step}`"
+        if binding.executor == "host":
+            return
+        if binding.agents is not None and not definition.supports_multiple_agents:
+            raise ValueError(f"{where} names several agents, but `{step}` takes one")
+        if binding.execution not in definition.allowed_execution_modes:
+            allowed = ", ".join(f"`{m}`" for m in definition.allowed_execution_modes)
+            raise ValueError(
+                f"{where} asks for `{binding.execution}`, which `{step}` does not allow"
+                + (f" (allowed: {allowed})" if allowed else f"; `{step}` is host-only")
+            )
+        for agent_id in binding.agents or ([binding.agent] if binding.agent else []):
+            self.check_step_agent(agent_id, step, binding.execution, where)
+
+    def check_step_agent(
+        self, agent_id: str, step: Step, mode: ExecutionMode, where: str
+    ) -> None:
+        """The three things a named agent has to be: configured, enabled, and both
+        scored and permitted for what the step asks of it."""
+        definition = STEPS[step]
+        agent = self.agents.get(agent_id)
+        if agent is None:
+            raise ValueError(f"{where} names `{agent_id}`, which is not a configured agent")
+        if not agent.enabled:
+            raise ValueError(f"{where} names `{agent_id}`, which is disabled")
+        capability = definition.capability
+        if capability is not None and agent.score_for(capability) <= 0:
+            raise ValueError(
+                f"{where} names `{agent_id}`, which scores 0 for `{capability}`; give it "
+                f"a `{capability}:` entry under its `scores:` or name a different agent"
+            )
+        if mode not in self.effective_modes(agent):
+            if mode not in agent.execution_modes:
+                raise ValueError(
+                    f"{where} asks `{agent_id}` for `{mode}`, which is not in its "
+                    "`execution_modes:`"
+                )
+            raise ValueError(
+                f"{where} asks `{agent_id}` for `{mode}`, but "
+                f"{unsupported_reason(agent.runtime, mode)}"
+            )
+
+    @staticmethod
+    def effective_modes(agent: AgentConfig) -> set[ExecutionMode]:
+        """What an agent may actually be asked to do: operator trust intersected with
+        what the code can hold the runtime to. Declaring a mode in YAML cannot make a
+        runtime support it."""
+        return set(agent.execution_modes) & runtime_capabilities(agent.runtime)
+
+    def check_host_runtime(self, actual: Runtime) -> None:
+        """Refuse a `consult.host.runtime:` that disagrees with the environment.
+
+        The environment wins because it is the trusted source; a config that names a
+        different runtime is not a second opinion, it is a file that has drifted, and
+        every exclusion downstream would be computed against the wrong identity.
+        """
+        declared = self.host.runtime
+        if declared is not None and declared != actual:
+            raise ConfigError(
+                f"`consult.host.runtime:` says `{declared}` but {HOST_RUNTIME_ENV} says "
+                f"`{actual}`. The environment is the authority; fix whichever is stale."
+            )
 
     def check_reviewer(self, agent_id: str, where: str = "reviewers") -> None:
         """Refuse an agent that cannot take a review, wherever it was named.

@@ -20,6 +20,12 @@ class ConsultErrorCode(str, Enum):
     SESSION_NOT_FOUND = "session_not_found"
     SESSION_BUSY = "session_busy"
     SESSION_TARGET_MISMATCH = "session_target_mismatch"
+    # A workflow owns this consultation, and the public tool may not resume it. Its
+    # own code rather than a target mismatch, because the refusal is about who is
+    # asking and not about which agent is bound: the workflow path relaxes the
+    # host-runtime exclusion to an execution identity, and a public resume must not
+    # inherit that.
+    WORKFLOW_OWNED_SESSION = "workflow_owned_session"
     PROTOCOL_VALIDATION_FAILED = "protocol_validation_failed"
     WEB_SEARCH_UNAVAILABLE = "web_search_unavailable"
     TRANSPORT_ERROR = "transport_error"

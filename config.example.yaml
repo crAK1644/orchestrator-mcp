@@ -1,12 +1,13 @@
 # Orchestrator MCP config.
 #
 # There is one block, and it routes to an *agent runtime* -- a Codex, Claude Code,
-# or Antigravity CLI installed on this machine, running under its own account -- so
-# Claude Code can consult GPT and Codex can consult Claude without either one
-# holding the other's API key. No provider SDK, no API key, no network of our own.
+# OpenCode, or experimental Antigravity CLI installed on this machine. Claude Code
+# can consult GPT, Codex can consult Claude, and OpenCode can reach its hosted
+# catalogue without this server holding a provider key. No provider SDK or network
+# call of our own.
 #
 # One environment variable is required alongside it: ORCHESTRATOR_HOST_RUNTIME, set
-# to `codex`, `claude`, or `antigravity` to say which runtime this installation
+# to `codex`, `claude`, `opencode`, or `antigravity` to say which runtime this installation
 # *is*. It is never a tool argument, because an agent that could name the host
 # runtime could route the work straight back to itself. Missing it is a startup
 # error.
@@ -30,7 +31,7 @@ consult:
 
   agents:
     codex-sol:              # the id callers name in `target_agent`
-      runtime: codex        # codex | claude | antigravity
+      runtime: codex        # codex | claude | opencode | antigravity
       command: codex        # resolved on PATH; an absolute path works too, which is
                             # what the ChatGPT desktop app needs -- it bundles the CLI
                             # at /Applications/ChatGPT.app/Contents/Resources/codex
@@ -42,11 +43,21 @@ consult:
                                 # means the model's own default, not yours.
       priority: 10          # ascending: lower wins a tie
       web_search: true      # required before `source_mode: web` will route here
+      execution_modes: [consultation, patch]
+                            # what this agent may be *asked* for, which is trust and
+                            # not capability: `isolated_write` written here cannot
+                            # make a runtime containable, and a runtime that is not
+                            # refuses at startup with its own reason. Codex is the
+                            # only runtime that can be, and it is not on by default.
+                            # Default `[consultation]`.
       scores:               # 0..100 per capability; omitted means 0, i.e. never
-        coding: 95          # the vocabulary is fixed: coding, research,
-        research: 85        # writing, reasoning, review
-        reasoning: 90
-        review: 95
+        coding: 95          # the vocabulary is fixed: coding, research, writing,
+        research: 85        # reasoning, review, planning, prompt_authoring,
+        reasoning: 90       # testing, synthesis. The last four are what the
+        review: 95          # workflow steps route on.
+        planning: 85
+        prompt_authoring: 80
+        synthesis: 85
 
     claude-opus:
       runtime: claude
@@ -72,6 +83,29 @@ consult:
         reasoning: 90
         review: 85
 
+    # OpenCode reaches many hosted providers through one CLI -- DeepSeek, Qwen, Kimi --
+    # which is how a model none of the three above carry becomes consultable without
+    # this server holding a key.
+    deepseek-flash:
+      runtime: opencode
+      command: opencode
+      model: opencode/deepseek-v4-flash-free
+                            # always `provider/model`; `opencode models` lists what is
+                            # reachable. `opencode auth login` once for a provider that
+                            # needs a credential. Hosted only: a consultation runs with
+                            # no `provider` block, so a locally served model -- Ollama,
+                            # LM Studio, your own endpoint -- cannot be named here. This
+                            # server reaches a hosted OpenCode model; it does not run a
+                            # model on your machine. Some hosted models are anonymous
+                            # free tier; others need a subscription or credential.
+      priority: 40
+      web_search: false     # not offered by this runtime, and setting it true here
+                            # does not buy it: web mode is refused either way
+      execution_modes: [consultation, patch]
+      scores:
+        coding: 60
+        reasoning: 60
+
   # Who reviews. Named agents rather than a capability score, because a review is
   # only worth comparing with the last one if the same models wrote both. Delete the
   # block and the `orchestrator_review` tools are simply not advertised.
@@ -79,14 +113,69 @@ consult:
     reviewers: [codex-sol]                    # exactly one, for `mode: standard`
     deep_reviewers: [codex-sol, claude-opus]  # 1 to 5, for `mode: deep`
 
+  # Which execution identity this installation *is*. `runtime` still comes from
+  # ORCHESTRATOR_HOST_RUNTIME and that stays the authority -- naming it here is an
+  # assertion, and a mismatch refuses the boot. `model` is the part the environment
+  # cannot supply: with it, a *different* model on the host's own runtime becomes
+  # routable; without it, every agent on that runtime is excluded, which is what the
+  # consult path has always done. Write the versioned name -- a bare alias like
+  # `opus` cannot be shown to differ from `claude-opus-5`, so it buys nothing.
+  host:
+    runtime: claude
+    model: claude-opus-5
+
+  # The three-phase workflow: research and planning, implementation and testing,
+  # review and fixing, the last two in a capped loop. Delete the block and the
+  # `orchestrator_workflow_*` tools are simply not advertised. It requires
+  # `store_full_content: true` -- a workflow *is* its stored plans, briefs, patches
+  # and reports, and a review cannot be finalized without them.
+  workflow:
+    max_fix_rounds: 5         # reached with serious findings still open, the
+                              # workflow ends `needs_attention`, not `completed`
+    roots: [~/src]            # a workflow's workdir must resolve beneath one of
+                              # these. `/` is refused, and nothing is inferred from
+                              # the working directory.
+    advance_on_failed_test: false
+                              # off by default: reviewing code already known to be
+                              # broken spends reviewers on a known answer
+    execution_timeout_s: 900  # `isolated_write` steps only. An agent editing files
+                              # and running the tests needs longer than a question
+                              # does, and `consult.timeout_s` is sized for a question.
+    review_policy:
+      different_from_implementer: true   # checked on execution identity, not agent
+      different_from_planner: false      # id: two ids for one model are one reviewer
+    # Which worker takes each step. Models are not tied to phases -- any agent that
+    # scores for the step and is permitted the mode can take it. A step named here
+    # with nothing bound falls to the host, which is the conservative default.
+    bindings:
+      research:  {agent: codex-sol}
+      plan:      {agent: codex-sol}
+      author_execution_prompt: {executor: host}
+      implement: {agent: deepseek-flash, execution: patch}
+                              # `patch` returns a unified diff over the ordinary
+                              # read-only path: the agent never sees your tree, and
+                              # you apply the diff yourself. No new write surface.
+                              # Because it sees nothing, send it the source: the
+                              # `context` argument of `orchestrator_workflow_plan_step`
+                              # is the only way anything from your repository reaches
+                              # a delegated step, and it is redacted before it goes.
+      apply_patch: {executor: host}      # host-only: only the party holding the
+                                         # working tree can apply anything to it
+      test:      {executor: host}        # an exit code somebody watched. A coding
+                                         # agent's claim to have run the tests is
+                                         # recorded as a claim, never as the result.
+      review:    {agents: [codex-sol, claude-opus]}
+      synthesize: {executor: host}
+      fix:       {agent: codex-sol, execution: patch}
+
   # A local page over the stored consultations, loopback only, started separately
   # with `orchestrator-mcp-dashboard`. Off unless you turn it on: it serves every
   # prompt and answer in the database.
   dashboard:
     enabled: false
     # A second opt-in, because a viewer and an editor are different things to agree
-    # to. On, the page can add, change and delete agents in `managed_agents_path`
-    # above -- and nothing else. It never edits this file and never runs a command.
+    # to. On, the page can add, change and delete agents and choose reviewers in
+    # `managed_agents_path` above. It never edits this file or runs a command.
     editable: false
     host: 127.0.0.1
     port: 8765

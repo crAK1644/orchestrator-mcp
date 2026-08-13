@@ -40,12 +40,15 @@ class StubAdapter:
         status: AgentStatus | None = None,
         error=None,
         verified: bool = False,
+        content: ConsultationContent = ANSWER,
     ) -> None:
         self.runtime = runtime
         self._status = status
         self._error = error
         self._verified = verified
+        self._content = content
         self.calls: list[tuple[str, str | None, SourceMode, int]] = []
+        self.prompts: list[str] = []
 
     def connect_command(self, agent):
         return f"{agent.command} login"
@@ -55,17 +58,19 @@ class StubAdapter:
 
     async def start(self, agent, prompt, source_mode, session_id=None):
         self.calls.append(("start", session_id, source_mode, prompt.turn))
+        self.prompts.append(prompt.full_text)
         return self._answer(session_id or "native-1")
 
     async def resume(self, agent, native_session_id, prompt, source_mode):
         self.calls.append(("resume", native_session_id, source_mode, prompt.turn))
+        self.prompts.append(prompt.full_text)
         return self._answer(native_session_id)
 
     def _answer(self, native: str) -> AdapterResult:
         if self._error:
             raise self._error
         return AdapterResult(
-            content=ANSWER,
+            content=self._content,
             native_session_id=native,
             model_used="gpt-5.6-sol",
             model_verified=self._verified,
@@ -168,6 +173,25 @@ async def test_the_turn_is_recorded_in_full(service_factory):
     assert '"answer": "blue"' in turn["answer"]
     assert record.native_session_bound
     assert record.routing[0]["selected_agent"] == "codex-sol"
+
+
+async def test_plain_consult_sends_original_material_and_stores_only_a_scrubbed_copy(
+    service_factory,
+):
+    secret = "sk-this-is-a-secret-value"
+    content = ANSWER.model_copy(update={"answer": f"the answer echoed {secret}"})
+    adapter = StubAdapter(content=content)
+    service = await service_factory(adapter)
+
+    response = await service.consult(
+        capability="coding", prompt=f"inspect {secret}", context=f"source={secret}"
+    )
+    record = await service.get_consultation(response.consultation_id)
+
+    assert secret in adapter.prompts[0]
+    assert response.content.answer.endswith(secret)
+    assert secret not in record.model_dump_json()
+    assert "[redacted]" in record.model_dump_json()
 
 
 async def test_the_stored_record_does_not_hand_back_the_native_session_id(service_factory):

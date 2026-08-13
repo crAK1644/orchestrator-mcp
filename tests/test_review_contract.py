@@ -29,7 +29,8 @@ from orchestrator_mcp.review.contract import (
     ReviewResponse,
     ReviewSummary,
     SecretHit,
-    missing_criticals,
+    missing_serious,
+    open_serious,
 )
 from orchestrator_mcp.review.service import _parse_findings
 
@@ -157,7 +158,7 @@ def test_a_summary_that_drops_a_lone_critical_is_named_as_missing_it():
         ReviewerResult(agent_id="a", ok=True, findings=[finding("a", "critical")]),
         ReviewerResult(agent_id="b", ok=True, findings=[finding("b", "minor")]),
     ]
-    assert missing_criticals(results, summary()) == ["a-1"]
+    assert missing_serious(results, summary()) == ["a-1"]
 
 
 def test_disagreeing_with_a_critical_keeps_it_and_dropping_it_does_not():
@@ -172,12 +173,19 @@ def test_disagreeing_with_a_critical_keeps_it_and_dropping_it_does_not():
             )
         ]
     )
-    assert missing_criticals(results, kept) == []
+    assert missing_serious(results, kept) == []
+
+
+def test_an_important_finding_is_held_to_the_rule_too():
+    """It was not, until the workflow loop started closing over open serious findings:
+    an Important that vanished during synthesis would read as a converged loop."""
+    results = [ReviewerResult(agent_id="a", ok=True, findings=[finding("a", "important")])]
+    assert missing_serious(results, summary()) == ["a-1"]
 
 
 def test_lesser_severities_are_not_held_to_the_same_rule():
-    results = [ReviewerResult(agent_id="a", ok=True, findings=[finding("a", "important")])]
-    assert missing_criticals(results, summary()) == []
+    results = [ReviewerResult(agent_id="a", ok=True, findings=[finding("a", "minor")])]
+    assert missing_serious(results, summary()) == []
 
 
 def test_a_summary_cannot_claim_provenance_from_a_finding_nobody_raised():
@@ -192,7 +200,47 @@ def test_a_summary_cannot_claim_provenance_from_a_finding_nobody_raised():
             )
         ]
     )
-    assert missing_criticals(results, invented) == ["ghost-1"]
+    assert missing_serious(results, invented) == ["ghost-1"]
+
+
+# --- dispositions ------------------------------------------------------------
+
+
+def test_a_finding_starts_open_and_a_workflow_can_see_it():
+    combined = CombinedFinding(problem="p", severity="critical")
+    assert combined.disposition == "open"
+    assert open_serious(summary(combined_findings=[combined])) == ["p"]
+
+
+def test_a_serious_finding_cannot_be_waved_away_without_a_reason():
+    """Deciding a Critical is wrong is allowed. Deciding it silently is not."""
+    for disposition in ("rejected", "accepted_risk"):
+        with pytest.raises(ValidationError, match="disposition_reason"):
+            CombinedFinding(problem="p", severity="important", disposition=disposition)
+
+
+def test_a_reasoned_or_fixed_serious_finding_no_longer_holds_the_loop_open():
+    closed = [
+        CombinedFinding(problem="fixed one", severity="critical", disposition="fixed"),
+        CombinedFinding(
+            problem="argued down", severity="important", disposition="rejected",
+            disposition_reason="the caller cannot reach that branch",
+        ),
+    ]
+    assert open_serious(summary(combined_findings=closed)) == []
+
+
+def test_a_minor_finding_needs_no_reason_and_never_holds_the_loop_open():
+    minor = CombinedFinding(problem="p", severity="minor", disposition="rejected")
+    assert open_serious(summary(combined_findings=[minor])) == []
+
+
+def test_open_serious_reports_worst_first():
+    findings = [
+        CombinedFinding(problem="important one", severity="important"),
+        CombinedFinding(problem="critical one", severity="critical"),
+    ]
+    assert open_serious(summary(combined_findings=findings)) == ["critical one", "important one"]
 
 
 # --- parsing a reviewer's answer --------------------------------------------

@@ -409,8 +409,8 @@ def rate_limit() -> dict | None:
 
     Worth surfacing because the question people ask before starting a 300-second review
     is whether they can afford one, and this is the only place on the machine that knows.
-    Stale by definition -- it is whatever the last consultation was told -- and `None`
-    when nothing has run, which is not an error.
+    Stale by definition -- it is whatever the newest Codex CLI session was told --
+    and `None` when no session has reported it, which is not an error.
     """
     home = child_env().get("HOME")
     if not home:
