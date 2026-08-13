@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from orchestrator_mcp.consult.adapters import opencode_cli
 from orchestrator_mcp.consult.adapters.base import AdapterError
 from orchestrator_mcp.consult.adapters.opencode_cli import OpenCodeCliAdapter, _add, _session_dir
 from orchestrator_mcp.consult.config import AgentConfig
@@ -25,6 +26,10 @@ from orchestrator_mcp.consult.prompts import compile_prompt
 from orchestrator_mcp.contract import Usage
 
 from .fixtures import opencode_stub
+
+# Captured before any test can replace it, for the two tests that are about the check
+# itself rather than about the adapter that calls it.
+REFUSE_WRITABLE_ANCESTORS = opencode_cli._refuse_writable_ancestors
 
 MODEL = "opencode/deepseek-v4-flash-free"
 SESSION = "ses_01e1d1c6effevvnIR8XBZ9hlqX"
@@ -120,10 +125,19 @@ def scratch_under(tmp_path, monkeypatch):
     Where it lands matters twice over: the adapter refuses to run beneath a directory
     carrying an opencode config of its own, and it deliberately sits under `$HOME` --
     every ancestor user-owned -- rather than under a `/tmp` another account can write.
+
+    The second of those is stubbed out here, and only here. pytest's temporary
+    directories live under `/tmp` on Linux, which is `1777`, so a fake `$HOME` built
+    inside one is refused by `_refuse_writable_ancestors` -- correctly, and for a
+    reason about the machine running the suite rather than about anything these tests
+    are checking. macOS puts them under `/var/folders`, which is why this only ever
+    showed up on CI. The check keeps its own tests, at the bottom of this file, where
+    the chain being judged is one the test built rather than one it inherited.
     """
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(opencode_cli, "_refuse_writable_ancestors", lambda path: None)
     under = home / ".orchestrator-mcp"
     under.mkdir(mode=0o700)
     return under
@@ -357,7 +371,7 @@ async def test_a_world_readable_scratch_directory_is_refused(stub, adapter, scra
 
 @pytest.mark.parametrize("mode", [0o777, 0o775])
 async def test_an_ancestor_another_account_can_write_is_refused(
-    stub, adapter, scratch_under, mode
+    stub, adapter, scratch_under, monkeypatch, mode
 ):
     """Checking the scratch directory itself and then naming it by path again leaves a
     gap: write permission on any ancestor is permission to rename it away between the
@@ -365,6 +379,10 @@ async def test_an_ancestor_another_account_can_write_is_refused(
     was checked. World-writable and group-writable both, since a shared group is the
     likelier one on a real machine."""
     record = stub(run=[{"stdout": stream()}])
+    # This is the one test the fixture's stub would defeat, so it puts the real check
+    # back. The chmod is on the deepest directory in the chain, which the walk reaches
+    # before anything the machine owns, so this fails here for its own reason.
+    monkeypatch.setattr(opencode_cli, "_refuse_writable_ancestors", REFUSE_WRITABLE_ANCESTORS)
     scratch_under.chmod(mode)
 
     with pytest.raises(AdapterError) as excinfo:
@@ -1033,3 +1051,47 @@ async def test_missing_model_metadata_is_an_unverified_answer_not_an_error(stub,
 
     assert result.content.answer == "blue"
     assert result.model_used == MODEL and not result.model_verified
+
+
+# --- the ancestor chain -----------------------------------------------------
+#
+# Called directly rather than through the adapter, because these two are about the
+# check's own rule. The walk starts at the directory it is given and goes up, so a
+# mode planted here is judged before any directory the machine owns.
+
+
+def chain(root: Path, mode: int) -> Path:
+    middle = root / "middle"
+    deep = middle / "deep"
+    deep.mkdir(parents=True)
+    middle.chmod(mode)
+    return deep
+
+
+def test_a_sticky_world_writable_ancestor_is_refused_too(tmp_path):
+    """Deliberately, and this is the one that decides whether the suite passes on Linux:
+    `/tmp` is `1777`. The sticky bit stops another account *renaming* `middle` out from
+    under us, which is the rename race this check's docstring argues about -- but it
+    does nothing about *creating* `middle/opencode.json` between `_refuse_inherited_config`
+    reading the chain and opencode reading it, which is the reason `_scratch` sits under
+    `$HOME` at all. Half the threat is not enough to pass."""
+    with pytest.raises(AdapterError) as excinfo:
+        REFUSE_WRITABLE_ANCESTORS(chain(tmp_path, 0o1777))
+
+    assert str(tmp_path / "middle") in str(excinfo.value)
+    assert excinfo.value.code is ConsultErrorCode.TRANSPORT_ERROR
+
+
+def test_a_chain_this_account_owns_passes(tmp_path):
+    """The refusals only mean something if the ordinary case is not refused as well.
+
+    Skipped where the temporary directory's own ancestors are writable by others --
+    `/tmp` again -- because there the outcome is settled by the machine rather than by
+    anything this test built. That is the same fact `scratch_under` stubs the check out
+    for, and it is why this one cannot be the thing that catches a regression there.
+    """
+    resolved = tmp_path.resolve()
+    if any(parent.stat().st_mode & 0o022 for parent in resolved.parents):
+        pytest.skip("this machine's temporary directory sits under a writable one")
+
+    REFUSE_WRITABLE_ANCESTORS(chain(resolved, 0o755))
