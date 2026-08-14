@@ -240,6 +240,18 @@ MIGRATIONS: list[str] = [
     ALTER TABLE workflow_runs ADD COLUMN replan_token_sha TEXT;
     ALTER TABLE workflow_runs ADD COLUMN replan_bindings_json TEXT;
     """,
+    """
+    CREATE TABLE IF NOT EXISTS workflow_delete_confirmations (
+        token_sha           TEXT PRIMARY KEY,
+        workflow_ids_json   TEXT NOT NULL,
+        displayed_count     INTEGER NOT NULL,
+        created_at          TEXT NOT NULL,
+        expires_at          REAL NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS consultations_workflow_id_idx ON consultations(workflow_id);
+    CREATE INDEX IF NOT EXISTS reviews_workflow_id_idx ON reviews(workflow_id);
+    """,
 ]
 
 DEFAULT_PROFILE = "default"

@@ -46,6 +46,7 @@ async def plan(store, **overrides) -> str:
         secret_hits=[],
         web_requested=overrides.pop("web_requested", False),
         parent_review_id=overrides.pop("parent_review_id", None),
+        **overrides,
     )
     return str(review_id)
 
@@ -249,6 +250,58 @@ async def test_deleting_a_parent_removes_its_rechecks_consultations_too(store):
             await store.store.get_consultation(uuid.UUID(gone))
     # And an unrelated consultation is untouched.
     assert await store.store.get_consultation(uuid.UUID(kept)) is not None
+
+
+async def test_a_workflow_owned_review_is_not_deleted_from_the_review_tool(store):
+    """`workflow_steps.review_id` has no `REFERENCES` clause, so nothing else would
+    say a word -- and the workflow would not merely look intact, it would run wrong.
+
+    `WorkflowService._open_findings` reads a step's findings back through
+    `ReviewService.get`, which answers a missing review with an error envelope rather
+    than raising, so the next fix round would be handed `[]` and would answer from the
+    goal instead of from the review.
+    """
+    review_id = await plan(store, workflow_id="wf-1", step_id="st-1")
+
+    with pytest.raises(StoreError, match="is a step of workflow `wf-1`"):
+        await store.delete_review(review_id)
+    assert (await store.get_review(review_id)).status == "pending"
+
+
+async def test_a_recheck_of_a_workflow_review_goes_but_its_parent_stays(store):
+    """The guard runs over the expanded tree, and a recheck is not itself a step.
+
+    `orchestrator_review` takes `parent_review_id` but no `workflow_id`, so a recheck
+    somebody ran against a workflow's review is their own review and deleting it costs
+    the workflow nothing. Deleting the *parent* would take that recheck with it, which
+    is why the guard reads the tree rather than the roots.
+    """
+    parent = await plan(store, workflow_id="wf-1", step_id="st-1")
+    child = await plan(store, parent_review_id=parent)
+
+    with pytest.raises(StoreError, match="is a step of workflow"):
+        await store.delete_review(parent)
+    assert (await store.get_review(child)).parent_review_id is not None
+
+    assert await store.delete_review(child) == 1
+    assert (await store.get_review(parent)).status == "pending"
+
+
+async def test_the_delete_all_count_leaves_workflow_reviews_out(store):
+    """Snapshotted and then refused would mean approving a number that never happens.
+
+    The count is the contract: what the user was shown is what gets deleted.
+    """
+    standalone = await plan(store)
+    owned = await plan(store, workflow_id="wf-1", step_id="st-1")
+
+    token, count = await store.request_delete_all()
+
+    assert count == 1
+    assert await store.delete_all_reviews(token) == 1
+    with pytest.raises(StoreError):
+        await store.get_review(standalone)
+    assert (await store.get_review(owned)).status == "pending"
 
 
 async def test_deleting_a_running_review_is_refused(store):

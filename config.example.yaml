@@ -126,7 +126,10 @@ consult:
 
   # The three-phase workflow: research and planning, implementation and testing,
   # review and fixing, the last two in a capped loop. Delete the block and the
-  # `orchestrator_workflow_*` tools are simply not advertised. It requires
+  # workflow tools -- including the three that delete one -- are simply not
+  # advertised. A workflow deletes whole or not at all: its consultations and its
+  # reviews are refused by every other delete path, because a step pointing at a row
+  # that is gone still reads as intact. It requires
   # `store_full_content: true` -- a workflow *is* its stored plans, briefs, patches
   # and reports, and a review cannot be finalized without them.
   workflow:
@@ -168,9 +171,10 @@ consult:
       synthesize: {executor: host}
       fix:       {agent: codex-sol, execution: patch}
 
-  # A local page over the stored consultations, loopback only, started separately
-  # with `orchestrator-mcp-dashboard`. Off unless you turn it on: it serves every
-  # prompt and answer in the database.
+  # A local page over the stored consultations, reviews and workflows, loopback only,
+  # started separately with `orchestrator-mcp-dashboard`. Off unless you turn it on:
+  # it serves every prompt and answer in the database. Read-only for workflows --
+  # deletion stays on the MCP tools, where the confirmation token is.
   dashboard:
     enabled: false
     # A second opt-in, because a viewer and an editor are different things to agree

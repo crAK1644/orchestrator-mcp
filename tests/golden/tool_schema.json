@@ -14465,5 +14465,102 @@
       "title": "WorkflowResponse",
       "type": "object"
     }
+  },
+  "orchestrator_delete_workflow": {
+    "input_schema": {
+      "properties": {
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow_id"
+      ],
+      "title": "delete_workflowArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "deleted": {
+          "description": "Workflows removed, with their steps, consultations and reviews.",
+          "minimum": 0,
+          "title": "Deleted",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deleted"
+      ],
+      "title": "WorkflowDeletionResult",
+      "type": "object"
+    }
+  },
+  "orchestrator_request_delete_all_workflows": {
+    "input_schema": {
+      "properties": {},
+      "title": "request_delete_all_workflowsArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "description": "A count, and a token good for exactly the workflows behind it.",
+      "properties": {
+        "workflows": {
+          "minimum": 0,
+          "title": "Workflows",
+          "type": "integer"
+        },
+        "confirm_token": {
+          "minLength": 1,
+          "title": "Confirm Token",
+          "type": "string"
+        },
+        "expires_in_s": {
+          "minimum": 0,
+          "title": "Expires In S",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "workflows",
+        "confirm_token",
+        "expires_in_s"
+      ],
+      "title": "WorkflowDeleteApproval",
+      "type": "object"
+    }
+  },
+  "orchestrator_delete_all_workflows": {
+    "input_schema": {
+      "properties": {
+        "confirm_token": {
+          "title": "Confirm Token",
+          "type": "string"
+        }
+      },
+      "required": [
+        "confirm_token"
+      ],
+      "title": "delete_all_workflowsArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "deleted": {
+          "description": "Workflows removed, with their steps, consultations and reviews.",
+          "minimum": 0,
+          "title": "Deleted",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deleted"
+      ],
+      "title": "WorkflowDeletionResult",
+      "type": "object"
+    }
   }
 }
