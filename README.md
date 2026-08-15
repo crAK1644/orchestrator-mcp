@@ -624,6 +624,14 @@ useful than overclaiming.
 | `orchestrator_workflow_status` | State, artifacts, selected agents, round count, and what may happen next. |
 | `orchestrator_workflow_plan_replan` / `orchestrator_workflow_replan` | Change the binding snapshot under the same preview-and-approve handshake. |
 | `orchestrator_workflow_cancel` | Cancel pending work and terminate a child this process owns, with the same caveat `orchestrator_cancel_review` carries about another process's children. |
+| `orchestrator_delete_workflow` | Delete one workflow with its steps, consultations and reviews. Refused while the workflow is open or a step's lease is live. |
+| `orchestrator_request_delete_all_workflows` / `orchestrator_delete_all_workflows` | Preview and confirm deletion of an exact workflow snapshot. |
+
+A workflow deletes whole or not at all. Its consultations are excluded from every
+consultation delete path and `orchestrator_delete_review` refuses a review that is a
+workflow step, because a step pointing at a row that is gone still reads as intact —
+and the next fix round would answer from the goal instead of from the review. So these
+three tools are the only way any of those rows leave the database.
 
 A review step's reviewers come from its binding, so a workflow needs no `review:` block
 unless that binding is left to `auto` — then it falls back to the configured reviewers
@@ -719,7 +727,7 @@ Large prompts are split across turns because Linux limits one argument to 128 Ki
 
 ## Local dashboard
 
-The optional dashboard shows agents, routing decisions, prompts, answers, usage, latency, errors, reviews, and recorded fix rounds. It is off by default because it can display everything stored in the consultation database.
+The optional dashboard shows agents, routing decisions, prompts, answers, usage, latency, errors, reviews, recorded fix rounds, and workflows. It is off by default because it can display everything stored in the consultation database.
 
 ```yaml
 consult:
@@ -735,6 +743,8 @@ ORCHESTRATOR_CONFIG=/absolute/path/to/config.yaml orchestrator-mcp-dashboard
 ```
 
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765).
+
+`/workflows` lists every workflow; a workflow's page shows its state, fix rounds against the cap, the bindings frozen at start, and the step timeline in the order it happened, with each step linking to its consultation and its review. Those consultations are reachable nowhere else. The workflow pages are read-only: deletion stays on the MCP tools, where the confirmation token is.
 
 Set `editable: true` to manage consult agents and reviewer selection in the browser. Browser-managed agents are written to `~/.orchestrator-mcp/agents.yaml`; the dashboard never rewrites `config.yaml`, runs login commands, or starts consultations.
 

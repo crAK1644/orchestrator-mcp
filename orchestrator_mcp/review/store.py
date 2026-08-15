@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import secrets
+import sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -532,13 +533,21 @@ class ReviewStore:
         The ids are recorded, not just the count. Confirming against a fresh `SELECT`
         would delete a review created in the meantime -- one the user was never shown
         and never approved.
+
+        Workflow-owned reviews are left out rather than snapshotted and refused later,
+        so the count someone approves is the count that goes.
         """
 
         def work() -> tuple[str, int]:
             self._db.execute(
                 "DELETE FROM review_delete_confirmations WHERE expires_at <= ?", (time.time(),)
             )
-            ids = [row[0] for row in self._db.execute("SELECT id FROM reviews ORDER BY id")]
+            ids = [
+                row[0]
+                for row in self._db.execute(
+                    "SELECT id FROM reviews WHERE workflow_id IS NULL ORDER BY id"
+                )
+            ]
             token = secrets.token_urlsafe(32)
             self._db.execute(
                 "INSERT INTO review_delete_confirmations (token_sha, review_ids_json, "
@@ -564,18 +573,15 @@ class ReviewStore:
         expand: bool = True,
         confirmation_sha: str | None = None,
     ) -> int:
-        """Collect the tree, refuse if any of it is busy, then remove it in order.
+        """Resolve what the caller approved, refuse what is not theirs, then remove it.
 
-        Order matters because `PRAGMA foreign_keys=ON`: `routing_decisions` and
-        `consultation_turns` both reference `consultations`, so the consultations go
-        last. `reviews.parent_review_id` is deferred, which is what lets one
-        statement remove a parent and its rechecks together.
+        The removal itself is `_delete_tree`, which the workflow delete calls too --
+        that one has to take a workflow's steps and its reviews in one statement, so
+        the order they come out in cannot live inside a transaction of its own.
         """
         db = self._db
         db.execute("BEGIN IMMEDIATE")
         try:
-            db.execute("DELETE FROM review_leases WHERE expires_at <= ?", (time.time(),))
-
             if confirmation_sha is not None:
                 row = db.execute(
                     "SELECT review_ids_json, expires_at FROM review_delete_confirmations "
@@ -620,66 +626,13 @@ class ReviewStore:
             if not tree:
                 db.execute("COMMIT")
                 return 0
-            marks = ",".join("?" * len(tree))
-
-            busy = db.execute(
-                f"SELECT id FROM reviews WHERE id IN ({marks}) AND status = 'running'", tree
-            ).fetchone()
-            if busy is not None:
-                raise StoreError(
-                    ConsultErrorCode.INVALID_REQUEST,
-                    f"review `{busy[0]}` is still running; cancel it first",
-                )
-            leased = db.execute(
-                f"SELECT review_id, expires_at FROM review_leases WHERE review_id IN ({marks})",
-                tree,
-            ).fetchone()
-            if leased is not None:
-                # Cancelling is not enough on its own: another process's reviewers can
-                # still be mid-flight, and deleting now would leave their consultations
-                # behind with no review pointing at them.
-                raise StoreError(
-                    ConsultErrorCode.SESSION_BUSY,
-                    f"review `{leased[0]}` still has reviewers in flight, possibly in another "
-                    f"server process; it can be deleted once they stop or the lease expires "
-                    f"(in {max(0, int(leased[1] - time.time()))}s)",
-                )
-
-            consultations = [
-                row[0]
-                for row in db.execute(
-                    f"SELECT DISTINCT consultation_id FROM review_consultations "
-                    f"WHERE review_id IN ({marks}) AND consultation_id IS NOT NULL",
-                    tree,
-                )
-            ]
-
-            db.execute(f"DELETE FROM review_consultations WHERE review_id IN ({marks})", tree)
-            if consultations:
-                held = ",".join("?" * len(consultations))
-                for table in (
-                    "consultation_turns",
-                    "routing_decisions",
-                    "consultation_leases",
-                ):
-                    column = "consultation_id"
-                    db.execute(f"DELETE FROM {table} WHERE {column} IN ({held})", consultations)
-                db.execute(f"DELETE FROM consultations WHERE id IN ({held})", consultations)
-            if not expand:
-                # A recheck created after the snapshot is not approved for deletion.
-                # Detach it before removing its snapshotted parent so the deferred
-                # foreign key can commit while the new review survives as a root.
-                db.execute(
-                    f"UPDATE reviews SET parent_review_id = NULL WHERE parent_review_id "
-                    f"IN ({marks}) AND id NOT IN ({marks})",
-                    [*tree, *tree],
-                )
-            db.execute(f"DELETE FROM reviews WHERE id IN ({marks})", tree)
+            refuse_workflow_owned(db, tree)
+            removed = delete_tree(db, tree, detach_unapproved=not expand)
         except Exception:
             db.execute("ROLLBACK")
             raise
         db.execute("COMMIT")
-        return len(tree)
+        return removed
 
     def _descendants(self, roots: list[str]) -> list[str]:
         """Every review reachable from these, through `parent_review_id`.
@@ -697,6 +650,104 @@ class ReviewStore:
             roots,
         ).fetchall()
         return [row[0] for row in rows]
+
+
+def refuse_workflow_owned(db: sqlite3.Connection, tree: list[str]) -> None:
+    """Refuse a review a workflow step is pointing at.
+
+    The same rule `request_delete_all_consultations` states for consultations, for the
+    same reason and one layer up: a workflow step's review *is* the step's work, and
+    removing it leaves `workflow_steps.review_id` naming a row that is gone while the
+    workflow still reads as intact. That column carries no `REFERENCES` clause, so
+    nothing else would say a word about it -- and the workflow would not merely look
+    wrong, it would run wrong. `WorkflowService._open_findings` reads its open findings
+    back through `ReviewService.get`, which answers a missing review with an error
+    envelope rather than an exception, so the next fix round would be handed an empty
+    list and would answer from the goal instead of from the review.
+
+    Deleting the workflow is how these go.
+    """
+    marks = ",".join("?" * len(tree))
+    owned = db.execute(
+        f"SELECT id, workflow_id FROM reviews WHERE id IN ({marks}) "
+        "AND workflow_id IS NOT NULL LIMIT 1",
+        tree,
+    ).fetchone()
+    if owned is not None:
+        raise StoreError(
+            ConsultErrorCode.INVALID_REQUEST,
+            f"review `{owned[0]}` is a step of workflow `{owned[1]}`; it is deleted with "
+            "that workflow, through `orchestrator_delete_workflow`",
+        )
+
+
+def delete_tree(
+    db: sqlite3.Connection, tree: list[str], *, detach_unapproved: bool = False
+) -> int:
+    """Refuse the tree if any of it is busy, then remove it in order.
+
+    No transaction of its own: the caller owns one. `ReviewStore._delete` is one
+    caller and the workflow delete is the other, and that one has to take a workflow's
+    steps, its consultations and its reviews together or leave part of the workflow
+    behind.
+
+    Order matters because `PRAGMA foreign_keys=ON`: `routing_decisions` and
+    `consultation_turns` both reference `consultations`, so the consultations go
+    last. `reviews.parent_review_id` is deferred, which is what lets one statement
+    remove a parent and its rechecks together.
+    """
+    db.execute("DELETE FROM review_leases WHERE expires_at <= ?", (time.time(),))
+    marks = ",".join("?" * len(tree))
+
+    busy = db.execute(
+        f"SELECT id FROM reviews WHERE id IN ({marks}) AND status = 'running'", tree
+    ).fetchone()
+    if busy is not None:
+        raise StoreError(
+            ConsultErrorCode.INVALID_REQUEST,
+            f"review `{busy[0]}` is still running; cancel it first",
+        )
+    leased = db.execute(
+        f"SELECT review_id, expires_at FROM review_leases WHERE review_id IN ({marks})",
+        tree,
+    ).fetchone()
+    if leased is not None:
+        # Cancelling is not enough on its own: another process's reviewers can
+        # still be mid-flight, and deleting now would leave their consultations
+        # behind with no review pointing at them.
+        raise StoreError(
+            ConsultErrorCode.SESSION_BUSY,
+            f"review `{leased[0]}` still has reviewers in flight, possibly in another "
+            f"server process; it can be deleted once they stop or the lease expires "
+            f"(in {max(0, int(leased[1] - time.time()))}s)",
+        )
+
+    consultations = [
+        row[0]
+        for row in db.execute(
+            f"SELECT DISTINCT consultation_id FROM review_consultations "
+            f"WHERE review_id IN ({marks}) AND consultation_id IS NOT NULL",
+            tree,
+        )
+    ]
+
+    db.execute(f"DELETE FROM review_consultations WHERE review_id IN ({marks})", tree)
+    if consultations:
+        held = ",".join("?" * len(consultations))
+        for table in ("consultation_turns", "routing_decisions", "consultation_leases"):
+            db.execute(f"DELETE FROM {table} WHERE consultation_id IN ({held})", consultations)
+        db.execute(f"DELETE FROM consultations WHERE id IN ({held})", consultations)
+    if detach_unapproved:
+        # A recheck created after the snapshot is not approved for deletion.
+        # Detach it before removing its snapshotted parent so the deferred
+        # foreign key can commit while the new review survives as a root.
+        db.execute(
+            f"UPDATE reviews SET parent_review_id = NULL WHERE parent_review_id "
+            f"IN ({marks}) AND id NOT IN ({marks})",
+            [*tree, *tree],
+        )
+    db.execute(f"DELETE FROM reviews WHERE id IN ({marks})", tree)
+    return len(tree)
 
 
 def _json_or_none(value: Any) -> str | None:

@@ -22,6 +22,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
+import sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -31,8 +33,9 @@ from typing import Any
 from uuid import UUID
 
 from ..consult.errors import ConsultErrorCode
-from ..consult.store import ConsultStore, StoreError
+from ..consult.store import DELETE_CONFIRM_TTL_S, ConsultStore, StoreError
 from ..contract import scrub_json
+from ..review.store import delete_tree
 from .contract import (
     TERMINAL_STATES,
     Executor,
@@ -65,6 +68,73 @@ def _sha256(text: str) -> str:
 def canonical(payload: Any) -> str:
     """Deterministic JSON, so a hash recomputed later matches the one stored."""
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _approved(db: sqlite3.Connection, confirmation_sha: str) -> list[str]:
+    """The ids a confirmation covers, spent in the transaction that reads them."""
+    row = db.execute(
+        "SELECT workflow_ids_json, expires_at FROM workflow_delete_confirmations "
+        "WHERE token_sha = ?",
+        (confirmation_sha,),
+    ).fetchone()
+    if row is None:
+        raise StoreError(
+            ConsultErrorCode.INVALID_REQUEST,
+            "that confirmation is not outstanding; call "
+            "`orchestrator_request_delete_all_workflows` and confirm the count it reports",
+        )
+    if row["expires_at"] <= time.time():
+        raise StoreError(
+            ConsultErrorCode.INVALID_REQUEST,
+            "that confirmation has expired; request it again so the count you approve is "
+            "the count that gets deleted",
+        )
+    consumed = db.execute(
+        "DELETE FROM workflow_delete_confirmations WHERE token_sha = ?", (confirmation_sha,)
+    )
+    if consumed.rowcount != 1:
+        raise StoreError(
+            ConsultErrorCode.INVALID_REQUEST,
+            "that confirmation was already spent; request a new count",
+        )
+    return json.loads(row["workflow_ids_json"])
+
+
+def _refuse_live(db: sqlite3.Connection, tree: list[str], marks: str) -> None:
+    """Refuse a workflow that is still going, and one whose step is still running.
+
+    Two separate refusals because they are two separate facts. A workflow sitting in
+    `coding` is waiting on its host and can be finished or cancelled; a step holding
+    an unexpired lease may be a live agent process in *another* server, and deleting
+    its rows now would leave that process writing into a workflow that is gone.
+
+    An expired lease is not swept first, only compared against: the row it sits on is
+    `reap_abandoned`'s to resolve, and a delete has no business quietly rewriting the
+    status of a step in a workflow it may be about to refuse.
+    """
+    live = db.execute(
+        f"SELECT id, status FROM workflow_runs WHERE id IN ({marks}) "
+        f"AND status NOT IN ({_TERMINAL_SQL}) LIMIT 1",
+        tree,
+    ).fetchone()
+    if live is not None:
+        raise StoreError(
+            ConsultErrorCode.INVALID_REQUEST,
+            f"workflow `{live[0]}` is still open (`{live[1]}`); finish it or call "
+            "`orchestrator_workflow_cancel` first",
+        )
+    leased = db.execute(
+        f"SELECT id, workflow_id, lease_expires_at FROM workflow_steps "
+        f"WHERE workflow_id IN ({marks}) AND lease_expires_at > ? LIMIT 1",
+        [*tree, time.time()],
+    ).fetchone()
+    if leased is not None:
+        raise StoreError(
+            ConsultErrorCode.SESSION_BUSY,
+            f"workflow `{leased[1]}` still has step `{leased[0]}` in flight, possibly in "
+            f"another server process; it can be deleted once that stops or the lease "
+            f"expires (in {max(0, int(leased[2] - time.time()))}s)",
+        )
 
 
 @dataclass(frozen=True)
@@ -595,3 +665,127 @@ class WorkflowStore:
             "updated_at = ? WHERE id = ? AND lease_holder = ?",
             (_now(), step_id, token),
         )
+
+    # --- deletion -----------------------------------------------------------
+    #
+    # The only way a workflow's rows leave this database. Its consultations are
+    # excluded from every consultation delete path and its reviews are refused by
+    # `refuse_workflow_owned`, both for the same reason: half a workflow is worse than
+    # all of it, because a step pointing at a row that is gone still reads as intact.
+    # So the whole thing goes together or none of it does.
+
+    async def delete_workflow(self, workflow_id: UUID | str) -> int:
+        """Delete one workflow, its steps, its consultations and its reviews."""
+        return await self._run(lambda: self._delete([str(workflow_id)]))
+
+    async def request_delete_all_workflows(
+        self, ttl_s: float = DELETE_CONFIRM_TTL_S
+    ) -> tuple[str, int]:
+        """Snapshot every workflow, and hand back a token for exactly those.
+
+        The ids are recorded, not just the count, for the reason
+        `ReviewStore.request_delete_all` gives: confirming against a fresh `SELECT`
+        would take a workflow started in the meantime, which nobody was shown.
+
+        Running workflows are snapshotted rather than filtered out. A review is
+        refused for being `running` and that is a state it leaves on its own; a
+        workflow sits in `coding` until somebody advances it, so quietly dropping
+        those would report a number that stayed wrong until the user cancelled them.
+        The refusal below names the workflow and what to do about it.
+        """
+
+        def work() -> tuple[str, int]:
+            db = self._db
+            db.execute(
+                "DELETE FROM workflow_delete_confirmations WHERE expires_at <= ?", (time.time(),)
+            )
+            ids = [row[0] for row in db.execute("SELECT id FROM workflow_runs ORDER BY id")]
+            token = secrets.token_urlsafe(32)
+            db.execute(
+                "INSERT INTO workflow_delete_confirmations (token_sha, workflow_ids_json, "
+                "displayed_count, created_at, expires_at) VALUES (?,?,?,?,?)",
+                (_sha256(token), canonical(ids), len(ids), _now(), time.time() + ttl_s),
+            )
+            return token, len(ids)
+
+        return await self._run(work)
+
+    async def delete_all_workflows(self, token: str) -> int:
+        """Delete the approved snapshot, and nothing that arrived after it."""
+        return await self._run(lambda: self._delete([], confirmation_sha=_sha256(token)))
+
+    def _delete(self, roots: list[str], *, confirmation_sha: str | None = None) -> int:
+        """Refuse what is still moving, then remove the tree in one transaction.
+
+        Order is `PRAGMA foreign_keys=ON` order, outside in: the reviews and their
+        consultations through `delete_tree`, then the workflow's own consultations,
+        then the steps that reference `workflow_runs`, then the runs.
+
+        What goes is what the workflow owns and only that. Nothing here widens the
+        set beyond the snapshot the caller approved, which is the whole point of
+        approving ids rather than a count: a row that did not exist when the token
+        was issued cannot be swept up when it is spent.
+        """
+        db = self._db
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            if confirmation_sha is not None:
+                roots = _approved(db, confirmation_sha)
+            if not roots:
+                db.execute("COMMIT")
+                return 0
+            marks = ",".join("?" * len(roots))
+            tree = [
+                row[0]
+                for row in db.execute(
+                    f"SELECT id FROM workflow_runs WHERE id IN ({marks})", roots
+                )
+            ]
+            if not tree:
+                db.execute("COMMIT")
+                return 0
+            marks = ",".join("?" * len(tree))
+
+            _refuse_live(db, tree, marks)
+
+            reviews = [
+                row[0]
+                for row in db.execute(
+                    f"SELECT id FROM reviews WHERE workflow_id IN ({marks})", tree
+                )
+            ]
+            if reviews:
+                # Through the review layer's own teardown rather than a second copy of
+                # it here: `review_consultations` and the reviewers' consultations are
+                # its business, not this table's.
+                #
+                # These reviews and no others. A recheck a caller made of one carries
+                # `workflow_id = NULL` -- `orchestrator_review` has no `workflow_id`
+                # argument and nothing stamps one on -- so it is the caller's review,
+                # not the workflow's, and deleting a workflow must not take it.
+                # `detach_unapproved` is what makes that safe: it clears the child's
+                # `parent_review_id` before the parent goes, so the deferred foreign
+                # key commits and the recheck survives as a root of its own.
+                delete_tree(db, reviews, detach_unapproved=True)
+
+            consultations = [
+                row[0]
+                for row in db.execute(
+                    f"SELECT id FROM consultations WHERE workflow_id IN ({marks})", tree
+                )
+            ]
+            if consultations:
+                held = ",".join("?" * len(consultations))
+                for table in ("consultation_turns", "routing_decisions", "consultation_leases"):
+                    db.execute(
+                        f"DELETE FROM {table} WHERE consultation_id IN ({held})", consultations
+                    )
+                db.execute(f"DELETE FROM consultations WHERE id IN ({held})", consultations)
+
+            db.execute(f"DELETE FROM workflow_steps WHERE workflow_id IN ({marks})", tree)
+            db.execute(f"DELETE FROM workflow_runs WHERE id IN ({marks})", tree)
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("COMMIT")
+        return len(tree)

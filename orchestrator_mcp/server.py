@@ -50,8 +50,14 @@ from .review.contract import (
 )
 from .review.service import ReviewService
 from .review.store import DELETE_CONFIRM_TTL_S
-from .workflow.contract import Step, WorkflowResponse
+from .workflow.contract import (
+    Step,
+    WorkflowDeleteApproval,
+    WorkflowDeletionResult,
+    WorkflowResponse,
+)
 from .workflow.service import WorkflowService
+from .workflow.store import DELETE_CONFIRM_TTL_S as WORKFLOW_DELETE_CONFIRM_TTL_S
 
 __all__ = ["ConfigError", "build_server", "load_config", "main", "validate_config"]
 
@@ -670,6 +676,43 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         `orchestrator_cancel_review` carries, for the same reason.
         """
         return await service.cancel(workflow_id)
+
+    @server.tool(name="orchestrator_delete_workflow")
+    async def delete_workflow(workflow_id: str) -> WorkflowDeletionResult:
+        """Delete a workflow with its steps, its consultations and its reviews.
+
+        All of it or none of it. A workflow's consultations are refused by the
+        consultation delete tools and its reviews by `orchestrator_delete_review`,
+        because a step pointing at a row that has been removed still reads as intact
+        -- and a fix round reading its findings back from a deleted review is handed
+        an empty list rather than an error.
+
+        Refused while the workflow is still open: cancel it first. Also refused while
+        a step holds a live lease, which may be an agent running in another server
+        process."""
+        return WorkflowDeletionResult(deleted=await service.delete(workflow_id))
+
+    @server.tool(name="orchestrator_request_delete_all_workflows")
+    async def request_delete_all_workflows() -> WorkflowDeleteApproval:
+        """Ask what deleting all workflow history would remove. **Deletes nothing.**
+
+        Show the count to the user and pass the token to
+        `orchestrator_delete_all_workflows` only if they agree. The token is bound to
+        exactly the workflows counted here, so one started in the meantime is not
+        caught by an approval that never mentioned it. An open workflow is counted and
+        then refused at confirmation rather than quietly left out of a number
+        presented as the whole history."""
+        token, count = await service.request_delete_all()
+        return WorkflowDeleteApproval(
+            workflows=count, confirm_token=token, expires_in_s=int(WORKFLOW_DELETE_CONFIRM_TTL_S)
+        )
+
+    @server.tool(name="orchestrator_delete_all_workflows")
+    async def delete_all_workflows(confirm_token: str) -> WorkflowDeletionResult:
+        """Delete the workflows `orchestrator_request_delete_all_workflows` counted,
+        and only those. Requires the token from that call; an expired one is refused
+        rather than silently widened to whatever exists now."""
+        return WorkflowDeletionResult(deleted=await service.delete_all(confirm_token))
 
 
 def main() -> None:

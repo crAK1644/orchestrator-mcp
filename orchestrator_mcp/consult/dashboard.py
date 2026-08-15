@@ -44,6 +44,7 @@ from pydantic import ValidationError
 
 from ..contract import ConfigError
 from ..review.contract import Severity
+from ..workflow.contract import TERMINAL_STATES
 from .adapters import adapter_for
 from .adapters.base import AdapterError, resolve_command
 from .adapters.codex_cli import rate_limit as codex_rate_limit
@@ -409,6 +410,10 @@ class ConsultDashboard:
             return HTTPStatus.OK, self.index()
         if path.startswith("/consultation/"):
             return self.consultation(unquote(path.removeprefix("/consultation/")))
+        if path == "/workflows":
+            return HTTPStatus.OK, self.workflows_page()
+        if path.startswith("/workflows/"):
+            return self.workflow(unquote(path.removeprefix("/workflows/")))
         if path == "/reviews":
             return HTTPStatus.OK, self.reviews_page()
         if path == "/reviewers":
@@ -449,6 +454,7 @@ class ConsultDashboard:
             f"<span>orchestrator-mcp-server {_e(self.version)}</span>"
             "<span>Local history</span></p></div></header>"
             f"{self._monitor_strip()}"
+            f"{self._workflows_section()}"
             f"{self._reviews_section()}"
             f"<section><div class=section-heading><h2>{consultation_heading}</h2>"
             "<span class=meta>Newest 200</span></div>"
@@ -505,10 +511,17 @@ class ConsultDashboard:
             if open_reviews is not None
             else ""
         )
+        open_workflows = self._open_workflows()
+        workflows = (
+            f"<div><dt>Workflows open</dt><dd>{open_workflows}</dd></div>"
+            if open_workflows is not None
+            else ""
+        )
         return (
             "<dl class=monitor-strip aria-label='Current operating state'>"
             f"<div><dt>Consultations</dt><dd>{total}</dd></div>"
             f"<div><dt>Turns / failed</dt><dd>{turns} / {failures}</dd></div>"
+            f"{workflows}"
             f"{reviews}"
             f"<div><dt>Agents enabled</dt><dd>{enabled} / {len(self.config.agents)}</dd></div>"
             "</dl>"
@@ -649,6 +662,7 @@ class ConsultDashboard:
             f"<div><dt>Model</dt><dd><code>{_e(consultation['target_model'])}</code></dd></div>"
             f"<div><dt>Runtime</dt><dd>{_e(consultation['target_runtime'])}</dd></div>"
             f"<div><dt>Asked by</dt><dd>{_e(consultation['origin_runtime'])}</dd></div>"
+            f"{self._workflow_of(consultation)}"
             f"<div><dt>Protocol</dt><dd>{_e(consultation['protocol_version'])}</dd></div>"
             f"<div><dt>Config</dt><dd><code>{_e(consultation['config_hash'])}</code></dd></div>"
             # The native session id is not shown: it is the consulted CLI's handle on
@@ -900,6 +914,226 @@ class ConsultDashboard:
             for row in rows
         )
         return f"<h2>Rechecks</h2><ul>{items}</ul>"
+
+    # --- workflows -----------------------------------------------------------
+
+    def _workflows_ready(self) -> bool:
+        """Whether the migration that creates `workflow_runs` has run yet.
+
+        Same probe and same reason as `_reviews_ready`: this connection is `mode=ro`
+        and cannot create the table, so a server that has not been restarted since
+        this version shipped would leave every workflow query raising `no such table`
+        on a page whose whole job is to stay readable.
+        """
+        return bool(
+            self._query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_runs'")
+        )
+
+    def _workflows_missing(self) -> str:
+        """Why there is no workflow table to read, or "" when there is one."""
+        if self._workflows_ready():
+            return ""
+        if not Path(self.config.database_path).exists():
+            return "No workflows recorded yet."
+        return NOT_MIGRATED_WORKFLOWS
+
+    def _open_workflows(self) -> int | None:
+        """How many workflows are still going, or None where the tile does not belong.
+
+        A workflow has a real lifecycle and is the one thing here that can sit waiting
+        on its host for hours, so this number is worth a tile. Hidden on the rule the
+        reviews tile uses: an install that has never configured `workflow:` would get
+        a permanent zero, which says the server is idle rather than that the feature
+        is unused.
+        """
+        if not self._workflows_ready():
+            return None
+        rows = self._query(
+            "SELECT COUNT(*) AS total, SUM(CASE WHEN status "
+            f"NOT IN ({_TERMINAL_SQL}) THEN 1 ELSE 0 END) AS open FROM workflow_runs"
+        )
+        if not rows or (not rows[0]["total"] and self.config.workflow is None):
+            return None
+        return int(rows[0]["open"] or 0)
+
+    def _workflow_rows(self, limit: int) -> list[sqlite3.Row]:
+        return self._query(
+            "SELECT w.id, w.created_at, w.updated_at, w.goal, w.status, w.fix_rounds, "
+            "w.host_runtime, w.policy_json, "
+            "(SELECT COUNT(*) FROM workflow_steps s WHERE s.workflow_id = w.id) AS steps, "
+            "(SELECT COUNT(*) FROM workflow_steps s WHERE s.workflow_id = w.id "
+            " AND s.status = 'failed') AS failures "
+            "FROM workflow_runs w ORDER BY w.created_at DESC LIMIT ?",
+            (limit,),
+        )
+
+    def _workflows_section(self) -> str:
+        """The newest few on the index -- and nothing at all where workflows are unused."""
+        missing = self._workflows_missing()
+        if missing:
+            return (
+                "<section><div class=section-heading><h2>Workflows</h2></div>"
+                f"<div class=empty-state>{_e(missing)}</div></section>"
+                if self.config.workflow is not None
+                else ""
+            )
+        rows = self._workflow_rows(10)
+        if not rows and self.config.workflow is None:
+            return ""
+        more = "<a href='/workflows'>All workflows</a>" if rows else ""
+        return (
+            "<section><div class=section-heading><h2>Workflows</h2>"
+            f"{more}</div>{self._workflows_table(rows)}</section>"
+        )
+
+    def _workflows_table(self, rows: list[sqlite3.Row]) -> str:
+        if not rows:
+            return "<div class=empty-state>No workflows recorded yet.</div>"
+        body = "".join(
+            "<tr>"
+            f"<td class=primary-cell data-label=Workflow>"
+            f"<a href='/workflows/{_e(row['id'])}'>"
+            f"{_e(_short(row['goal'], 90) or 'Untitled workflow')}</a>"
+            f"<span class=meta><code>{_e(row['id'][:8])}</code> &middot; "
+            f"host {_e(row['host_runtime'])}</span></td>"
+            f"<td data-label=State>{_status_word(row['status'])}</td>"
+            f"<td data-label='Fix rounds'>{_e(row['fix_rounds'])}{_cap(row['policy_json'])}</td>"
+            f"<td data-label=Steps>{row['steps']} step{'s' if row['steps'] != 1 else ''}"
+            f"<span class={'bad' if row['failures'] else 'meta'}> &middot; "
+            f"{row['failures']} failed</span></td>"
+            f"<td class=meta data-label=Started>{_when(row['created_at'])}</td>"
+            "</tr>"
+            for row in rows
+        )
+        head = (
+            "<thead><tr><th>Workflow<th>State<th>Fix rounds<th>Steps<th>Started</tr></thead>"
+        )
+        return (
+            "<div class='table-shell table-shell--cards'>"
+            f"<table class=data-table>{head}<tbody>{body}</tbody></table></div>"
+        )
+
+    def workflows_page(self) -> str:
+        head = (
+            "<a class=back-link href='/'>&larr; Operations monitor</a>"
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Stateful workflow</p><h1>Workflows</h1>"
+            "<p class=context-line><span>Research, implementation, review and fixing"
+            "</span></p></div></header>"
+        )
+        missing = self._workflows_missing()
+        if missing:
+            return _document(
+                "Workflows", f"{head}<div class=empty-state>{_e(missing)}</div>",
+                editable=self.config.dashboard.editable,
+            )
+        return _document(
+            "Workflows", head + self._workflows_table(self._workflow_rows(200)),
+            editable=self.config.dashboard.editable,
+        )
+
+    def workflow(self, workflow_id: str) -> tuple[int, str]:
+        missing = self._workflows_missing()
+        if missing:
+            return HTTPStatus.NOT_FOUND, _document(
+                "Workflows",
+                f"<h1>Workflows</h1><p class=meta>{_e(missing)}</p><p><a href='/'>Back</a></p>",
+            )
+        rows = self._query("SELECT * FROM workflow_runs WHERE id = ?", (workflow_id,))
+        if not rows:
+            return HTTPStatus.NOT_FOUND, _document(
+                "Not found", "<p>No such workflow.</p><p><a href='/workflows'>Back</a></p>"
+            )
+        run = rows[0]
+        return HTTPStatus.OK, _document(
+            f"Workflow {workflow_id[:8]}",
+            "<a class=back-link href='/workflows'>&larr; All workflows</a>"
+            "<header class=detail-header><p class=eyebrow>Workflow trace</p>"
+            "<div class=detail-title>"
+            f"<h1>{_e(_short(run['goal'], 120) or 'Untitled workflow')}</h1>"
+            f"{_status_word(run['status'])}</div>"
+            f"<p class=context-line><span><code>{_e(run['id'])}</code></span>"
+            f"<span>fix rounds {_e(run['fix_rounds'])}{_cap(run['policy_json'])}</span>"
+            f"<span>{_when(run['created_at'])}</span>"
+            f"<span>updated {_when(run['updated_at'])}</span></p></header>"
+            "<div class=detail-grid><div>"
+            f"<h2>Steps</h2>{self._steps_table(workflow_id)}"
+            f"{_block('Reason', run['reason'])}"
+            f"{_bindings(run['bindings_json'])}</div>"
+            "<aside class=detail-aside aria-label='Workflow metadata'><dl>"
+            f"<div><dt>Host</dt><dd>{_e(run['host_runtime'])}</dd></div>"
+            f"<div><dt>Host model</dt><dd><code>{_e(run['host_model'] or '--')}</code></dd></div>"
+            f"<div><dt>Working tree</dt><dd><code>{_e(run['workdir'])}</code></dd></div>"
+            f"<div><dt>Baseline</dt><dd><code>{_commit(run['baseline_commit'])}</code></dd>"
+            "</div>"
+            f"<div><dt>Result</dt><dd><code>{_commit(run['result_commit'])}</code></dd></div>"
+            f"<div><dt>Bindings</dt><dd><code>{_e(run['workflow_hash'][:12])}</code></dd></div>"
+            "</dl></aside></div>",
+            editable=self.config.dashboard.editable,
+        )
+
+    def _steps_table(self, workflow_id: str) -> str:
+        """Every step in the order it happened.
+
+        `round_index, attempt, sequence` rather than `sequence` alone: those three
+        columns exist so a workflow with four fix rounds, six test runs and three
+        rechecks reads back in order, and this is the page they were added for.
+        """
+        rows = self._query(
+            "SELECT s.*, "
+            "(SELECT c.id FROM consultations c WHERE c.workflow_id = s.workflow_id "
+            " AND c.step_id = s.id LIMIT 1) AS consultation_id "
+            "FROM workflow_steps s WHERE s.workflow_id = ? "
+            "ORDER BY s.round_index, s.attempt, s.sequence",
+            (workflow_id,),
+        )
+        if not rows:
+            return "<div class=empty-state>No steps planned yet.</div>"
+        body = ""
+        for row in rows:
+            links = []
+            if row["consultation_id"]:
+                links.append(
+                    f"<a href='/consultation/{_e(row['consultation_id'])}'>consultation</a>"
+                )
+            if row["review_id"]:
+                links.append(f"<a href='/reviews/{_e(row['review_id'])}'>review</a>")
+            mode = row["execution_mode"] or row["executor"]
+            body += (
+                "<tr>"
+                f"<td class=primary-cell data-label=Step><strong>{_e(row['step'])}</strong>"
+                f"<span class=meta><code>{_e(row['id'][:8])}</code> &middot; "
+                f"round {_e(row['round_index'])} &middot; "
+                f"attempt {_e(row['attempt'])}</span></td>"
+                f"<td data-label=State>{_status_word(row['status'])}</td>"
+                f"<td data-label=Ran><code>{_e(row['agent_id'] or 'host')}</code>"
+                f"<span class=meta>{_e(mode)} &middot; {_e(row['repository_access'])}</span></td>"
+                f"<td data-label=Recorded>{_e(row['reported_by'] or '--')}"
+                f"<span class=meta>{_when(row['updated_at'])}</span></td>"
+                f"<td data-label=Trace>"
+                f"{' &middot; '.join(links) or '<span class=meta>--</span>'}</td>"
+                "</tr>"
+            )
+        head = "<thead><tr><th>Step<th>State<th>Ran as<th>Recorded<th>Trace</tr></thead>"
+        return (
+            "<div class='table-shell table-shell--cards'>"
+            f"<table class=data-table>{head}<tbody>{body}</tbody></table></div>"
+        )
+
+    def _workflow_of(self, consultation: sqlite3.Row) -> str:
+        """The line on a consultation page that says which workflow owns it.
+
+        Nothing at all for a standalone consultation, which is most of them. A row
+        with a `workflow_id` cannot be resumed from `orchestrator_consult` at all, so
+        saying whose it is spares a reader working that out from a refusal.
+        """
+        if "workflow_id" not in consultation.keys() or not consultation["workflow_id"]:
+            return ""
+        return (
+            "<div><dt>Workflow</dt><dd>"
+            f"<a href='/workflows/{_e(consultation['workflow_id'])}'>"
+            f"<code>{_e(consultation['workflow_id'][:8])}</code></a></dd></div>"
+        )
 
     # --- configuring reviewers -----------------------------------------------
 
@@ -1791,6 +2025,60 @@ NOT_MIGRATED = (
 )
 
 
+# --- workflows ---------------------------------------------------------------
+
+NOT_MIGRATED_WORKFLOWS = (
+    "This database has no workflow tables yet. This page opens it read-only and cannot "
+    "create them -- restart the MCP server and it will add them at startup."
+)
+
+# Built from the contract's own set rather than spelled out, so a state added there is
+# open here too rather than silently counted as finished. The dashboard imports the
+# contract, never a store: its connection is `mode=ro` and it does its own SQL.
+_TERMINAL_SQL = ", ".join(f"'{state}'" for state in sorted(TERMINAL_STATES))
+
+
+def _cap(policy_json: object) -> str:
+    """" of N", the cap this workflow was created under -- not the one in the file now.
+
+    `policy_json` is the frozen copy `_policy_of` reads for the same reason: a config
+    edited mid-run must not change what a finished workflow reports.
+    """
+    policy = _loads(policy_json, {})
+    cap = policy.get("max_fix_rounds") if isinstance(policy, dict) else None
+    return f" of {_e(cap)}" if cap is not None else ""
+
+
+def _commit(value: object) -> str:
+    """A short sha, escaped here rather than at the call site.
+
+    A commit id is hex and cannot carry markup -- but it is a database column, and a
+    column is whatever is in it.
+    """
+    return _e(str(value)[:12]) if value else "--"
+
+
+def _bindings(bindings_json: object) -> str:
+    """The step-to-agent map as it was frozen at `workflow_start`.
+
+    Rendered from the snapshot rather than from `config.workflow`, because the point
+    of storing it was that the two can differ.
+    """
+    bindings = _loads(bindings_json, {})
+    if not isinstance(bindings, dict) or not bindings:
+        return ""
+    rows = "".join(
+        f"<tr><td data-label=Step><code>{_e(step)}</code></td>"
+        f"<td data-label=Agent><code>{_e(agent)}</code></td></tr>"
+        for step, agent in sorted(bindings.items())
+    )
+    return (
+        "<h2>Bindings</h2><div class='table-shell table-shell--cards'>"
+        "<table class=data-table><thead><tr><th>Step<th>Agent</tr></thead>"
+        f"<tbody>{rows}</tbody></table></div>"
+    )
+
+
 def _short(value: object, limit: int) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -1799,9 +2087,12 @@ def _short(value: object, limit: int) -> str:
 def _status_word(status: object) -> str:
     """A status, coloured only where the colour says something.
 
-    `complete` is the only finished-well state; `failed` and `cancelled` are the two
-    a reader should not skim past. Everything between them is in progress and gets no
-    colour, because "running" is not news.
+    `complete`, `completed` and `done` are the finished-well states -- three words for
+    it because reviews, workflows and steps each named it separately. `failed`,
+    `cancelled`, `needs_attention` and `abandoned` are the ones a reader should not
+    skim past: a workflow that stopped on unresolved findings and a step whose process
+    died are both results, not progress. Everything between them is in progress and
+    gets no colour, because "running" is not news.
 
     `open` is deliberately absent: it belongs to consultations, which this page no
     longer badges at all, because every consultation that has ever been recorded is
@@ -1809,9 +2100,9 @@ def _status_word(status: object) -> str:
     colour for it.
     """
     text = _e(status)
-    if status == "complete":
+    if status in ("complete", "completed", "done"):
         return f"<span class='status status--good'>{text}</span>"
-    if status in ("failed", "cancelled"):
+    if status in ("failed", "cancelled", "needs_attention", "abandoned"):
         return f"<span class='status status--bad'>{text}</span>"
     if status in ("running", "active", "awaiting_synthesis"):
         return f"<span class='status status--active'>{text}</span>"
@@ -2084,6 +2375,7 @@ def _reviewer_summary(review: ReviewConfig) -> str:
 def _navigation(title: str, editable: bool = False) -> str:
     section = (
         "reviewers" if title == "Reviewers"
+        else "workflows" if title.startswith("Workflow")
         else "reviews" if title.startswith("Review")
         else "agents" if "agent" in title.lower()
         else "monitor"
@@ -2093,6 +2385,7 @@ def _navigation(title: str, editable: bool = False) -> str:
     show_admin = editable or section in ("agents", "reviewers")
     items = [
         ("monitor", "/", "Monitor"),
+        ("workflows", "/workflows", "Workflows"),
         ("reviews", "/reviews", "Reviews"),
     ]
     if show_admin:

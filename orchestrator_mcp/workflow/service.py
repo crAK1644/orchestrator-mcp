@@ -1067,6 +1067,26 @@ class WorkflowService:
         except (WorkflowError, StoreError) as exc:
             return _failed(workflow_id, await self._status(workflow_id), exc.code, str(exc), started)
 
+    # --- deletion ---------------------------------------------------------------
+
+    async def delete(self, workflow_id: str) -> int:
+        """Delete a workflow, its steps, its consultations and its reviews.
+
+        `reap_abandoned` runs first, so a workflow held open only by a step whose
+        process died is not refused for being busy -- the crash already ended it.
+        """
+        await self.open()
+        await self.store.reap_abandoned(workflow_id)
+        return await self.store.delete_workflow(workflow_id)
+
+    async def request_delete_all(self) -> tuple[str, int]:
+        await self.open()
+        return await self.store.request_delete_all_workflows()
+
+    async def delete_all(self, confirm_token: str) -> int:
+        await self.open()
+        return await self.store.delete_all_workflows(confirm_token)
+
     # --- shared ---------------------------------------------------------------
 
     async def _live(self, workflow_id: str) -> WorkflowRun:

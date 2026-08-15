@@ -512,6 +512,24 @@ class WorkflowResponse(BaseModel):
         return self
 
 
+class WorkflowDeleteApproval(BaseModel):
+    """A count, and a token good for exactly the workflows behind it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflows: int = Field(ge=0)
+    confirm_token: str = Field(min_length=1)
+    expires_in_s: int = Field(ge=0)
+
+
+class WorkflowDeletionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    deleted: int = Field(
+        ge=0, description="Workflows removed, with their steps, consultations and reviews."
+    )
+
+
 ARTIFACT_MODELS: dict[ArtifactType, type[BaseModel]] = {
     "research_brief": ResearchBrief,
     "implementation_plan": ImplementationPlan,
