@@ -252,6 +252,9 @@ MIGRATIONS: list[str] = [
     CREATE INDEX IF NOT EXISTS consultations_workflow_id_idx ON consultations(workflow_id);
     CREATE INDEX IF NOT EXISTS reviews_workflow_id_idx ON reviews(workflow_id);
     """,
+    """
+    ALTER TABLE workflow_steps ADD COLUMN recovery_written INTEGER;
+    """,
 ]
 
 DEFAULT_PROFILE = "default"
@@ -510,42 +513,45 @@ class ConsultStore:
         profile_id: str = DEFAULT_PROFILE,
         workflow_id: str | None = None,
         step_id: str | None = None,
+        review_id: str | None = None,
+        review_agent_id: str | None = None,
     ) -> Consultation:
         def work() -> Consultation:
+            if (review_id is None) != (review_agent_id is None):
+                raise ValueError("review_id and review_agent_id must be supplied together")
+            db = self._db
+            db.execute("BEGIN IMMEDIATE")
             now = _now()
-            self._db.execute(
-                "INSERT INTO consultations (id, profile_id, origin_runtime, target_agent_id, "
-                "target_runtime, target_model, capability, native_session_id, conversation_label, "
-                "protocol_version, config_hash, status, created_at, updated_at, "
-                "workflow_id, step_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    str(consultation_id),
-                    profile_id,
-                    origin_runtime,
-                    route.agent_id,
-                    route.runtime,
-                    # Free-form strings from configuration and from the host. Scrubbed
-                    # at the insert like every other text column; the resume check in
-                    # `ConsultService` compares against the scrubbed copy.
-                    scrub_json(route.model),
-                    capability,
-                    None,
-                    scrub_json(conversation_label),
-                    protocol_version,
-                    config_hash,
-                    # The only value this column ever holds. A consultation has no
-                    # terminal state -- the row is what makes it resumable, so it is
-                    # open for as long as it exists. Anything reading it as liveness
-                    # is reading a constant; reviews are where a real lifecycle lives.
-                    "open",
-                    now,
-                    now,
-                    workflow_id,
-                    step_id,
-                ),
-            )
-            return self._fetch(str(consultation_id))
+            try:
+                db.execute(
+                    "INSERT INTO consultations (id, profile_id, origin_runtime, target_agent_id, "
+                    "target_runtime, target_model, capability, native_session_id, "
+                    "conversation_label, protocol_version, config_hash, status, created_at, "
+                    "updated_at, workflow_id, step_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        str(consultation_id), profile_id, origin_runtime, route.agent_id,
+                        route.runtime, scrub_json(route.model), capability, None,
+                        scrub_json(conversation_label), protocol_version, config_hash, "open",
+                        now, now, workflow_id, step_id,
+                    ),
+                )
+                if review_id is not None:
+                    linked = db.execute(
+                        "UPDATE review_consultations SET consultation_id = ? "
+                        "WHERE review_id = ? AND agent_id = ? AND consultation_id IS NULL",
+                        (str(consultation_id), review_id, review_agent_id),
+                    )
+                    if linked.rowcount != 1:
+                        raise StoreError(
+                            ConsultErrorCode.SESSION_NOT_FOUND,
+                            f"review `{review_id}` has no unlinked reviewer `{review_agent_id}`",
+                        )
+                consultation = self._fetch(str(consultation_id))
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+            db.execute("COMMIT")
+            return consultation
 
         return await self._run(work)
 
@@ -578,6 +584,21 @@ class ConsultStore:
                 "SELECT * FROM consultations WHERE workflow_id = ? AND step_id = ? "
                 "ORDER BY created_at LIMIT 1",
                 (workflow_id, step_id),
+            ).fetchone()
+            return None if row is None else Consultation(**dict(row))
+
+        return await self._run(work)
+
+    async def review_consultation(
+        self, review_id: str, agent_id: str
+    ) -> Consultation | None:
+        """The consultation already linked to one reserved reviewer, if any."""
+
+        def work() -> Consultation | None:
+            row = self._db.execute(
+                "SELECT c.* FROM review_consultations r JOIN consultations c "
+                "ON c.id = r.consultation_id WHERE r.review_id = ? AND r.agent_id = ?",
+                (review_id, agent_id),
             ).fetchone()
             return None if row is None else Consultation(**dict(row))
 
@@ -963,10 +984,13 @@ class ConsultStore:
         # release keyed on the process would delete a lease it does not own.
         token = f"pid-{os.getpid()}-{uuid.uuid4().hex[:12]}"
         await self._run(lambda: self._acquire(str(consultation_id), ttl_s, token))
-        try:
+        async with _renewing_lease(
+            self._run,
+            lambda: self._renew(str(consultation_id), ttl_s, token),
+            lambda: self._release(str(consultation_id), token),
+            ttl_s,
+        ):
             yield
-        finally:
-            await self._run(lambda: self._release(str(consultation_id), token))
 
     def _acquire(self, consultation_id: str, ttl_s: float, token: str) -> None:
         db = self._db
@@ -999,3 +1023,132 @@ class ConsultStore:
             "DELETE FROM consultation_leases WHERE consultation_id = ? AND holder = ?",
             (consultation_id, token),
         )
+
+    def _renew(self, consultation_id: str, ttl_s: float, token: str) -> None:
+        cursor = self._db.execute(
+            "UPDATE consultation_leases SET expires_at = ? "
+            "WHERE consultation_id = ? AND holder = ?",
+            (time.time() + ttl_s, consultation_id, token),
+        )
+        if cursor.rowcount != 1:
+            raise StoreError(
+                ConsultErrorCode.SESSION_BUSY,
+                f"consultation `{consultation_id}` lost its execution lease while its turn "
+                "was still running",
+            )
+
+
+@asynccontextmanager
+async def _renewing_lease(run, renew, release, ttl_s: float):
+    """Renew ownership, cancelling guarded work immediately when ownership is lost."""
+    owner = asyncio.current_task()
+    if owner is None:  # pragma: no cover - an async context always has a task
+        raise RuntimeError("a renewable lease requires an asyncio task")
+    initial_cancelling = owner.cancelling()
+    stop = asyncio.Event()
+    guarded_done = asyncio.Event()
+    owner_cancelled = asyncio.Event()
+    failure: asyncio.Future[Exception] = asyncio.get_running_loop().create_future()
+    heartbeat = asyncio.create_task(
+        _keep_lease_alive(
+            run, renew, ttl_s, stop, guarded_done, owner_cancelled, failure, owner
+        )
+    )
+    body_failed = False
+    try:
+        try:
+            yield
+            # No await between these two operations: once the body returned, a
+            # renewal that finishes later belongs to cleanup and must not cancel a
+            # result the guarded operation already produced.
+            guarded_done.set()
+            if failure.done():
+                if owner_cancelled.is_set():
+                    owner_cancelled.clear()
+                    owner.uncancel()
+                    if owner.cancelling() > initial_cancelling:
+                        raise asyncio.CancelledError
+                raise failure.result()
+        except asyncio.CancelledError:
+            if failure.done():
+                if owner_cancelled.is_set():
+                    owner_cancelled.clear()
+                    owner.uncancel()
+                    if owner.cancelling() > initial_cancelling:
+                        raise
+                raise failure.result() from None
+            raise
+    except BaseException:
+        body_failed = True
+        raise
+    finally:
+        guarded_done.set()
+        stop.set()
+
+        async def cleanup() -> None:
+            await heartbeat
+            await run(release)
+
+        # Cancellation propagates into a directly-awaited task. Keep cleanup in its
+        # own task and shield it so an external cancellation -- or the last renewal
+        # racing with body completion -- cannot leave the lease row behind.
+        cleanup_task = asyncio.create_task(cleanup())
+        pending_cancel: asyncio.CancelledError | None = None
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as exc:
+                pending_cancel = pending_cancel or exc
+            except Exception:
+                # Read the exception from the task below, where body_failed decides
+                # whether cleanup failure or the guarded operation's failure wins.
+                pass
+
+        cleanup_error = cleanup_task.exception()
+        if cleanup_error is not None and not body_failed:
+            raise cleanup_error
+        internal_cancel = pending_cancel is not None and owner_cancelled.is_set()
+        if internal_cancel:
+            # The heartbeat requested exactly one cancellation. Consume exactly that
+            # request; a simultaneous external cancellation remains counted.
+            owner_cancelled.clear()
+            owner.uncancel()
+        if pending_cancel is not None:
+            external_cancel = not internal_cancel or owner.cancelling() > initial_cancelling
+            if external_cancel:
+                raise pending_cancel
+
+
+async def _keep_lease_alive(
+    run,
+    renew: Callable[[], bool | None],
+    ttl_s: float,
+    stop: asyncio.Event,
+    guarded_done: asyncio.Event,
+    owner_cancelled: asyncio.Event,
+    failure: asyncio.Future[Exception],
+    owner: asyncio.Task,
+) -> None:
+    """Renew a live lease until its owning context exits.
+
+    A timeout is a bound on one child process, not on every recovery turn a logical
+    operation may need. Renewal keeps a healthy process from being mistaken for a
+    dead one while preserving expiry when the process actually disappears.
+    """
+    interval = max(0.001, min(float(ttl_s) / 3.0, 30.0))
+    while True:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+            return
+        except TimeoutError:
+            try:
+                keep_going = await run(renew)
+            except Exception as exc:  # ownership loss must interrupt the guarded work
+                if not failure.done():
+                    failure.set_result(exc)
+                if not guarded_done.is_set():
+                    owner_cancelled.set()
+                    owner.cancel()
+                return
+            if keep_going is False:
+                return

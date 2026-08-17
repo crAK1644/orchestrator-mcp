@@ -13,9 +13,12 @@ of a step comes from git and not from anything the model said.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -23,8 +26,16 @@ import pytest
 from orchestrator_mcp.code import service as code_service
 from orchestrator_mcp.code.adapters.codex_cli import CodexWriteAdapter
 from orchestrator_mcp.code.registry import CodeError, code_adapter_for
-from orchestrator_mcp.code.service import run_contained, worktree_path
+from orchestrator_mcp.code.service import (
+    patch_path,
+    read_patch,
+    run_contained,
+    save_patch,
+    sweep_recovery_artifacts,
+    worktree_path,
+)
 from orchestrator_mcp.consult.config import AgentConfig, ConsultConfig
+from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.prompts import compile_execution_prompt
 
 from .fixtures import agent_stub
@@ -198,25 +209,161 @@ async def test_the_agent_never_works_in_the_users_repository(repo, worktrees, tm
 async def test_the_worktree_is_removed_and_deregistered(repo, worktrees, tmp_path, monkeypatch):
     import subprocess
 
-    await run(repo, tmp_path, monkeypatch)
+    result, _ = await run(repo, tmp_path, monkeypatch)
     assert not worktree_path("wf-1", "step-1").exists()
+    assert await read_patch("wf-1", "step-1") == result.patch
+    assert patch_path("wf-1", "step-1").stat().st_mode & 0o777 == 0o600
     listed = subprocess.run(
         ["git", "worktree", "list"], cwd=repo, capture_output=True, text=True, check=True
     )
     assert "wf-1" not in listed.stdout
 
 
-async def test_a_finished_workflow_leaves_no_directory_of_its_own(
+async def test_read_patch_refuses_a_symlink_swap_at_open(worktrees, tmp_path, monkeypatch):
+    await save_patch("wf-1", "step-1", "safe patch")
+    target = patch_path("wf-1", "step-1")
+    outside = tmp_path / "outside.patch"
+    outside.write_text("do not return")
+    real_open = code_service.os.open
+    replaced = False
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if Path(path) == target and not replaced:
+            replaced = True
+            target.unlink()
+            target.symlink_to(outside)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(code_service.os, "open", swap_before_open)
+
+    with pytest.raises(CodeError, match="cannot be opened safely"):
+        await read_patch("wf-1", "step-1")
+    assert replaced
+
+
+async def test_read_patch_refuses_a_fifo_without_waiting_for_a_writer(worktrees):
+    target = patch_path("wf-1", "step-1")
+    target.parent.mkdir(parents=True)
+    target.parent.chmod(0o700)
+    os.mkfifo(target, 0o600)
+
+    with pytest.raises(CodeError, match="not a private regular file"):
+        await asyncio.wait_for(read_patch("wf-1", "step-1"), timeout=1)
+
+
+async def test_a_captured_patch_keeps_a_private_recovery_directory(
     repo, worktrees, tmp_path, monkeypatch
 ):
-    """Found by the live run: the step's worktree went, its parent stayed forever.
-
-    Nothing but this code creates that directory, so nothing but this code removes it,
-    and one empty directory per workflow accumulates under the user's home.
-    """
+    """The worktree goes, but its patch survives until host application is recorded."""
     await run(repo, tmp_path, monkeypatch)
 
-    assert not worktree_path("wf-1", "step-1").parent.exists()
+    assert patch_path("wf-1", "step-1").exists()
+    assert worktree_path("wf-1", "step-1").parent.exists()
+
+
+async def test_a_recovery_collision_preserves_the_existing_patch(worktrees):
+    await save_patch("wf-1", "step-1", "first patch")
+
+    with pytest.raises(CodeError, match="FileExistsError"):
+        await save_patch("wf-1", "step-1", "second patch")
+
+    assert await read_patch("wf-1", "step-1") == "first patch"
+
+
+async def test_a_recovery_encoding_failure_is_normalized_and_cleaned_up(worktrees):
+    with pytest.raises(CodeError, match="UnicodeEncodeError"):
+        await save_patch("wf-1", "step-1", "invalid surrogate: \udcff")
+
+    assert not patch_path("wf-1", "step-1").exists()
+
+
+async def test_a_contained_recovery_write_failure_returns_the_patch_and_keeps_the_worktree(
+    repo, worktrees, tmp_path, monkeypatch
+):
+    async def fail(*_args):
+        raise CodeError(ConsultErrorCode.TRANSPORT_ERROR, "recovery disk is full")
+
+    monkeypatch.setattr(code_service, "save_patch", fail)
+    result, _ = await run(repo, tmp_path, monkeypatch)
+
+    assert result.changed
+    assert "recovery disk is full" in result.recovery_warning
+    assert worktree_path("wf-1", "step-1").exists()
+    _, removed_worktrees = await sweep_recovery_artifacts(max_age_s=0)
+    assert removed_worktrees == 1
+    assert not worktree_path("wf-1", "step-1").exists()
+
+
+async def test_an_unexpected_recovery_exception_keeps_the_contained_worktree(
+    repo, worktrees, tmp_path, monkeypatch
+):
+    async def fail(*_args):
+        raise UnicodeEncodeError("utf-8", "\udcff", 0, 1, "surrogate")
+
+    monkeypatch.setattr(code_service, "save_patch", fail)
+    result, _ = await run(repo, tmp_path, monkeypatch)
+
+    assert result.changed
+    assert "UnicodeEncodeError" in result.recovery_warning
+    assert worktree_path("wf-1", "step-1").exists()
+
+
+async def test_a_real_recovery_fsync_failure_keeps_the_contained_worktree(
+    repo, worktrees, tmp_path, monkeypatch
+):
+    """Disk exhaustion normally arrives after open, at write/flush/fsync."""
+    def disk_full(_descriptor):
+        raise OSError("recovery disk is full")
+
+    monkeypatch.setattr(code_service.os, "fsync", disk_full)
+
+    result, _ = await run(repo, tmp_path, monkeypatch)
+
+    assert result.changed
+    assert "could not preserve the raw patch" in result.recovery_warning
+    assert "OSError" in result.recovery_warning
+    assert worktree_path("wf-1", "step-1").exists()
+    assert not patch_path("wf-1", "step-1").exists()
+    _, removed_worktrees = await sweep_recovery_artifacts(max_age_s=0)
+    assert removed_worktrees == 1
+
+
+async def test_expired_raw_patch_recovery_is_swept_but_recent_patch_survives(worktrees):
+    await save_patch("wf-old", "step-old", "old")
+    await save_patch("wf-new", "step-new", "new")
+    old = patch_path("wf-old", "step-old")
+    os.utime(old, (time.time() - 120, time.time() - 120))
+
+    removed_patches, _ = await sweep_recovery_artifacts(max_age_s=60)
+
+    assert removed_patches == 1
+    assert not old.exists()
+    assert patch_path("wf-new", "step-new").exists()
+
+
+async def test_recovery_sweep_limits_expensive_worktree_cleanup(worktrees, monkeypatch):
+    for index in range(5):
+        path = worktree_path(f"wf-{index}", "step")
+        path.mkdir(parents=True)
+        os.utime(path, (time.time() - 120, time.time() - 120))
+    attempted: list[Path] = []
+
+    async def remove(path: Path) -> bool:
+        attempted.append(path)
+        return False
+
+    monkeypatch.setattr(code_service, "_remove_expired_worktree", remove)
+
+    await sweep_recovery_artifacts(max_age_s=60, max_worktrees=2)
+    first_attempt = set(attempted)
+    assert len(first_attempt) == 2
+
+    attempted.clear()
+    await sweep_recovery_artifacts(max_age_s=60, max_worktrees=2)
+
+    assert len(attempted) == 2
+    assert first_attempt.isdisjoint(attempted)
 
 
 async def test_a_sibling_step_still_running_keeps_the_directory(

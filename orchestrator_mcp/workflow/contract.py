@@ -23,6 +23,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..contract import MAX_ERROR_CHARS
 from ..consult.contract import Capability, ConsultError, ExecutionMode, Runtime
 from ..consult.errors import ConsultErrorCode
 
@@ -41,7 +42,6 @@ class WorkflowError(Exception):
 
 WorkflowState = Literal[
     "created",
-    "researching",
     "planning",
     "prompt_ready",
     "coding",
@@ -320,9 +320,8 @@ class CodeChange(BaseModel):
     """What one implementation or fix round produced.
 
     `patch` is the sanitized audit copy. It is never what gets applied: the raw text
-    goes back to the host once, in the run response, and `raw_patch_sha256` is what
-    ties the two together afterwards. A scrubbed patch is a corrupt patch, so storing
-    one and calling it applicable would be worse than storing nothing.
+    is returned by the run and recoverable through workflow status until application;
+    `raw_patch_sha256` ties it to this record. A scrubbed patch is a corrupt patch.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -353,8 +352,8 @@ class TestReport(BaseModel):
     command: str
     workdir: str
     # Nullable, because "no exit code was read" is a real outcome and zero is not how
-    # to say it. A denied command leaves no event, a timeout kills the process before
-    # it reports, and either way the honest value is nothing.
+    # to say it. A denied command leaves no event, while a timeout may either kill the
+    # process before it reports or come from a wrapper that returns a non-zero code.
     exit_code: int | None
     status: Literal["passed", "failed", "timeout", "skipped"]
     stdout_tail: str = ""
@@ -379,6 +378,13 @@ class TestReport(BaseModel):
             )
         if self.status == "failed" and self.exit_code in (None, 0):
             raise ValueError("a report cannot be `failed` with exit code 0 or none at all")
+        if self.status == "timeout" and self.exit_code == 0:
+            raise ValueError(
+                "a report cannot be `timeout` with exit code 0; use a non-zero wrapper "
+                "code, or none when the process did not produce a result"
+            )
+        if self.status == "skipped" and self.exit_code is not None:
+            raise ValueError("a report cannot be `skipped` with an exit code")
         return self
 
 
@@ -415,8 +421,8 @@ class StepView(BaseModel):
     """One step, as `status` reports it.
 
     `output` is the stored artifact, which is the *scrubbed* copy. For a patch that
-    makes it an audit record and nothing else; the raw text went back once, when the
-    step ran, and never comes back out of here.
+    makes it an audit record and nothing else; the response-level `patch` carries the
+    private recovery copy while application is pending.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -489,8 +495,8 @@ class WorkflowResponse(BaseModel):
     """One envelope for every workflow tool, the same as the other two layers.
 
     `patch` is the exception that proves the storage rule: the raw diff is returned
-    here once, because the stored copy is scrubbed and a scrubbed patch does not
-    apply. It is never read back out of the database.
+    here because the stored copy is scrubbed and a scrubbed patch does not apply. It
+    may be recovered from a private file while application is pending, never SQLite.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -501,6 +507,9 @@ class WorkflowResponse(BaseModel):
     preview: StepPreview | None = None
     step: StepView | None = None
     patch: str = ""
+    # Recovery is deliberately weaker than the primary response: a full disk or an
+    # unsafe file must not discard a paid patch or make status unreadable.
+    recovery_warning: str = Field(default="", max_length=MAX_ERROR_CHARS)
     latency_ms: int = 0
     error: ConsultError | None = None
 

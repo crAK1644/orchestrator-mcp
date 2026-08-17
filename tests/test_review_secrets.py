@@ -116,7 +116,11 @@ def build(tmp_path, host_claude):
         config = ConsultConfig(
             database_path=str(path),
             agents=dict(REVIEWERS),
-            review={"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol"]},
+            review={
+                "reviewers": ["codex-sol"],
+                "deep_reviewers": ["codex-sol"],
+                "roots": [str(tmp_path)],
+            },
         )
         return await StubService(config, "claude").open()
 

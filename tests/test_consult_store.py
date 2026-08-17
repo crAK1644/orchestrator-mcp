@@ -533,6 +533,234 @@ async def test_an_expired_lease_does_not_wedge_the_consultation(store):
         pass
 
 
+async def test_a_live_consultation_lease_is_renewed_past_its_initial_expiry(store):
+    consultation_id = await new_consultation(store)
+    async with store.lease(consultation_id, ttl_s=0.06):
+        initial = store._db.execute(
+            "SELECT expires_at FROM consultation_leases WHERE consultation_id = ?",
+            (str(consultation_id),),
+        ).fetchone()[0]
+        await asyncio.sleep(0.08)
+        renewed = store._db.execute(
+            "SELECT expires_at FROM consultation_leases WHERE consultation_id = ?",
+            (str(consultation_id),),
+        ).fetchone()[0]
+        assert renewed > initial and renewed > time.time()
+
+
+async def test_losing_a_consultation_lease_interrupts_the_guarded_turn(
+    store, monkeypatch
+):
+    consultation_id = await new_consultation(store)
+
+    def lost(*_args):
+        raise StoreError(ConsultErrorCode.SESSION_BUSY, "lease was stolen")
+
+    monkeypatch.setattr(store, "_renew", lost)
+    started = time.perf_counter()
+    with pytest.raises(StoreError, match="lease was stolen"):
+        async with store.lease(consultation_id, ttl_s=0.03):
+            await asyncio.sleep(1)
+    assert time.perf_counter() - started < 0.5
+
+
+async def test_a_body_error_is_not_replaced_by_the_heartbeat(store, monkeypatch):
+    consultation_id = await new_consultation(store)
+
+    def lost(*_args):
+        raise StoreError(ConsultErrorCode.SESSION_BUSY, "lease was stolen")
+
+    monkeypatch.setattr(store, "_renew", lost)
+    with pytest.raises(RuntimeError, match="body failed"):
+        async with store.lease(consultation_id, ttl_s=0.03):
+            raise RuntimeError("body failed")
+
+
+async def test_a_body_error_is_not_replaced_by_a_cleanup_failure(store, monkeypatch):
+    consultation_id = await new_consultation(store)
+
+    def release_failed(*_args):
+        raise OSError("database stayed locked")
+
+    monkeypatch.setattr(store, "_release", release_failed)
+
+    with pytest.raises(RuntimeError, match="body failed"):
+        async with store.lease(consultation_id):
+            raise RuntimeError("body failed")
+
+
+async def test_a_cleanup_failure_after_success_is_still_reported(store, monkeypatch):
+    consultation_id = await new_consultation(store)
+
+    def release_failed(*_args):
+        raise OSError("database stayed locked")
+
+    monkeypatch.setattr(store, "_release", release_failed)
+
+    with pytest.raises(OSError, match="database stayed locked"):
+        async with store.lease(consultation_id):
+            pass
+
+
+async def test_heartbeat_cancellation_is_removed_from_the_owner_count(store, monkeypatch):
+    consultation_id = await new_consultation(store)
+
+    def lost(*_args):
+        raise StoreError(ConsultErrorCode.SESSION_BUSY, "lease was stolen")
+
+    monkeypatch.setattr(store, "_renew", lost)
+
+    async def operation() -> int:
+        owner = asyncio.current_task()
+        assert owner is not None
+        before = owner.cancelling()
+        with pytest.raises(StoreError, match="lease was stolen"):
+            async with store.lease(consultation_id, ttl_s=0.03):
+                await asyncio.sleep(1)
+        return owner.cancelling() - before
+
+    assert await asyncio.create_task(operation()) == 0
+
+
+async def test_swallowed_heartbeat_cancellation_is_removed_from_the_owner_count(
+    store, monkeypatch
+):
+    consultation_id = await new_consultation(store)
+
+    def lost(*_args):
+        raise StoreError(ConsultErrorCode.SESSION_BUSY, "lease was stolen")
+
+    monkeypatch.setattr(store, "_renew", lost)
+
+    async def operation() -> int:
+        owner = asyncio.current_task()
+        assert owner is not None
+        before = owner.cancelling()
+        with pytest.raises(StoreError, match="lease was stolen"):
+            async with store.lease(consultation_id, ttl_s=0.03):
+                try:
+                    await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    pass
+        return owner.cancelling() - before
+
+    assert await asyncio.create_task(operation()) == 0
+
+
+async def test_a_renewal_failure_at_body_completion_preserves_success_and_releases(
+    store, monkeypatch
+):
+    consultation_id = await new_consultation(store)
+    renewal_entered = threading.Event()
+    finish_renewal = threading.Event()
+    body_returned = asyncio.Event()
+
+    def lost_after_body(*_args):
+        renewal_entered.set()
+        assert finish_renewal.wait(timeout=1)
+        raise StoreError(ConsultErrorCode.SESSION_BUSY, "lease was stolen")
+
+    monkeypatch.setattr(store, "_renew", lost_after_body)
+
+    async def operation():
+        async with store.lease(consultation_id, ttl_s=0.03):
+            assert await asyncio.to_thread(renewal_entered.wait, 1)
+            body_returned.set()
+        return "completed"
+
+    task = asyncio.create_task(operation())
+    await body_returned.wait()
+    # Let the context manager observe the completed body and begin its shielded
+    # cleanup before the in-flight renewal reports the stale owner.
+    await asyncio.sleep(0)
+    finish_renewal.set()
+
+    assert await task == "completed"
+    row = store._db.execute(
+        "SELECT 1 FROM consultation_leases WHERE consultation_id = ?",
+        (str(consultation_id),),
+    ).fetchone()
+    assert row is None
+
+
+async def test_external_cancellation_propagates_after_releasing_the_lease(store):
+    consultation_id = await new_consultation(store)
+    entered = asyncio.Event()
+
+    async def operation():
+        async with store.lease(consultation_id):
+            entered.set()
+            await asyncio.sleep(10)
+
+    task = asyncio.create_task(operation())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    row = store._db.execute(
+        "SELECT 1 FROM consultation_leases WHERE consultation_id = ?",
+        (str(consultation_id),),
+    ).fetchone()
+    assert row is None
+
+
+async def test_external_cancellation_during_cleanup_replaces_a_body_error(
+    store, monkeypatch
+):
+    consultation_id = await new_consultation(store)
+    release_entered = threading.Event()
+    finish_release = threading.Event()
+
+    def blocked_release(*_args):
+        release_entered.set()
+        assert finish_release.wait(timeout=1)
+
+    monkeypatch.setattr(store, "_release", blocked_release)
+
+    async def operation():
+        async with store.lease(consultation_id):
+            raise RuntimeError("body failed")
+
+    task = asyncio.create_task(operation())
+    assert await asyncio.to_thread(release_entered.wait, 1)
+    task.cancel()
+    finish_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_later_external_cancellation_is_not_mistaken_for_heartbeat_cancel(
+    store, monkeypatch
+):
+    consultation_id = await new_consultation(store)
+    release_entered = threading.Event()
+    finish_release = threading.Event()
+
+    def lost(*_args):
+        raise StoreError(ConsultErrorCode.SESSION_BUSY, "lease was stolen")
+
+    def blocked_release(*_args):
+        release_entered.set()
+        assert finish_release.wait(timeout=1)
+
+    monkeypatch.setattr(store, "_renew", lost)
+    monkeypatch.setattr(store, "_release", blocked_release)
+
+    async def operation():
+        async with store.lease(consultation_id, ttl_s=0.03):
+            await asyncio.sleep(1)
+
+    task = asyncio.create_task(operation())
+    assert await asyncio.to_thread(release_entered.wait, 1)
+    task.cancel()
+    finish_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
 CONTENDER = """\
 import asyncio, sys
 from orchestrator_mcp.consult.store import ConsultStore, StoreError

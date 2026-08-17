@@ -65,6 +65,8 @@ class CodeResult:
     model_verified: bool = False
     raw_output: str = ""
     usage: Usage = field(default_factory=Usage)
+    recovery_warning: str = ""
+    recovery_written: bool = False
 
     @property
     def changed(self) -> bool:

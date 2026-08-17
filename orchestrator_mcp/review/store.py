@@ -33,7 +33,7 @@ from uuid import UUID
 
 from ..contract import scrub_json
 from ..consult.errors import ConsultErrorCode
-from ..consult.store import ConsultStore, StoreError
+from ..consult.store import ConsultStore, StoreError, _renewing_lease
 
 # Long enough to outlive a whole reviewer batch. They run in parallel, so the bound
 # is the slowest one plus its preflight, not the sum of all of them.
@@ -485,15 +485,16 @@ class ReviewStore:
         """
         token = f"pid-{os.getpid()}-{uuid.uuid4().hex[:12]}"
         await self._run(lambda: self._acquire(str(review_id), ttl_s, token))
-        try:
+        async with _renewing_lease(
+            self._run,
+            lambda: self._renew(str(review_id), ttl_s, token),
+            lambda: self._db.execute(
+                "DELETE FROM review_leases WHERE review_id = ? AND holder = ?",
+                (str(review_id), token),
+            ),
+            ttl_s,
+        ):
             yield
-        finally:
-            await self._run(
-                lambda: self._db.execute(
-                    "DELETE FROM review_leases WHERE review_id = ? AND holder = ?",
-                    (str(review_id), token),
-                )
-            )
 
     def _acquire(self, review_id: str, ttl_s: float, token: str) -> None:
         db = self._db
@@ -519,6 +520,17 @@ class ReviewStore:
                 ConsultErrorCode.SESSION_BUSY,
                 f"review `{review_id}` already has reviewers in flight; wait for them to "
                 "finish before running it again",
+            )
+
+    def _renew(self, review_id: str, ttl_s: float, token: str) -> None:
+        cursor = self._db.execute(
+            "UPDATE review_leases SET expires_at = ? WHERE review_id = ? AND holder = ?",
+            (time.time() + ttl_s, review_id, token),
+        )
+        if cursor.rowcount != 1:
+            raise StoreError(
+                ConsultErrorCode.SESSION_BUSY,
+                f"review `{review_id}` lost its execution lease while reviewers were running",
             )
 
     # --- deletion -----------------------------------------------------------

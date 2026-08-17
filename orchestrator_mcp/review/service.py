@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
+import os
 import secrets as secrets_mod
+import stat
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -29,6 +31,7 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 
 from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json, secret_lines
+from ..json_objects import fenced_json_objects, json_object_candidates
 from ..consult.config import ConsultConfig
 from ..consult.contract import (
     ConsultAgentsResponse,
@@ -43,7 +46,7 @@ from ..consult.errors import ConsultErrorCode
 from ..consult.service import ConsultService
 from ..consult.store import ConsultStore, StoreError
 from ..consult.contract import MAX_CONTEXT_CHARS
-from ..workflow.identity import same_execution_identity
+from ..workflow.identity import host_identity_conflict, same_execution_identity
 from .contract import (
     FIX_STEPS,
     MAX_FINDINGS,
@@ -82,9 +85,6 @@ CANCELLABLE = ("pending", "running", "awaiting_synthesis", "failed")
 # Statuses a fix round can be recorded against: the ones that have findings to fix.
 # A `failed` review has none by invariant, and a `pending` one has sent nothing.
 FIXABLE = ("awaiting_synthesis", "complete")
-
-_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
-
 
 class ReviewService:
     """Reviews over a `ConsultService` that shares this store.
@@ -201,7 +201,8 @@ class ReviewService:
                     "pass `context` or `context_paths`, not both: two sources for one "
                     "field is ambiguous about what would be sent"
                 )
-            context, read_manifest = _read_paths(context_paths)
+            roots = self.config.review.roots if self.config.review is not None else []
+            context, read_manifest = _read_paths(context_paths, roots)
             # A host-declared manifest still wins -- it may say something truer than
             # a filename. `material_verified` is what tells the two apart.
             if not manifest:
@@ -296,10 +297,9 @@ class ReviewService:
     ) -> list[ReviewerSnapshot]:
         """Who this review would go to, as configured right now.
 
-        A reviewer on the host's own runtime is refused here rather than left to the
-        router: approving a send the router is guaranteed to reject is a preview that
-        lies. A reviewer on the same *model* but a different runtime stays allowed and
-        turns into `host_model_conflict` instead.
+        The same execution-identity rule as workflow routing is applied here. With a
+        configured host model, a provably different model on the same runtime is a
+        different reviewer; without one, exclusion conservatively covers the runtime.
         """
         if self.config.review is None and reviewers is None:
             raise ValueError(
@@ -331,10 +331,12 @@ class ReviewService:
             # later through an explicit list.
             self.config.check_reviewer(agent_id, "reviewers")
             agent = self.config.agents[agent_id]
-            if agent.runtime == self.host_runtime:
+            if conflict := host_identity_conflict(
+                agent.runtime, agent.model, self.host_runtime, self.config.host.model
+            ):
                 raise ValueError(
-                    f"`{agent_id}` runs this host's own runtime ({self.host_runtime}) and "
-                    "cannot review its own work; name a different agent"
+                    f"`{agent_id}` cannot review this host's own work: {conflict}; "
+                    "name a different agent"
                 )
             snapshots.append(
                 ReviewerSnapshot(
@@ -544,7 +546,9 @@ class ReviewService:
             # is another turn in the same session rather than an orphan the delete
             # would miss. A failure before any consultation existed has none.
             existing = getattr(prior, "consultation_id", None)
-            response = await self.consult.consult(
+            response = await self.consult.consult_review(
+                review.id,
+                agent_id,
                 capability="review",
                 target_agent=agent_id,
                 prompt=prompt,
@@ -553,7 +557,7 @@ class ReviewService:
                 consultation_id=UUID(existing) if existing else None,
             )
             result = self._to_result(agent_id, response)
-            result = await self._reask(agent_id, result, source_mode)
+            result = await self._reask(review.id, agent_id, result, source_mode)
             # Persisted before returning, so a cancel or a crash never loses a
             # reviewer that already answered.
             await self.store.record_reviewer_result(
@@ -713,6 +717,17 @@ class ReviewService:
                 out.append(current.model_copy(update={"usage": usage or current.usage}))
                 continue
             findings = json.loads(row.findings_json) if row.findings_json else []
+            findings_parsed = bool(row.findings_parsed or row.findings_json)
+            findings_truncated = row.findings_truncated
+            # Parser fixes should repair old review rows on read. The prose is the
+            # retained source of truth; reparsing it does not invent content, and it
+            # lets a review blocked by an earlier parser complete after an upgrade.
+            if not findings_parsed and row.status == "ok" and row.answer:
+                reparsed, findings_parsed, findings_truncated = _parse_findings(
+                    row.agent_id, row.answer
+                )
+                if findings_parsed:
+                    findings = [finding.model_dump(mode="json") for finding in reparsed]
             sources = json.loads(row.sources_json) if row.sources_json else []
             content = None
             if consultation_id is not None:
@@ -731,8 +746,8 @@ class ReviewService:
                     consultation_id=consultation_id,
                     findings=[Finding(**f) for f in findings],
                     sources=_sources(sources),
-                    findings_parsed=bool(row.findings_parsed or row.findings_json),
-                    findings_truncated=row.findings_truncated,
+                    findings_parsed=findings_parsed,
+                    findings_truncated=findings_truncated,
                     answer=row.answer,
                     assumptions=(content.assumptions[:MAX_LIST_ITEMS] if content else []),
                     uncertainties=(content.uncertainties[:MAX_LIST_ITEMS] if content else []),
@@ -795,7 +810,11 @@ class ReviewService:
         )
 
     async def _reask(
-        self, agent_id: str, result: ReviewerResult, source_mode: SourceMode
+        self,
+        review_id: UUID | str,
+        agent_id: str,
+        result: ReviewerResult,
+        source_mode: SourceMode,
     ) -> ReviewerResult:
         """One follow-up turn when the findings block could not be read.
 
@@ -813,7 +832,9 @@ class ReviewService:
             return result
 
         try:
-            response = await self.consult.consult(
+            response = await self.consult.consult_review(
+                review_id,
+                agent_id,
                 capability="review",
                 target_agent=agent_id,
                 prompt=REASK_INSTRUCTIONS,
@@ -1196,7 +1217,7 @@ def _fix_rounds(review) -> list[FixRound]:
     return [FixRound(**r) for r in json.loads(review.fix_rounds_json or "[]")][:MAX_FIX_ROUNDS]
 
 
-def _read_paths(paths: list[str]) -> tuple[str, list[MaterialItem]]:
+def _read_paths(paths: list[str], roots: list[Path]) -> tuple[str, list[MaterialItem]]:
     """Assemble `context` from files on disk, and the manifest describing them.
 
     The reviewer never sees a path. Both adapters run it with no filesystem at all
@@ -1209,12 +1230,26 @@ def _read_paths(paths: list[str]) -> tuple[str, list[MaterialItem]]:
     Refusals are `ValueError`, which `plan` turns into an `INVALID_REQUEST`
     envelope, and each one names the path it refused.
 
-    ponytail: no root restriction. A host that can call this can already read any
-    file and paste it into `context`, so a root would remove no capability -- it
-    would only break the ordinary case of a diff written to a scratch directory.
+    The allowlist is checked after strict resolution, so symlinks cannot move a path
+    outside the configured tree. An MCP caller may run with less filesystem authority
+    than this server; context_paths must not turn that difference into a read primitive.
     """
     if len(paths) > MAX_MATERIAL_ITEMS:
         raise ValueError(f"at most {MAX_MATERIAL_ITEMS} paths, got {len(paths)}")
+    if not roots:
+        raise ValueError(
+            "`context_paths` is disabled until `consult.review.roots:` names the "
+            "directories review material may be read from"
+        )
+    allowed: list[Path] = []
+    for root in roots:
+        try:
+            resolved_root = root.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(f"review root `{root}` cannot be read: {type(exc).__name__}") from exc
+        if not resolved_root.is_dir():
+            raise ValueError(f"review root `{root}` is not a directory")
+        allowed.append(resolved_root)
 
     parts: list[str] = []
     manifest: list[MaterialItem] = []
@@ -1225,23 +1260,19 @@ def _read_paths(paths: list[str]) -> tuple[str, list[MaterialItem]]:
             resolved = path.resolve(strict=True)
         except (OSError, RuntimeError) as exc:
             raise ValueError(f"`{raw}` cannot be read: {type(exc).__name__}") from exc
-        if not resolved.is_file():
+        if not any(resolved.is_relative_to(root) for root in allowed):
+            choices = ", ".join(f"`{root}`" for root in allowed)
             raise ValueError(
-                f"`{raw}` is not a regular file; name the files to review, not a directory"
+                f"`{raw}` resolves outside `consult.review.roots`; allowed roots: "
+                f"{choices}. Add its directory explicitly or pass its contents "
+                "through `context`"
             )
-        # Size first, so a huge file is refused rather than read into memory to find
-        # out it was too big. Bytes over-count against a character cap, which is the
-        # safe direction: it can refuse a file that would have just fit, never accept
-        # one that would not.
-        total += resolved.stat().st_size
-        if total > MAX_CONTEXT_CHARS:
-            raise ValueError(
-                f"the material is over the {MAX_CONTEXT_CHARS} character limit by `{raw}`; "
-                "send fewer paths, or narrow the diff"
-            )
+        root = next(root for root in allowed if resolved.is_relative_to(root))
+        data = _read_beneath(root, resolved, raw, MAX_CONTEXT_CHARS - total)
+        total += len(data)
         # `replace` rather than a raise: a stray byte in one file should cost a
         # character, not the whole review.
-        text = resolved.read_text(encoding="utf-8", errors="replace")
+        text = data.decode("utf-8", errors="replace")
         parts.append(f"===== {raw} =====\n{text}")
         manifest.append(
             MaterialItem(label=raw[:MAX_LABEL_CHARS], kind="file", locator="whole file",
@@ -1257,6 +1288,59 @@ def _read_paths(paths: list[str]) -> tuple[str, list[MaterialItem]]:
             f"{MAX_CONTEXT_CHARS} limit; send fewer paths, or narrow the diff"
         )
     return context, manifest
+
+
+def _read_beneath(root: Path, target: Path, raw: str, remaining: int) -> bytes:
+    """Open one regular file beneath an already-resolved root without path races."""
+    relative = target.relative_to(root)
+    if not relative.parts:
+        raise ValueError(
+            f"`{raw}` is not a regular file; name the files to review, not a directory"
+        )
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    directory_flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    # A FIFO opened read-only waits for a writer before we can reach ``fstat`` and
+    # reject it. Non-blocking makes the type check authoritative without letting an
+    # allowed path stall the MCP request indefinitely. It has no effect on regular
+    # file reads.
+    file_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    file_flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    directory_fd: int | None = None
+    file_fd: int | None = None
+    try:
+        directory_fd = os.open(root, directory_flags)
+        for part in relative.parts[:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        file_fd = os.open(relative.parts[-1], file_flags, dir_fd=directory_fd)
+        info = os.fstat(file_fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(
+                f"`{raw}` is not a regular file; name the files to review, not a directory"
+            )
+        handle = os.fdopen(file_fd, "rb")
+        file_fd = None
+        with handle:
+            data = handle.read(remaining + 1)
+        if len(data) > remaining:
+            raise ValueError(
+                f"the material is over the {MAX_CONTEXT_CHARS} character limit by `{raw}`; "
+                "send fewer paths, or narrow the diff"
+            )
+        return data
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(f"`{raw}` cannot be read safely: {type(exc).__name__}") from exc
+    finally:
+        if file_fd is not None:
+            with suppress(OSError):
+                os.close(file_fd)
+        if directory_fd is not None:
+            with suppress(OSError):
+                os.close(directory_fd)
 
 
 def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, int]:
@@ -1347,10 +1431,9 @@ def _candidates(answer: str):
     then has nothing to catch. A fenced-first order loses the same way whenever the
     quoted shape is the fenced one and the real block is not.
 
-    `rfind` for the unfenced scan because the reviewer is asked to end with the
-    block, and a forward scan over a megabyte of prose would spend the time on every
-    brace before it. That scan may well land inside a fenced block; the duplicate
-    costs one `json.loads` of text that already parsed.
+    Unfenced candidates are decoded from each brace with JSON's own scanner rather
+    than hand-counted. That handles braces inside strings and finds the outer wrapper
+    instead of latching onto the final nested finding.
 
     Each candidate carries whether it was fenced, because the caller judges a broken
     block differently from a bad slice and only the fence says which it was looking
@@ -1358,20 +1441,20 @@ def _candidates(answer: str):
     """
     if not answer:
         return
-    blocks = [(match.start(1), match.group(1), True) for match in _FENCE.finditer(answer)]
-    marker = answer.rfind('"findings"')
-    start = answer.rfind("{", 0, marker) if marker != -1 else -1
-    depth = 0
-    for index in range(start, len(answer)) if start != -1 else ():
-        if answer[index] == "{":
-            depth += 1
-        elif answer[index] == "}":
-            depth -= 1
-            if depth == 0:
-                blocks.append((start, answer[start : index + 1], False))
-                break
+    blocks = [(*candidate, True) for candidate in _fenced_objects(answer)]
+    blocks.extend((*candidate, False) for candidate in _unfenced_objects(answer))
     for _, chunk, fenced in sorted(blocks, key=lambda block: block[0], reverse=True):
         yield chunk, fenced
+
+
+def _fenced_objects(answer: str):
+    """JSON-looking line or compact fenced blocks, paired by shared state."""
+    yield from fenced_json_objects(answer)
+
+
+def _unfenced_objects(answer: str):
+    """Complete objects from prose, including an unclosed outer Markdown fence."""
+    yield from json_object_candidates(answer)
 
 
 def _sources(stored: list[Any]) -> list[ConsultSource]:

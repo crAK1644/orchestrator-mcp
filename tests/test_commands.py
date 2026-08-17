@@ -103,6 +103,21 @@ async def test_the_review_command_carries_the_deep_mode_precondition(host_claude
     assert "host_findings" not in await expand(srv, "review")
 
 
+async def test_the_review_command_names_the_configured_material_roots(host_claude):
+    configured = REVIEW | {"roots": ["/var/tmp/orchestrator-reviews"]}
+
+    text = await expand(server(review=configured), "review")
+
+    assert "/var/tmp/orchestrator-reviews" in text
+    assert "context_paths" in text
+
+
+async def test_the_review_command_says_when_context_paths_are_disabled(host_claude):
+    text = await expand(server(review=REVIEW), "review")
+
+    assert "context_paths` is disabled" in text
+
+
 async def test_the_workflow_command_does_not_let_a_claimed_test_pass_for_a_result(host_claude):
     """The guarantee the whole test step exists for, restated where the host reads it."""
     text = await expand(server(review=REVIEW, workflow=WORKFLOW), "workflow")

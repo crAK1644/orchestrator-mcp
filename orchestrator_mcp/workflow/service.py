@@ -25,18 +25,26 @@ approval; nothing here can tell whether a person read the preview.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets as secrets_mod
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from ..code.adapters.base import CodeResult
 from ..code.registry import CodeError
-from ..code.service import run_contained, worktree_path
+from ..code.service import (
+    read_patch,
+    remove_workflow_patches,
+    run_contained,
+    save_patch,
+    sweep_recovery_artifacts,
+    worktree_path,
+)
 from ..contract import MAX_ERROR_CHARS, scrub_json
 from ..consult.config import ConsultConfig, ReviewPolicy, StepBinding, WorkflowConfig
 from ..consult.contract import ConsultError, Runtime
@@ -76,6 +84,11 @@ from .store import (
 from .store import _sha256 as _text_sha256
 
 
+# Recovery cleanup must never become request latency. The worktree count is bounded
+# in the code service too; this wall-clock budget covers slow or wedged git owners.
+RECOVERY_SWEEP_BUDGET_S = 5.0
+
+
 class WorkflowService:
     """Workflows over the review and consult layers, on their store.
 
@@ -102,13 +115,33 @@ class WorkflowService:
         self.consult = self.reviews.consult
         self.store = WorkflowStore(shared)
         self.router = WorkflowRouter(config, host_runtime)
+        self._recovery_sweep_task: asyncio.Task[None] | None = None
 
     async def open(self) -> WorkflowService:
         await self.reviews.open()
+        # ``open`` is intentionally idempotent and sits on every public operation.
+        # Schedule hygiene once per service instance and let the request proceed.
+        if self._recovery_sweep_task is None:
+            self._recovery_sweep_task = asyncio.create_task(self._sweep_recovery())
         return self
 
     async def close(self) -> None:
+        task = self._recovery_sweep_task
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
         await self.reviews.close()
+
+    async def _sweep_recovery(self) -> None:
+        """Best-effort startup hygiene, isolated from workflow availability."""
+        try:
+            async with asyncio.timeout(RECOVERY_SWEEP_BUDGET_S):
+                await sweep_recovery_artifacts()
+        except Exception:
+            # Recovery is an operator convenience. A malformed abandoned checkout or
+            # slow git process must not fail otherwise valid workflow calls.
+            return
 
     # --- start ----------------------------------------------------------------
 
@@ -282,6 +315,7 @@ class WorkflowService:
             review_id = str(review.review_id)
             assert review.plan is not None
             token = review.plan.confirm_token
+            await self.store.supersede_planned_review_steps(workflow.id, round_index)
 
         agent_snapshot: dict[str, Any] = {
             "capability": definition.capability,
@@ -449,13 +483,26 @@ class WorkflowService:
 
         answer = response.content.answer
         patch = ""
+        recovery_warning = ""
+        recovery_written: bool | None = None
         try:
             if step in ("implement", "fix"):
-                # The raw diff goes back once, here. What gets stored is the scrubbed
-                # audit copy plus the hash of the raw text -- a scrubbed patch does
-                # not apply, and storing one as though it did would be worse than
-                # storing nothing.
+                # SQLite keeps the scrubbed audit copy plus the raw hash. A private
+                # file preserves the applicable patch until apply_patch is recorded,
+                # so a lost MCP response does not destroy paid work.
                 patch = answer
+                recovery_written = False
+                try:
+                    await save_patch(workflow.id, row.id, patch)
+                    recovery_written = True
+                except Exception as exc:
+                    # Recovery is the second copy, not permission to throw away the
+                    # first. Return the patch and make the loss explicit.
+                    recovery_warning = (
+                        str(exc)
+                        if isinstance(exc, CodeError)
+                        else f"could not preserve the raw patch: {type(exc).__name__}"
+                    )
                 output = CodeChange(
                     summary=f"{step} produced a patch of {len(answer)} characters",
                     files=_paths(answer),
@@ -469,12 +516,22 @@ class WorkflowService:
             raise WorkflowError(ConsultErrorCode.PROTOCOL_VALIDATION_FAILED, str(exc)) from exc
 
         await self.store.finish_step(
-            row.id, "done", output=output, raw_patch_sha256=output.get("raw_patch_sha256") or None
+            row.id,
+            "done",
+            output=output,
+            raw_patch_sha256=output.get("raw_patch_sha256") or None,
+            recovery_written=recovery_written,
         )
         if step == "synthesize":
             return await self._synthesize(started, workflow, row, output)
         await self._advance(workflow, row, output)
-        return await self._view_response(workflow.id, started, step_id=row.id, patch=patch)
+        return await self._view_response(
+            workflow.id,
+            started,
+            step_id=row.id,
+            patch=patch,
+            recovery_warning=recovery_warning,
+        )
 
     async def _planned_prompt(
         self, workflow: WorkflowRun, row: StepRow, step: Step
@@ -637,13 +694,21 @@ class WorkflowService:
             ignored=result.ignored,
         ).model_dump(mode="json")
         await self.store.finish_step(
-            row.id, "done", output=output, raw_patch_sha256=output["raw_patch_sha256"]
+            row.id,
+            "done",
+            output=output,
+            raw_patch_sha256=output["raw_patch_sha256"],
+            recovery_written=result.recovery_written,
         )
         await self._advance(workflow, row, output)
-        # The raw patch, once, the same way a delegated one comes back: what is stored
-        # is scrubbed, and a scrubbed patch does not apply.
+        # The raw patch remains recoverable through status until apply_patch is
+        # recorded. The database copy stays scrubbed.
         return await self._view_response(
-            workflow.id, started, step_id=row.id, patch=result.patch
+            workflow.id,
+            started,
+            step_id=row.id,
+            patch=result.patch,
+            recovery_warning=result.recovery_warning,
         )
 
     async def _run_review(
@@ -749,6 +814,7 @@ class WorkflowService:
                     "from. The step has been recorded as failed; plan it again once "
                     "the patch is applied and committed",
                 )
+            await remove_workflow_patches(workflow.id)
         await self.store.finish_step(
             row.id, "done", output=output,
             reported_by="host" if model is TestReport else None,
@@ -938,7 +1004,20 @@ class WorkflowService:
         elif step == "test":
             passed = (output or {}).get("status") == "passed"
             advance = self._policy_of(workflow).advance_on_failed_test
-            target = "reviewing" if passed or advance else "fixing"
+            if passed or advance:
+                target = "reviewing"
+            else:
+                cap = self._policy_of(workflow).max_fix_rounds
+                if workflow.fix_rounds >= cap:
+                    await self._transition(
+                        workflow.id,
+                        "needs_attention",
+                        definition.runs_from,
+                        reason=f"the {cap}-round cap was reached and the tests still fail",
+                    )
+                    return
+                await self.store.bump_fix_rounds(workflow.id)
+                target = "fixing"
         if step in ("implement", "fix", "apply_patch") and output:
             commit = output.get("commit") or None
 
@@ -1063,6 +1142,7 @@ class WorkflowService:
                 tuple(s for s in _ALL_STATES if s not in TERMINAL_STATES),
                 reason="cancelled by the host",
             )
+            await remove_workflow_patches(workflow_id)
             return await self._view_response(workflow_id, started)
         except (WorkflowError, StoreError) as exc:
             return _failed(workflow_id, await self._status(workflow_id), exc.code, str(exc), started)
@@ -1160,10 +1240,50 @@ class WorkflowService:
             return "failed"
 
     async def _view_response(
-        self, workflow_id: str, started: float, step_id: str | None = None, patch: str = ""
+        self,
+        workflow_id: str,
+        started: float,
+        step_id: str | None = None,
+        patch: str = "",
+        recovery_warning: str = "",
     ) -> WorkflowResponse:
         workflow = await self.store.get_workflow(workflow_id)
         rows = await self.store.steps(workflow_id)
+        if not patch and workflow.status == "awaiting_host_apply":
+            source = next(
+                (
+                    candidate
+                    for candidate in reversed(rows)
+                    if candidate.step in ("implement", "fix") and candidate.status == "done"
+                ),
+                None,
+            )
+            if source is not None:
+                try:
+                    recovered = await read_patch(workflow_id, source.id)
+                except CodeError as exc:
+                    recovered = None
+                    recovery_warning = str(exc)
+                if recovered is not None:
+                    if _text_sha256(recovered) == source.raw_patch_sha256:
+                        patch = recovered
+                        step_id = source.id
+                    else:
+                        recovery_warning = (
+                            f"raw patch recovery file for step `{source.id}` does not match "
+                            "the recorded patch hash"
+                        )
+                elif source.raw_patch_sha256 and not recovery_warning:
+                    if source.recovery_written == 0:
+                        recovery_warning = (
+                            f"no raw patch recovery copy was written for step `{source.id}`; "
+                            "keep the patch returned by the run response"
+                        )
+                    else:
+                        recovery_warning = (
+                            f"raw patch recovery for step `{source.id}` is unavailable; "
+                            "it may have expired after the seven-day retention window"
+                        )
         views = [_step_view(row) for row in rows]
         return WorkflowResponse(
             workflow_id=workflow_id,
@@ -1187,6 +1307,7 @@ class WorkflowService:
             ),
             step=next((v for v in views if v.step_id == step_id), None),
             patch=patch,
+            recovery_warning=recovery_warning[:MAX_ERROR_CHARS],
             latency_ms=_ms(started),
         ).check_invariants()
 
@@ -1196,7 +1317,7 @@ class WorkflowService:
 
 
 _ALL_STATES: tuple[WorkflowState, ...] = (
-    "created", "researching", "planning", "prompt_ready", "coding",
+    "created", "planning", "prompt_ready", "coding",
     "awaiting_host_apply", "testing", "reviewing", "synthesizing", "fixing",
 )
 

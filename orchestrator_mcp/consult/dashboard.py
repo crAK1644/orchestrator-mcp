@@ -1185,14 +1185,15 @@ class ConsultDashboard:
 
     def reviewers_form(self, values: dict[str, str] | None = None,
                        error: str = "", notice: str = "") -> str:
-        """Who reviews: one agent for `review`, one to five for `deep_review`."""
+        """Who reviews, and which directories may supply review material."""
         agents = self._reviewable()
         current = self.config.review or ReviewConfig.model_construct(
-            reviewers=[], deep_reviewers=[]
+            reviewers=[], deep_reviewers=[], roots=[]
         )
         chosen = values or {
             **({"reviewer": current.reviewers[0]} if current.reviewers else {}),
             **{f"deep.{aid}": "on" for aid in current.deep_reviewers},
+            "roots": "\n".join(str(root) for root in current.roots),
         }
 
         if self._review_in_config():
@@ -1246,6 +1247,12 @@ class ConsultDashboard:
             f"<div class=choice-row>{boxes}</div></fieldset>"
             "<p class=help>Reviewers do not see one another's answers. An agent must be enabled and "
             "offered <code>review</code> work before it can be selected.</p></section>"
+            "<section class=form-section><h2 class=form-section-title>Review material</h2>"
+            "<label><span>Allowed roots</span>"
+            f"<textarea name=roots rows=4>{_e(chosen.get('roots', ''))}</textarea>"
+            "<small class=help>One absolute directory per line. Files passed through "
+            "<code>context_paths</code> must resolve beneath one of these roots; leave "
+            "this empty to disable server-side file reads.</small></label></section>"
             "<div class=form-actions><button type=submit>Save reviewers</button>"
             "<a href='/'>Cancel</a></div></form></div>",
         )
@@ -1257,6 +1264,8 @@ class ConsultDashboard:
             for key in form
             if key.startswith("deep.") and key.removeprefix("deep.").strip()
         ]
+        roots_supplied = "roots" in form
+        roots = [line.strip() for line in form.get("roots", "").splitlines() if line.strip()]
         agents = self._reviewable()
 
         def refuse(message: str, status: int = HTTPStatus.OK) -> tuple[int, str, str | None]:
@@ -1278,13 +1287,25 @@ class ConsultDashboard:
                 return refuse(problem)
         try:
             block = ReviewConfig(
-                reviewers=[reviewer] if reviewer else [], deep_reviewers=sorted(deep)
+                reviewers=[reviewer] if reviewer else [],
+                deep_reviewers=sorted(deep),
+                roots=roots,
             )
         except ValidationError as exc:
             return refuse(_first_error(exc))
 
         def store(document: dict[str, Any]) -> tuple[int, str] | None:
-            document["review"] = block.model_dump(mode="json")
+            # Older/non-browser callers did not submit ``roots``. Preserve the
+            # existing policy for them; the current form always sends the textarea,
+            # including an explicit empty value when the operator wants to disable
+            # server-side reads.
+            existing = document.get("review")
+            review = dict(existing) if isinstance(existing, dict) else {}
+            review["reviewers"] = block.reviewers
+            review["deep_reviewers"] = block.deep_reviewers
+            if roots_supplied:
+                review["roots"] = [str(root) for root in block.roots]
+            document["review"] = review
             return None
 
         problem = self._rewrite_document(store)

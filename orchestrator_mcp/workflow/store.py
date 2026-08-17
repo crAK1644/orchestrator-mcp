@@ -32,8 +32,9 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from ..code.service import remove_workflow_patches_now
 from ..consult.errors import ConsultErrorCode
-from ..consult.store import DELETE_CONFIRM_TTL_S, ConsultStore, StoreError
+from ..consult.store import DELETE_CONFIRM_TTL_S, ConsultStore, StoreError, _renewing_lease
 from ..contract import scrub_json
 from ..review.store import delete_tree
 from .contract import (
@@ -177,6 +178,7 @@ class StepRow:
     review_id: str | None
     output_json: str | None
     raw_patch_sha256: str | None
+    recovery_written: int | None
     reported_by: str | None
     lease_holder: str | None
     lease_expires_at: float | None
@@ -469,6 +471,42 @@ class WorkflowStore:
 
         return await self._run(work)
 
+    async def supersede_planned_review_steps(
+        self, workflow_id: UUID | str, round_index: int
+    ) -> int:
+        """Cancel earlier previews and erase their still-pending review material.
+
+        A review plan's token is shown once, so replanning cannot reuse it. Keeping the
+        old pending review, however, retained another undeletable copy of the material.
+        Only planned steps whose review is still pending are eligible here.
+        """
+
+        def work() -> int:
+            db = self._db
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                rows = db.execute(
+                    "SELECT s.id, s.review_id FROM workflow_steps s JOIN reviews r "
+                    "ON r.id = s.review_id WHERE s.workflow_id = ? AND s.step = 'review' "
+                    "AND s.round_index = ? AND s.status = 'planned' AND r.status = 'pending'",
+                    (str(workflow_id), round_index),
+                ).fetchall()
+                for row in rows:
+                    db.execute(
+                        "UPDATE workflow_steps SET status = 'cancelled', review_id = NULL, "
+                        "confirm_token_sha = NULL, updated_at = ? WHERE id = ?",
+                        (_now(), row[0]),
+                    )
+                    db.execute("DELETE FROM review_consultations WHERE review_id = ?", (row[1],))
+                    db.execute("DELETE FROM reviews WHERE id = ? AND status = 'pending'", (row[1],))
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+            db.execute("COMMIT")
+            return len(rows)
+
+        return await self._run(work)
+
     async def get_step(self, step_id: UUID | str) -> StepRow:
         return await self._run(lambda: self._fetch_step(str(step_id)))
 
@@ -544,14 +582,15 @@ class WorkflowStore:
         output: dict[str, Any] | None = None,
         review_id: str | None = None,
         raw_patch_sha256: str | None = None,
+        recovery_written: bool | None = None,
         reported_by: ReportedBy | None = None,
     ) -> None:
         """Record what the step produced.
 
         `output` is scrubbed on the way in like every other stored text. For a patch
-        that means the stored copy is an audit copy and nothing else -- the raw text
-        went back to the host once, and `raw_patch_sha256` is what ties the two
-        together. Never reapply what comes back out of this column.
+        that means the stored copy is an audit copy and nothing else. The raw text is
+        kept in a private recovery file until application, and `raw_patch_sha256` ties
+        the two together. Never reapply what comes back out of this column.
 
         `status = 'running'` in the WHERE clause is what stops a writer that has lost
         the right to write. `consume_step_token` is the only thing that makes a step
@@ -566,6 +605,7 @@ class WorkflowStore:
                 "UPDATE workflow_steps SET status = ?, output_json = COALESCE(?, output_json), "
                 "review_id = COALESCE(?, review_id), "
                 "raw_patch_sha256 = COALESCE(?, raw_patch_sha256), "
+                "recovery_written = COALESCE(?, recovery_written), "
                 "reported_by = COALESCE(?, reported_by), lease_holder = NULL, "
                 "lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'running'",
                 (
@@ -573,6 +613,7 @@ class WorkflowStore:
                     canonical(scrub_json(output)) if output is not None else None,
                     review_id,
                     raw_patch_sha256,
+                    recovery_written,
                     reported_by,
                     _now(),
                     str(step_id),
@@ -622,10 +663,13 @@ class WorkflowStore:
         """
         token = f"pid-{os.getpid()}-{uuid.uuid4().hex[:12]}"
         await self._run(lambda: self._acquire(str(workflow_id), str(step_id), ttl_s, token))
-        try:
+        async with _renewing_lease(
+            self._run,
+            lambda: self._renew(str(step_id), ttl_s, token),
+            lambda: self._release(str(step_id), token),
+            ttl_s,
+        ):
             yield
-        finally:
-            await self._run(lambda: self._release(str(step_id), token))
 
     def _acquire(self, workflow_id: str, step_id: str, ttl_s: float, token: str) -> None:
         db = self._db
@@ -664,6 +708,26 @@ class WorkflowStore:
             "UPDATE workflow_steps SET lease_holder = NULL, lease_expires_at = NULL, "
             "updated_at = ? WHERE id = ? AND lease_holder = ?",
             (_now(), step_id, token),
+        )
+
+    def _renew(self, step_id: str, ttl_s: float, token: str) -> bool:
+        cursor = self._db.execute(
+            "UPDATE workflow_steps SET lease_expires_at = ?, updated_at = ? "
+            "WHERE id = ? AND lease_holder = ?",
+            (time.time() + ttl_s, _now(), step_id, token),
+        )
+        if cursor.rowcount == 1:
+            return True
+        row = self._db.execute(
+            "SELECT status, lease_holder FROM workflow_steps WHERE id = ?", (step_id,)
+        ).fetchone()
+        if row is not None and row["status"] != "running" and row["lease_holder"] is None:
+            # finish_step clears ownership before the service returns through the
+            # lease context. That is completion, not ownership loss.
+            return False
+        raise StoreError(
+            ConsultErrorCode.SESSION_BUSY,
+            f"workflow step `{step_id}` lost its execution lease while it was running",
         )
 
     # --- deletion -----------------------------------------------------------
@@ -788,4 +852,6 @@ class WorkflowStore:
             db.execute("ROLLBACK")
             raise
         db.execute("COMMIT")
+        for workflow_id in tree:
+            remove_workflow_patches_now(workflow_id)
         return len(tree)

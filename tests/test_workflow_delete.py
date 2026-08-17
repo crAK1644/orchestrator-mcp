@@ -17,6 +17,7 @@ import pytest
 
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.store import StoreError
+from orchestrator_mcp.code.service import patch_path
 from orchestrator_mcp.workflow.store import _sha256
 
 from .test_workflow_service import (  # noqa: F401 -- fixtures
@@ -85,6 +86,18 @@ async def test_deleting_a_workflow_takes_every_row_it_owns(build, repo):  # noqa
         "routing_decisions", "reviews", "review_consultations",
     ):
         assert await count(service, table) == 0, table
+
+
+async def test_deleting_a_workflow_removes_its_raw_patch_files(build, repo):  # noqa: F811
+    service = await build()
+    workflow_id = await finished(service, repo)
+    raw = patch_path(workflow_id, "old-round")
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text("unsanitized patch")
+    raw.chmod(0o600)
+
+    assert await service.delete(workflow_id) == 1
+    assert not raw.exists()
 
 
 async def test_a_second_workflow_and_a_standalone_consultation_are_untouched(build, repo):  # noqa: F811

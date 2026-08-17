@@ -222,6 +222,21 @@ def test_an_explicit_binding_is_still_compatibility_checked():
     assert "scores 0 for `review`" in str(raised.value)
 
 
+def test_a_review_binding_over_the_reviewer_cap_is_refused_during_resolution():
+    agents = {
+        f"reviewer-{index}": workflow_agent("codex", f"gpt-5.6-{index}", index)
+        for index in range(6)
+    }
+
+    with pytest.raises(WorkflowError) as raised:
+        router(agents).resolve(
+            "review", StepBinding(agents=list(agents)), want_web=False
+        )
+
+    assert raised.value.code == ConsultErrorCode.INVALID_REQUEST
+    assert "at most 5" in str(raised.value)
+
+
 def test_a_host_only_step_cannot_be_given_to_an_agent():
     with pytest.raises(WorkflowError) as raised:
         router(AGENTS).resolve("apply_patch", StepBinding(agent="codex-sol"), want_web=False)

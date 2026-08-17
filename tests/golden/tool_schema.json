@@ -1841,6 +1841,14 @@
             }
           ],
           "default": null
+        },
+        "unparsed_reviewers": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Unparsed Reviewers",
+          "type": "array"
         }
       },
       "required": [
@@ -2843,6 +2851,14 @@
             }
           ],
           "default": null
+        },
+        "unparsed_reviewers": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Unparsed Reviewers",
+          "type": "array"
         }
       },
       "required": [
@@ -3831,6 +3847,14 @@
             }
           ],
           "default": null
+        },
+        "unparsed_reviewers": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Unparsed Reviewers",
+          "type": "array"
         }
       },
       "required": [
@@ -4930,6 +4954,14 @@
             }
           ],
           "default": null
+        },
+        "unparsed_reviewers": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Unparsed Reviewers",
+          "type": "array"
         }
       },
       "required": [
@@ -5868,6 +5900,14 @@
             }
           ],
           "default": null
+        },
+        "unparsed_reviewers": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Unparsed Reviewers",
+          "type": "array"
         }
       },
       "required": [
@@ -6822,6 +6862,14 @@
             }
           ],
           "default": null
+        },
+        "unparsed_reviewers": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Unparsed Reviewers",
+          "type": "array"
         }
       },
       "required": [
@@ -7752,6 +7800,14 @@
             }
           ],
           "default": null
+        },
+        "unparsed_reviewers": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Unparsed Reviewers",
+          "type": "array"
         }
       },
       "required": [
@@ -8829,6 +8885,14 @@
             }
           ],
           "default": null
+        },
+        "unparsed_reviewers": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Unparsed Reviewers",
+          "type": "array"
         }
       },
       "required": [
@@ -9431,7 +9495,7 @@
         },
         "StepView": {
           "additionalProperties": false,
-          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the response-level `patch` carries the\nprivate recovery copy while application is pending.",
           "properties": {
             "step_id": {
               "title": "Step Id",
@@ -9599,7 +9663,6 @@
             "status": {
               "enum": [
                 "created",
-                "researching",
                 "planning",
                 "prompt_ready",
                 "coding",
@@ -9712,7 +9775,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere because the stored copy is scrubbed and a scrubbed patch does not apply. It\nmay be recovered from a private file while application is pending, never SQLite.",
       "properties": {
         "workflow_id": {
           "title": "Workflow Id",
@@ -9721,7 +9784,6 @@
         "status": {
           "enum": [
             "created",
-            "researching",
             "planning",
             "prompt_ready",
             "coding",
@@ -9774,6 +9836,12 @@
         "patch": {
           "default": "",
           "title": "Patch",
+          "type": "string"
+        },
+        "recovery_warning": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Recovery Warning",
           "type": "string"
         },
         "latency_ms": {
@@ -10100,7 +10168,7 @@
         },
         "StepView": {
           "additionalProperties": false,
-          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the response-level `patch` carries the\nprivate recovery copy while application is pending.",
           "properties": {
             "step_id": {
               "title": "Step Id",
@@ -10268,7 +10336,6 @@
             "status": {
               "enum": [
                 "created",
-                "researching",
                 "planning",
                 "prompt_ready",
                 "coding",
@@ -10381,7 +10448,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere because the stored copy is scrubbed and a scrubbed patch does not apply. It\nmay be recovered from a private file while application is pending, never SQLite.",
       "properties": {
         "workflow_id": {
           "title": "Workflow Id",
@@ -10390,7 +10457,6 @@
         "status": {
           "enum": [
             "created",
-            "researching",
             "planning",
             "prompt_ready",
             "coding",
@@ -10443,6 +10509,12 @@
         "patch": {
           "default": "",
           "title": "Patch",
+          "type": "string"
+        },
+        "recovery_warning": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Recovery Warning",
           "type": "string"
         },
         "latency_ms": {
@@ -10758,7 +10830,7 @@
         },
         "StepView": {
           "additionalProperties": false,
-          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the response-level `patch` carries the\nprivate recovery copy while application is pending.",
           "properties": {
             "step_id": {
               "title": "Step Id",
@@ -10926,7 +10998,6 @@
             "status": {
               "enum": [
                 "created",
-                "researching",
                 "planning",
                 "prompt_ready",
                 "coding",
@@ -11039,7 +11110,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere because the stored copy is scrubbed and a scrubbed patch does not apply. It\nmay be recovered from a private file while application is pending, never SQLite.",
       "properties": {
         "workflow_id": {
           "title": "Workflow Id",
@@ -11048,7 +11119,6 @@
         "status": {
           "enum": [
             "created",
-            "researching",
             "planning",
             "prompt_ready",
             "coding",
@@ -11101,6 +11171,12 @@
         "patch": {
           "default": "",
           "title": "Patch",
+          "type": "string"
+        },
+        "recovery_warning": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Recovery Warning",
           "type": "string"
         },
         "latency_ms": {
@@ -11422,7 +11498,7 @@
         },
         "StepView": {
           "additionalProperties": false,
-          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the response-level `patch` carries the\nprivate recovery copy while application is pending.",
           "properties": {
             "step_id": {
               "title": "Step Id",
@@ -11590,7 +11666,6 @@
             "status": {
               "enum": [
                 "created",
-                "researching",
                 "planning",
                 "prompt_ready",
                 "coding",
@@ -11703,7 +11778,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere because the stored copy is scrubbed and a scrubbed patch does not apply. It\nmay be recovered from a private file while application is pending, never SQLite.",
       "properties": {
         "workflow_id": {
           "title": "Workflow Id",
@@ -11712,7 +11787,6 @@
         "status": {
           "enum": [
             "created",
-            "researching",
             "planning",
             "prompt_ready",
             "coding",
@@ -11765,6 +11839,12 @@
         "patch": {
           "default": "",
           "title": "Patch",
+          "type": "string"
+        },
+        "recovery_warning": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Recovery Warning",
           "type": "string"
         },
         "latency_ms": {
@@ -12070,7 +12150,7 @@
         },
         "StepView": {
           "additionalProperties": false,
-          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the response-level `patch` carries the\nprivate recovery copy while application is pending.",
           "properties": {
             "step_id": {
               "title": "Step Id",
@@ -12238,7 +12318,6 @@
             "status": {
               "enum": [
                 "created",
-                "researching",
                 "planning",
                 "prompt_ready",
                 "coding",
@@ -12351,7 +12430,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere because the stored copy is scrubbed and a scrubbed patch does not apply. It\nmay be recovered from a private file while application is pending, never SQLite.",
       "properties": {
         "workflow_id": {
           "title": "Workflow Id",
@@ -12360,7 +12439,6 @@
         "status": {
           "enum": [
             "created",
-            "researching",
             "planning",
             "prompt_ready",
             "coding",
@@ -12413,6 +12491,12 @@
         "patch": {
           "default": "",
           "title": "Patch",
+          "type": "string"
+        },
+        "recovery_warning": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Recovery Warning",
           "type": "string"
         },
         "latency_ms": {
@@ -12795,7 +12879,7 @@
         },
         "StepView": {
           "additionalProperties": false,
-          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the response-level `patch` carries the\nprivate recovery copy while application is pending.",
           "properties": {
             "step_id": {
               "title": "Step Id",
@@ -12963,7 +13047,6 @@
             "status": {
               "enum": [
                 "created",
-                "researching",
                 "planning",
                 "prompt_ready",
                 "coding",
@@ -13076,7 +13159,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere because the stored copy is scrubbed and a scrubbed patch does not apply. It\nmay be recovered from a private file while application is pending, never SQLite.",
       "properties": {
         "workflow_id": {
           "title": "Workflow Id",
@@ -13085,7 +13168,6 @@
         "status": {
           "enum": [
             "created",
-            "researching",
             "planning",
             "prompt_ready",
             "coding",
@@ -13138,6 +13220,12 @@
         "patch": {
           "default": "",
           "title": "Patch",
+          "type": "string"
+        },
+        "recovery_warning": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Recovery Warning",
           "type": "string"
         },
         "latency_ms": {
@@ -13448,7 +13536,7 @@
         },
         "StepView": {
           "additionalProperties": false,
-          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the response-level `patch` carries the\nprivate recovery copy while application is pending.",
           "properties": {
             "step_id": {
               "title": "Step Id",
@@ -13616,7 +13704,6 @@
             "status": {
               "enum": [
                 "created",
-                "researching",
                 "planning",
                 "prompt_ready",
                 "coding",
@@ -13729,7 +13816,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere because the stored copy is scrubbed and a scrubbed patch does not apply. It\nmay be recovered from a private file while application is pending, never SQLite.",
       "properties": {
         "workflow_id": {
           "title": "Workflow Id",
@@ -13738,7 +13825,6 @@
         "status": {
           "enum": [
             "created",
-            "researching",
             "planning",
             "prompt_ready",
             "coding",
@@ -13791,6 +13877,12 @@
         "patch": {
           "default": "",
           "title": "Patch",
+          "type": "string"
+        },
+        "recovery_warning": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Recovery Warning",
           "type": "string"
         },
         "latency_ms": {
@@ -14096,7 +14188,7 @@
         },
         "StepView": {
           "additionalProperties": false,
-          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the raw text went back once, when the\nstep ran, and never comes back out of here.",
+          "description": "One step, as `status` reports it.\n\n`output` is the stored artifact, which is the *scrubbed* copy. For a patch that\nmakes it an audit record and nothing else; the response-level `patch` carries the\nprivate recovery copy while application is pending.",
           "properties": {
             "step_id": {
               "title": "Step Id",
@@ -14264,7 +14356,6 @@
             "status": {
               "enum": [
                 "created",
-                "researching",
                 "planning",
                 "prompt_ready",
                 "coding",
@@ -14377,7 +14468,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere once, because the stored copy is scrubbed and a scrubbed patch does not\napply. It is never read back out of the database.",
+      "description": "One envelope for every workflow tool, the same as the other two layers.\n\n`patch` is the exception that proves the storage rule: the raw diff is returned\nhere because the stored copy is scrubbed and a scrubbed patch does not apply. It\nmay be recovered from a private file while application is pending, never SQLite.",
       "properties": {
         "workflow_id": {
           "title": "Workflow Id",
@@ -14386,7 +14477,6 @@
         "status": {
           "enum": [
             "created",
-            "researching",
             "planning",
             "prompt_ready",
             "coding",
@@ -14439,6 +14529,12 @@
         "patch": {
           "default": "",
           "title": "Patch",
+          "type": "string"
+        },
+        "recovery_warning": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Recovery Warning",
           "type": "string"
         },
         "latency_ms": {

@@ -112,6 +112,9 @@ consult:
   review:
     reviewers: [codex-sol]                    # exactly one, for `mode: standard`
     deep_reviewers: [codex-sol, claude-opus]  # 1 to 5, for `mode: deep`
+    roots: [~/src]                            # absolute after ~/$VAR expansion;
+                                              # context_paths may read only beneath
+                                              # these; empty disables path reads
 
   # Which execution identity this installation *is*. `runtime` still comes from
   # ORCHESTRATOR_HOST_RUNTIME and that stays the authority -- naming it here is an
