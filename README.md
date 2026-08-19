@@ -805,7 +805,33 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 | `review` | absent | Configured reviewers; absent means no review tools. |
 | `workflow` | absent | The three-phase workflow; absent means no workflow tools. Requires `store_full_content: true`. |
 | `host` | runtime from the environment | Asserted host runtime, and the host model that makes same-runtime routing possible. |
+| `spend` | no ceiling | `max_cost_usd_per_review` and `max_cost_usd_per_workflow`. See below. |
 | `dashboard` | off | Loopback history UI and optional agent editor. |
+
+### Spending ceilings
+
+```yaml
+consult:
+  spend:
+    max_cost_usd_per_review: 5.0
+    max_cost_usd_per_workflow: 25.0
+```
+
+Both are optional and both are absent by default, which is no ceiling and no change
+in behavior. A review's ceiling is checked before each round of reviewers; a
+workflow's is checked before each step, reviewers included, since the workflow is
+what paid for them. The check happens before the one-time token is spent and before
+any subprocess starts, so a refusal costs nothing and the same token still works once
+the ceiling is raised.
+
+What this buys is bounded, and the bound is the point: a request cannot be priced
+before it is made, so the guarantee is that **the next request after the ceiling is
+crossed is refused**, not that spend never exceeds the ceiling. A fan-out of five
+reviewers is one request in that sense.
+
+An agent that reports no price contributes nothing to the total, which makes the
+total a floor. The refusal names those agents rather than presenting the floor as a
+sum. The error code is `spend_limit_reached`.
 
 ### Watching a run
 

@@ -35,3 +35,7 @@ class ConsultErrorCode(str, Enum):
     TIMEOUT = "timeout"
     INVALID_REQUEST = "invalid_request"
     NO_AGENT_AVAILABLE = "no_agent_available"
+    # A configured spend ceiling was already crossed when this request was made.
+    # Its own code because the caller's move is neither a retry nor a reroute: it is
+    # to raise the ceiling or accept that the work stops here.
+    SPEND_LIMIT_REACHED = "spend_limit_reached"

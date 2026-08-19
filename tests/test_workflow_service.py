@@ -253,6 +253,7 @@ def build(tmp_path, repo, host_claude):
         adapters: dict[str, StubAdapter] | None = None,
         bindings: dict[str, dict[str, Any]] | None = None,
         agents: dict[str, dict] | None = None,
+        spend: dict[str, Any] | None = None,
         **workflow_overrides,
     ):
         agents = dict(AGENTS if agents is None else agents)
@@ -262,6 +263,7 @@ def build(tmp_path, repo, host_claude):
             agents=agents,
             host={"runtime": "claude", "model": "claude-opus-5"},
             review={"reviewers": ["codex-sol"], "deep_reviewers": list(agents)},
+            spend=spend or {},
             workflow={
                 "roots": [str(repo.parent)],
                 "bindings": {**HOST_BINDINGS, "review": {"agents": ["codex-sol"]},
@@ -1956,3 +1958,79 @@ async def test_every_turn_of_one_step_is_counted_once(build, repo):
     total, steps = await _spent(service, workflow_id)
     assert steps["research"].total_tokens == 18
     assert (await _spent(service, workflow_id))[0].total_tokens == total.total_tokens == 18
+
+
+# --- the spend ceiling -------------------------------------------------------
+
+
+async def test_a_step_past_the_ceiling_is_refused_before_the_token_is_spent(build, repo):
+    """A refusal must cost nothing: neither the subprocess nor the one-time token.
+
+    Burning the token would mean raising the ceiling costs a whole re-plan, which
+    turns a bound into a punishment.
+    """
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(RESEARCH, cost_usd=2.0),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(PLAN),
+        },
+        bindings={"research": {"agent": "codex-sol"}, "plan": {"agent": "flash"}},
+        spend={"max_cost_usd_per_workflow": 1.0},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    plan_id, plan_token = await step(service, workflow_id, "plan")
+    sent = len(service.adapters["flash"].prompts)
+
+    response = await service.run_step(workflow_id, plan_id, plan_token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "$2.00 of its $1.00 ceiling" in response.error.message
+    assert len(service.adapters["flash"].prompts) == sent
+    # And the token still opens the step it approved, once the ceiling is raised.
+    service.config.spend.max_cost_usd_per_workflow = 10.0
+    assert (await service.run_step(workflow_id, plan_id, plan_token)).error is None
+
+
+async def test_a_reviewer_counts_towards_the_workflows_ceiling(build, repo):
+    """The workflow is what paid for the reviewer, whatever row the consultation
+    hangs off."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(FINDINGS, cost_usd=2.0),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(RESEARCH),
+        },
+        bindings={"fix": {"agent": "flash", "execution": "patch"}},
+        spend={"max_cost_usd_per_workflow": 1.0},
+    )
+    workflow_id = await _to_synthesis(service, repo)
+    ids = await finding_ids(service, workflow_id)
+    assert (await host_step(service, workflow_id, "synthesize",
+                            summary_with("open", ids))).status == "fixing"
+    step_id, token = await step(service, workflow_id, "fix")
+
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+
+
+async def test_a_workflow_with_no_ceiling_is_unchanged(build, repo):
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(RESEARCH, cost_usd=1000.0),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(PLAN),
+        },
+        bindings={"research": {"agent": "codex-sol"}, "plan": {"agent": "flash"}},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    plan_id, plan_token = await step(service, workflow_id, "plan")
+
+    assert (await service.run_step(workflow_id, plan_id, plan_token)).error is None

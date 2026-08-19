@@ -741,6 +741,38 @@ class ConsultStore:
 
         return await self._run(work)
 
+    async def review_usage(self, review_id: str) -> dict[str, Usage]:
+        """What each reviewer of one review spent, keyed by agent id.
+
+        Same ledger and same rule as `workflow_usage`: cumulative over the linked
+        consultation's turns, so a retried reviewer counts every attempt exactly once,
+        and `cost_usd` is `None` unless every one of those turns was priced.
+        """
+
+        def work() -> dict[str, Usage]:
+            rows = self._db.execute(
+                "SELECT rc.agent_id AS agent_id, COUNT(*) AS turns, "
+                "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
+                "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
+                "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
+                "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd "
+                "FROM consultation_turns t "
+                "JOIN review_consultations rc ON rc.consultation_id = t.consultation_id "
+                "WHERE rc.review_id = ? GROUP BY 1",
+                (review_id,),
+            ).fetchall()
+            return {
+                row["agent_id"]: Usage(
+                    prompt_tokens=row["input_tokens"],
+                    completion_tokens=row["output_tokens"],
+                    total_tokens=row["total_tokens"],
+                    cost_usd=row["cost_usd"] if row["priced_turns"] == row["turns"] else None,
+                )
+                for row in rows
+            }
+
+        return await self._run(work)
+
     async def workflow_usage(self, workflow_id: str) -> dict[str, Usage]:
         """What each step of one workflow spent, keyed by step id.
 

@@ -79,6 +79,7 @@ from .contract import (
 from .store import REVIEW_LEASE_SLACK_S, ReviewStore, _now, canonical, sha256
 from ..log import get_logger
 from ..progress import step as progress_step
+from ..spend import refusal as spend_refusal
 
 log = get_logger(__name__)
 
@@ -453,6 +454,8 @@ class ReviewService:
                 )
             goal, context = material.goal, material.context
 
+        await self._within_ceiling(review.id)
+
         results = await self._batch(
             review,
             [s.agent_id for s in approved],
@@ -515,6 +518,7 @@ class ReviewService:
                     "the exact original goal and context in `raw`"
                 )
             goal, context = material.goal, material.context
+        await self._within_ceiling(review.id)
         if not await self.store.transition(review.id, "running", RETRYABLE):
             raise ValueError(
                 f"review `{review.id}` is `{review.status}` and cannot be retried from there"
@@ -712,6 +716,23 @@ class ReviewService:
             usage=_total(results),
             latency_ms=_ms(started),
         ).check_invariants()
+
+    async def _within_ceiling(self, review_id: str) -> None:
+        """Refuse a round that would be paid for past `consult.spend`.
+
+        Checked before the token is spent and before any subprocess starts, so a
+        refusal costs nothing and leaves the plan runnable once the ceiling is
+        raised. A first run has spent nothing and is never refused here -- what this
+        stops is the *next* round, which is retries and the rounds a workflow drives.
+        """
+        message = spend_refusal(
+            await self.consult.store.review_usage(review_id),
+            self.consult.config.spend.max_cost_usd_per_review,
+            f"review `{review_id}`",
+        )
+        if message is not None:
+            log.warning("review %s refused: %s", review_id, message)
+            raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
 
     async def _results(
         self, review_id: str, fresh: dict[str, ReviewerResult] | None = None

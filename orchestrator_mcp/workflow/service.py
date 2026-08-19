@@ -46,6 +46,7 @@ from ..code.service import (
     worktree_path,
 )
 from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
+from ..spend import refusal as spend_refusal
 from ..consult.config import ConsultConfig, ReviewPolicy, StepBinding, WorkflowConfig
 from ..consult.contract import ConsultError, Runtime
 from ..consult.errors import ConsultErrorCode
@@ -438,6 +439,7 @@ class WorkflowService:
                     f"step `{step_id}` is the host's to do; record it with "
                     "`orchestrator_workflow_record_host_step`",
                 )
+            await self._within_ceiling(workflow_id)
             # A contained run gets the longer lease, because it gets the longer
             # timeout: a lease that expires while its process is still working would
             # let a second caller take the step the first one is running.
@@ -469,6 +471,23 @@ class WorkflowService:
                 f"the step failed unexpectedly: {type(exc).__name__}: {exc}"[:MAX_ERROR_CHARS],
                 started,
             )
+
+    async def _within_ceiling(self, workflow_id: str) -> None:
+        """Refuse a step that would be paid for past `consult.spend`.
+
+        Before the lease and before the token is spent: a refusal must not burn the
+        one-time token, or raising the ceiling would cost a whole re-plan. Reviewers
+        count towards the workflow's ceiling as well as their review's own, because
+        the workflow is what paid for them.
+        """
+        message = spend_refusal(
+            await self.consult.store.workflow_usage(workflow_id),
+            self.config.spend.max_cost_usd_per_workflow,
+            f"workflow `{workflow_id}`",
+        )
+        if message is not None:
+            log.warning("workflow %s refused: %s", workflow_id, message)
+            raise WorkflowError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
 
     async def _run_step(
         self, started: float, workflow: WorkflowRun, row: StepRow, token: str

@@ -166,7 +166,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -1078,7 +1079,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -2088,7 +2090,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -3084,7 +3087,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -4191,7 +4195,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -5137,7 +5142,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -6099,7 +6105,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -7037,7 +7044,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -8122,7 +8130,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -9316,7 +9325,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -10044,7 +10054,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -10761,7 +10772,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -11484,7 +11496,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -12191,7 +12204,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -12975,7 +12989,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -13687,7 +13702,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"
@@ -14394,7 +14410,8 @@
             "not_started",
             "timeout",
             "invalid_request",
-            "no_agent_available"
+            "no_agent_available",
+            "spend_limit_reached"
           ],
           "title": "ConsultErrorCode",
           "type": "string"

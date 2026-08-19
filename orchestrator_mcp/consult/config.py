@@ -199,6 +199,23 @@ class HostConfig(BaseModel):
     model: str | None = Field(default=None, min_length=1)
 
 
+class SpendPolicy(BaseModel):
+    """Ceilings on what one review or one workflow may cost.
+
+    Both absent by default, which is no ceiling and no behavior change.
+
+    What this buys is bounded, and the bound is the point: a request cannot be priced
+    before it is made, so the guarantee is **the next request after the ceiling is
+    crossed is refused**, not that spend never exceeds the ceiling. A fan-out of five
+    reviewers is one request in that sense; the ceiling stops the round after it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_cost_usd_per_review: float | None = Field(default=None, gt=0)
+    max_cost_usd_per_workflow: float | None = Field(default=None, gt=0)
+
+
 class ReviewPolicy(BaseModel):
     """Who may review a workflow's own work.
 
@@ -314,6 +331,9 @@ class ConsultConfig(BaseModel):
     host: HostConfig = Field(default_factory=HostConfig)
     # Absent means the workflow tools are not advertised, same as `review:`.
     workflow: WorkflowConfig | None = None
+    # Absent ceilings, unlike `review:` and `workflow:`, do not gate a tool -- they
+    # are a bound on tools that exist either way.
+    spend: SpendPolicy = Field(default_factory=SpendPolicy)
 
     @field_validator("database_path", "managed_agents_path")
     @classmethod
