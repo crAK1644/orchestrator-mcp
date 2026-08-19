@@ -2034,3 +2034,69 @@ async def test_a_workflow_with_no_ceiling_is_unchanged(build, repo):
     plan_id, plan_token = await step(service, workflow_id, "plan")
 
     assert (await service.run_step(workflow_id, plan_id, plan_token)).error is None
+
+
+async def test_a_free_reviewer_does_not_hide_what_the_paid_one_cost(build, repo):
+    """One unpriced turn must not erase the money that *was* counted.
+
+    The step's own `cost_usd` is `None`, because a total containing an unpriced turn
+    is a floor. The floor is still $2, and a $1 ceiling is still crossed -- reading
+    the unknown as zero would let one free-tier reviewer buy an unbounded workflow.
+    """
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(FINDINGS, cost_usd=2.0),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(FINDINGS),
+        },
+        bindings={
+            "review": {"agents": ["codex-sol", "flash"]},
+            "fix": {"agent": "flash", "execution": "patch"},
+        },
+        spend={"max_cost_usd_per_workflow": 1.0},
+    )
+    workflow_id = await _to_synthesis(service, repo)
+
+    _, steps = await _spent(service, workflow_id)
+    assert steps["review"].cost_usd is None, "a floor must not be shown as a sum"
+
+    ids = await finding_ids(service, workflow_id)
+    assert (await host_step(service, workflow_id, "synthesize",
+                            summary_with("open", ids))).status == "fixing"
+    step_id, token = await step(service, workflow_id, "fix")
+
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "$2.00" in response.error.message
+
+
+async def test_spend_that_names_no_step_still_counts_against_the_ceiling(build, repo):
+    """No path writes a workflow consultation without a step today, and the schema
+    does not forbid one. Money that arrives without a step is still money spent, so
+    it is bucketed rather than dropped -- the total and the ceiling both see it, and
+    no step view claims it."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(FINDINGS),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(RESEARCH, cost_usd=5.0),
+        },
+        bindings={"research": {"agent": "flash"}, "plan": {"agent": "flash"}},
+        spend={"max_cost_usd_per_workflow": 1.0},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    await sql(service, "UPDATE consultations SET step_id = NULL WHERE workflow_id = ?", workflow_id)
+
+    total, steps = await _spent(service, workflow_id)
+    assert steps["research"] is None, "no step owns it any more"
+    assert total is not None and total.cost_usd == pytest.approx(5.0)
+
+    plan_id, plan_token = await step(service, workflow_id, "plan")
+    response = await service.run_step(workflow_id, plan_id, plan_token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED

@@ -46,7 +46,7 @@ from ..code.service import (
     worktree_path,
 )
 from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
-from ..spend import refusal as spend_refusal
+from ..spend import Spend, refusal as spend_refusal
 from ..consult.config import ConsultConfig, ReviewPolicy, StepBinding, WorkflowConfig
 from ..consult.contract import ConsultError, Runtime
 from ..consult.errors import ConsultErrorCode
@@ -1329,7 +1329,7 @@ class WorkflowService:
                             "it may have expired after the seven-day retention window"
                         )
         spend = await self.consult.store.workflow_usage(workflow_id)
-        views = [_step_view(row, spend.get(row.id)) for row in rows]
+        views = [_step_view(row, s.usage if (s := spend.get(row.id)) else None) for row in rows]
         return WorkflowResponse(
             workflow_id=workflow_id,
             status=workflow.status,  # type: ignore[arg-type]
@@ -1426,14 +1426,14 @@ def _validated(model: type, payload: dict[str, Any], step: str):
         ) from exc
 
 
-def _total(spent: Iterable[Usage]) -> Usage | None:
+def _total(spent: Iterable[Spend]) -> Usage | None:
     """The workflow's spend, or `None` when nothing has been spent on it yet.
 
     Steps that spent nothing are absent rather than zero, so a host-only workflow
     reports no usage instead of a row of zeroes. One unpriced step makes the whole
     cost unknown, matching what the reviewer rollup does across reviewers.
     """
-    used = list(spent)
+    used = [s.usage for s in spent]
     if not used:
         return None
     priced = all(u.cost_usd is not None for u in used)

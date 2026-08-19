@@ -39,11 +39,32 @@ from uuid import UUID
 
 from ..contract import Usage, scrub_json
 from ..log import get_logger
+from ..spend import Spend
 from .contract import ConsultRoute, SourceMode
 from .errors import ConsultErrorCode
 from .routing import RoutingDecision
 
 log = get_logger(__name__)
+
+# The key for spend that reached a workflow without naming a step. No step view can
+# show it, and the alternative -- dropping it -- would understate what was spent.
+_UNATTRIBUTED = "_unattributed"
+
+
+def _spend(row: sqlite3.Row) -> Spend:
+    """One grouped row of the turn ledger, read as both a display and a bound."""
+    known = row["cost_usd"] or 0.0
+    return Spend(
+        usage=Usage(
+            prompt_tokens=row["input_tokens"],
+            completion_tokens=row["output_tokens"],
+            total_tokens=row["total_tokens"],
+            # Every turn priced, or no price at all: a partial sum shown as a total
+            # reads as complete, and it is a floor.
+            cost_usd=known if row["priced_turns"] == row["turns"] else None,
+        ),
+        known_cost_usd=float(known),
+    )
 
 # Applied in order, by index. Append only -- an edit to a shipped migration is a
 # database that disagrees with itself depending on when it was created.
@@ -741,15 +762,15 @@ class ConsultStore:
 
         return await self._run(work)
 
-    async def review_usage(self, review_id: str) -> dict[str, Usage]:
+    async def review_usage(self, review_id: str) -> dict[str, Spend]:
         """What each reviewer of one review spent, keyed by agent id.
 
         Same ledger and same rule as `workflow_usage`: cumulative over the linked
         consultation's turns, so a retried reviewer counts every attempt exactly once,
-        and `cost_usd` is `None` unless every one of those turns was priced.
+        and `usage.cost_usd` is `None` unless every one of those turns was priced.
         """
 
-        def work() -> dict[str, Usage]:
+        def work() -> dict[str, Spend]:
             rows = self._db.execute(
                 "SELECT rc.agent_id AS agent_id, COUNT(*) AS turns, "
                 "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
@@ -761,19 +782,11 @@ class ConsultStore:
                 "WHERE rc.review_id = ? GROUP BY 1",
                 (review_id,),
             ).fetchall()
-            return {
-                row["agent_id"]: Usage(
-                    prompt_tokens=row["input_tokens"],
-                    completion_tokens=row["output_tokens"],
-                    total_tokens=row["total_tokens"],
-                    cost_usd=row["cost_usd"] if row["priced_turns"] == row["turns"] else None,
-                )
-                for row in rows
-            }
+            return {row["agent_id"]: _spend(row) for row in rows}
 
         return await self._run(work)
 
-    async def workflow_usage(self, workflow_id: str) -> dict[str, Usage]:
+    async def workflow_usage(self, workflow_id: str) -> dict[str, Spend]:
         """What each step of one workflow spent, keyed by step id.
 
         Rebuilt from the turn ledger at read time rather than stored on the step, so
@@ -785,12 +798,13 @@ class ConsultStore:
         reviewers' consultations carry the review rather than the workflow. The join
         covers both, so a workflow's total includes what its reviewers cost.
 
-        `cost_usd` is `None` unless *every* turn behind that step was priced. A free
-        tier reports no price, and a zero there would read as free rather than as
-        unmeasured.
+        `usage.cost_usd` is `None` unless *every* turn behind that step was priced. A
+        free tier reports no price, and a zero there would read as free rather than as
+        unmeasured -- but `known_cost_usd` still carries whatever price the rest of
+        the group did report, because that money was spent either way.
         """
 
-        def work() -> dict[str, Usage]:
+        def work() -> dict[str, Spend]:
             rows = self._db.execute(
                 "SELECT COALESCE(c.step_id, r.step_id) AS step_id, COUNT(*) AS turns, "
                 "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
@@ -800,23 +814,21 @@ class ConsultStore:
                 "FROM consultation_turns t JOIN consultations c ON c.id = t.consultation_id "
                 # A scalar subquery rather than a join to `review_consultations`: a
                 # join there would multiply one turn by however many rows point at
-                # its consultation, and this number is money.
+                # its consultation, and this number is money. Narrowed to *this*
+                # workflow's reviews, because `review_consultations.consultation_id`
+                # carries no uniqueness constraint: an unconstrained `LIMIT 1` would
+                # pick some other workflow's review and drop the turn from both.
                 "LEFT JOIN reviews r ON r.id = (SELECT rc.review_id FROM review_consultations rc "
-                "WHERE rc.consultation_id = c.id LIMIT 1) "
+                "JOIN reviews r2 ON r2.id = rc.review_id "
+                "WHERE rc.consultation_id = c.id AND r2.workflow_id = :workflow_id LIMIT 1) "
                 "WHERE c.workflow_id = :workflow_id OR r.workflow_id = :workflow_id "
                 "GROUP BY 1",
                 {"workflow_id": workflow_id},
             ).fetchall()
-            return {
-                row["step_id"]: Usage(
-                    prompt_tokens=row["input_tokens"],
-                    completion_tokens=row["output_tokens"],
-                    total_tokens=row["total_tokens"],
-                    cost_usd=row["cost_usd"] if row["priced_turns"] == row["turns"] else None,
-                )
-                for row in rows
-                if row["step_id"] is not None
-            }
+            # A turn that reached this workflow without naming a step is still money
+            # the workflow spent, so it is bucketed rather than dropped: no step view
+            # claims it, and the workflow total and its ceiling both still see it.
+            return {(row["step_id"] or _UNATTRIBUTED): _spend(row) for row in rows}
 
         return await self._run(work)
 

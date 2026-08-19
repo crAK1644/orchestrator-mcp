@@ -1272,7 +1272,7 @@ async def test_the_ceiling_message_names_the_reviewers_it_could_not_price(build)
     assert again.error is not None
     # The failed reviewer counts too: it spent a turn, and that turn has no price
     # either. What the message must not do is imply $0.25 is the whole story.
-    assert "2 more reported no price (flash, gemini-x)" in again.error.message
+    assert "2 more spent an unpriced amount on top (flash, gemini-x)" in again.error.message
 
 
 async def test_a_review_under_its_ceiling_runs(build):
