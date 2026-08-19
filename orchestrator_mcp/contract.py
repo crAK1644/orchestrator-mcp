@@ -23,6 +23,10 @@ class ConfigError(ValueError):
 
 
 MAX_ERROR_CHARS = 500
+# Shared by review responses and workflow review bindings. Keeping the bound here
+# prevents workflow startup and review planning from disagreeing about how many
+# reviewers one step may freeze.
+MAX_REVIEWERS = 5
 
 # Credential shapes, scrubbed from every error message before it is returned. These
 # messages quote their source verbatim -- a provider exception, a CLI's stderr -- and
@@ -106,5 +110,4 @@ class Usage(BaseModel):
     completion_tokens: int = 0
     total_tokens: int = 0
     cost_usd: float | None = None
-
 

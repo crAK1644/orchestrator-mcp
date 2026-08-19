@@ -31,7 +31,13 @@ _CHECKPOINT = (
 )
 
 
-def add_commands(server: MCPServer, *, reviews: bool, workflow: bool) -> None:
+def add_commands(
+    server: MCPServer,
+    *,
+    reviews: bool,
+    workflow: bool,
+    review_roots: tuple[str, ...] = (),
+) -> None:
     """Advertise the commands whose tools this server actually has.
 
     Gated exactly like the tools are: a `/review` that can only reply "no reviewers
@@ -63,6 +69,19 @@ def add_commands(server: MCPServer, *, reviews: bool, workflow: bool) -> None:
 
     if reviews:
 
+        if review_roots:
+            roots = ", ".join(f"`{root}`" for root in review_roots)
+            material_instruction = (
+                f"Write the material beneath one of the configured review roots: {roots}. "
+                "Then pass `context_paths` rather than pasting a diff into `context`."
+            )
+        else:
+            material_instruction = (
+                "No review roots are configured, so `context_paths` is disabled. Pass "
+                "narrowed material through `context`, or configure an absolute "
+                "`consult.review.roots` directory first."
+            )
+
         @server.prompt(name="review", description="Have external agents review the current work.")
         async def review(goal: str = "", deep: str = "") -> str:
             mode = "deep" if deep.strip().lower() in {"1", "true", "yes", "deep"} else "standard"
@@ -79,9 +98,9 @@ def add_commands(server: MCPServer, *, reviews: bool, workflow: bool) -> None:
                 + ".\n\n"
                 "If the user did not say what to review, default to the working branch's diff "
                 "against its merge base and tell them that is what you chose.\n\n"
-                "1. Write the material to a file and pass `context_paths`, rather than pasting a "
-                "diff into `context`. A branch diff runs to hundreds of kilobytes; the reviewer "
-                "sees the bytes either way, and this is the form that fits in one call.\n"
+                f"1. {material_instruction} A branch diff runs to hundreds of kilobytes; "
+                "the reviewer sees the bytes either way, and a file path is the form that "
+                "fits in one call when roots are enabled.\n"
                 f"2. Call `orchestrator_review` with `mode=\"{mode}\"`. It sends nothing.{extra}\n"
                 "3. Show the returned plan: which reviewers, how much material, the request count, "
                 "and `secret_hits` -- lines where something credential-shaped was found. Detection "

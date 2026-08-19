@@ -47,6 +47,16 @@ def response(**overrides) -> ReviewResponse:
     return ReviewResponse(**{"review_id": uuid4(), "mode": "standard", **overrides})
 
 
+def test_unparsed_reviewers_is_in_the_mcp_output_schema_and_cannot_drift():
+    assert "unparsed_reviewers" in ReviewResponse.model_json_schema()["properties"]
+    value = response(
+        status="running",
+        results=[ReviewerResult(agent_id="actual", ok=True, findings_parsed=False)],
+        unparsed_reviewers=["spoofed"],
+    )
+    assert value.unparsed_reviewers == ["actual"]
+
+
 # --- envelope invariants ----------------------------------------------------
 
 
@@ -176,6 +186,31 @@ def test_disagreeing_with_a_critical_keeps_it_and_dropping_it_does_not():
     assert missing_serious(results, kept) == []
 
 
+def test_a_critical_cannot_survive_only_as_a_downgraded_combined_finding():
+    results = [ReviewerResult(agent_id="a", ok=True, findings=[finding("a", "critical")])]
+    downgraded = summary(
+        combined_findings=[
+            CombinedFinding(
+                problem="called a nit", severity="minor", source_finding_ids=["a-1"]
+            )
+        ]
+    )
+
+    assert missing_serious(results, downgraded) == ["a-1"]
+
+
+def test_a_serious_source_is_valid_when_any_combined_reference_preserves_its_severity():
+    results = [ReviewerResult(agent_id="a", ok=True, findings=[finding("a", "critical")])]
+    preserved = summary(
+        combined_findings=[
+            CombinedFinding(problem="nit", severity="minor", source_finding_ids=["a-1"]),
+            CombinedFinding(problem="real bug", severity="critical", source_finding_ids=["a-1"]),
+        ]
+    )
+
+    assert missing_serious(results, preserved) == []
+
+
 def test_an_important_finding_is_held_to_the_rule_too():
     """It was not, until the workflow loop started closing over open serious findings:
     an Important that vanished during synthesis would read as a converged loop."""
@@ -294,6 +329,31 @@ def test_an_unfenced_block_is_still_found():
     answer = 'the review\n{"findings": [{"severity": "minor", "why": "w"}]}'
     findings, parsed, _ = _parse_findings("rev", answer)
     assert parsed and len(findings) == 1
+
+
+def test_backticks_inside_a_finding_string_do_not_close_the_outer_fence():
+    answer = block(
+        [{"severity": "important", "why": "the example is ```json {draft: true} ```"}]
+    )
+
+    findings, parsed, dropped = _parse_findings("rev", answer)
+
+    assert parsed and dropped == 0
+    assert findings[0].why.endswith("```")
+
+
+def test_a_complete_json_object_survives_when_the_outer_markdown_fence_is_unclosed():
+    payload = json.dumps(
+        {
+            "findings": [
+                {"severity": "important", "why": "contains ```json {draft: true} ```"}
+            ]
+        }
+    )
+
+    findings, parsed, dropped = _parse_findings("rev", "review\n```json\n" + payload)
+
+    assert parsed and dropped == 0 and len(findings) == 1
 
 
 def test_an_empty_findings_list_is_a_real_answer():

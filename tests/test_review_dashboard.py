@@ -363,6 +363,45 @@ async def test_the_form_comes_up_on_who_reviews_now(serve, editable):  # noqa: F
     assert "<option value='codex-sol' selected>" in body
     assert "name='deep.codex-sol' checked" in body
     assert "name='deep.gemini-x' checked" in body
+    assert "textarea name=roots" in body
+
+
+async def test_dashboard_can_save_review_material_roots(serve, editable, tmp_path):  # noqa: F811
+    get, consult_config = serve(editable())
+    first = tmp_path / "review material"
+    second = tmp_path / "other"
+
+    status, _, location = get.post(
+        "/reviewers",
+        {
+            "_token": get.token,
+            "reviewer": "codex-sol",
+            "deep.codex-sol": "on",
+            "roots": f"{first}\n{second}\n",
+        },
+    )
+
+    assert (status, location) == (303, "/reviewers?saved=1")
+    review = read_managed_document(consult_config.managed_agents_path)["review"]
+    assert review["roots"] == [str(first), str(second)]
+
+
+async def test_dashboard_refuses_a_relative_review_material_root(serve, editable):  # noqa: F811
+    get, consult_config = serve(editable())
+
+    status, body, _ = get.post(
+        "/reviewers",
+        {
+            "_token": get.token,
+            "reviewer": "codex-sol",
+            "deep.codex-sol": "on",
+            "roots": "relative/reviews",
+        },
+    )
+
+    assert status == 200
+    assert "must be absolute" in body and "relative/reviews" in body
+    assert not consult_config.managed_agents_path.exists()
 
 
 async def test_saving_reviewers_keeps_the_agents_in_the_same_file(serve, editable):  # noqa: F811
@@ -385,6 +424,31 @@ async def test_saving_reviewers_keeps_the_agents_in_the_same_file(serve, editabl
     assert document["review"] == {
         "reviewers": ["codex-sol"],
         "deep_reviewers": ["codex-sol", "gemini-x"],
+    }
+
+
+async def test_saving_reviewers_preserves_managed_review_roots(serve, editable):  # noqa: F811
+    get, consult_config = serve(editable())
+    write_managed(
+        consult_config.managed_agents_path,
+        {},
+        {
+            "reviewers": ["codex-sol"],
+            "deep_reviewers": ["codex-sol"],
+            "roots": ["/safe/reviews"],
+        },
+    )
+
+    status, _, location = get.post(
+        "/reviewers",
+        {"_token": get.token, "reviewer": "codex-sol", "deep.gemini-x": "on"},
+    )
+
+    assert (status, location) == (303, "/reviewers?saved=1")
+    assert read_managed_document(consult_config.managed_agents_path)["review"] == {
+        "reviewers": ["codex-sol"],
+        "deep_reviewers": ["gemini-x"],
+        "roots": ["/safe/reviews"],
     }
 
 

@@ -24,9 +24,9 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..contract import Usage
+from ..contract import MAX_REVIEWERS, Usage
 from ..consult.contract import MAX_CONTEXT_CHARS as CONSULT_MAX_CONTEXT_CHARS
 from ..consult.contract import ConsultError, ConsultSource, Runtime
 
@@ -62,7 +62,6 @@ MAX_SUMMARY_CHARS = 50_000
 MAX_FINDINGS = 200
 MAX_LIST_ITEMS = 100
 MAX_SECRET_HITS = 500
-MAX_REVIEWERS = 5
 # Fix rounds live in one JSON column on the review row, so the column grows with
 # every round recorded against it. Fifty is far past any real fix-and-recheck
 # cycle and still small enough that the row stays a row.
@@ -355,21 +354,19 @@ class ReviewResponse(BaseModel):
     usage: Usage | None = None
     latency_ms: int = 0
     error: ConsultError | None = None
+    # MCP validates tool results against validation-mode JSON Schema. A Pydantic
+    # computed field serializes into the payload but is absent from that schema.
+    unparsed_reviewers: list[str] = Field(default_factory=list, max_length=MAX_REVIEWERS)
 
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def unparsed_reviewers(self) -> list[str]:
-        """Reviewers that answered in prose their findings block could not be read out of.
-
-        Derived from `results` rather than stored, so it cannot drift from them.
-
-        Load-bearing, not diagnostic. `missing_serious` proves that no reviewer's
-        Critical was dropped by checking the summary against the parsed findings --
-        so for a reviewer with none, it proves nothing. A non-empty list is carried
-        into the finalization refusal so the caller can see exactly which reviewer
-        made Critical-survival unverifiable.
-        """
-        return [r.agent_id for r in self.results if r.ok and not r.findings_parsed]
+    @model_validator(mode="after")
+    def derive_unparsed_reviewers(self) -> ReviewResponse:
+        """Keep the load-bearing parse state derived from reviewer results."""
+        self.unparsed_reviewers = [
+            result.agent_id
+            for result in self.results
+            if result.ok and not result.findings_parsed
+        ]
+        return self
 
     def check_invariants(self) -> ReviewResponse:
         # Explicit raises rather than `assert`, for the reason `ConsultResponse`
@@ -442,17 +439,27 @@ def missing_serious(
     `loop_done` closes over open serious findings, so a dropped one reads as a
     converged loop.
     """
-    referenced = {
-        finding_id
-        for combined in summary.combined_findings
-        for finding_id in combined.source_finding_ids
+    combined_by_source: dict[str, list[CombinedFinding]] = {}
+    for combined in summary.combined_findings:
+        for finding_id in combined.source_finding_ids:
+            combined_by_source.setdefault(finding_id, []).append(combined)
+    referenced = set(combined_by_source)
+    known_findings = {
+        finding.finding_id: finding for result in results for finding in result.findings
     }
-    known = {finding.finding_id for result in results for finding in result.findings}
+    known = set(known_findings)
     missing = [
         finding.finding_id
         for result in results
         for finding in result.findings
-        if finding.severity in SERIOUS and finding.finding_id not in referenced
+        if finding.severity in SERIOUS
+        and (
+            finding.finding_id not in referenced
+            or not any(
+                SEVERITY_ORDER[combined.severity] <= SEVERITY_ORDER[finding.severity]
+                for combined in combined_by_source[finding.finding_id]
+            )
+        )
     ]
     unknown = sorted(referenced - known)
     return [*missing, *unknown]

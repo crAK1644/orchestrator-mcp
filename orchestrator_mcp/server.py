@@ -166,6 +166,9 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
             server,
             reviews=reviews is not None,
             workflow=consult_config.workflow is not None,
+            review_roots=tuple(
+                str(root) for root in (consult_config.review.roots if reviews else [])
+            ),
         )
 
     return server
@@ -602,9 +605,11 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         it again.
 
         For `implement` and `fix` the agent replies with a unified diff, returned here
-        in `patch` -- **once, and only here.** What is stored is a scrubbed audit copy
-        plus the hash of the raw text, because a scrubbed patch does not apply. Save
-        this one, apply it yourself, then record the result with
+        in `patch`. SQLite stores a scrubbed audit copy plus the hash of the raw text,
+        because a scrubbed patch does not apply. A private recovery copy is returned
+        by workflow status until application. If `recovery_warning` is non-empty, keep
+        the returned patch yourself because the private copy was unavailable or unsafe.
+        Apply it yourself, then record the result with
         `orchestrator_workflow_record_host_step` on the `apply_patch` step.
 
         A step whose executor is the host is refused here; record it instead.

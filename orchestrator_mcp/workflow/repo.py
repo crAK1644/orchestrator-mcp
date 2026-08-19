@@ -89,9 +89,3 @@ async def baseline(path: Path, allow_dirty: bool) -> str:
             "stash them, or pass `allow_dirty=true` to say the difference is intended",
         )
     return head
-
-
-async def head(path: Path) -> str:
-    """The current commit, or empty if this stopped being a repository."""
-    code, sha = await _git(path, "rev-parse", "HEAD")
-    return sha if code == 0 else ""

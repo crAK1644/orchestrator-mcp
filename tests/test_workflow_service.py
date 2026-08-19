@@ -7,17 +7,22 @@ lease, the store, the envelope -- is the real code path.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from typing import Any
 
 import pytest
 
+from orchestrator_mcp.code.service import patch_path
+from orchestrator_mcp.code.registry import CodeError
 from orchestrator_mcp.consult.adapters.base import AdapterResult, AgentStatus
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import ConsultationContent, Usage
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.store import StoreError
+from orchestrator_mcp.json_objects import MAX_JSON_CANDIDATES, json_object_candidates
+from orchestrator_mcp.workflow.prompts import parse_reply
 from orchestrator_mcp.workflow.service import WorkflowError, WorkflowService, _review_id
 from orchestrator_mcp.workflow.store import _sha256
 
@@ -55,6 +60,89 @@ FINDINGS = """```json
   "evidence": "src/a.py:12", "suggested_fix": "advance before returning",
   "confidence": "high"}], "summary": "one real bug"}
 ```"""
+
+
+def test_step_reply_uses_the_last_json_object_not_an_earlier_draft():
+    final = json.loads(PLAN)
+    final["summary"] = "the final plan"
+    answer = f"First draft:\n{PLAN}\n\nFinal:\n```json\n{json.dumps(final)}\n```"
+
+    parsed = parse_reply("plan", answer)
+
+    assert parsed.summary == "the final plan"
+
+
+def test_step_reply_ignores_inline_backticks_inside_the_final_json():
+    final = json.loads(PLAN)
+    final["summary"] = "use ```json {example: true} ``` safely"
+
+    parsed = parse_reply("plan", f"```json\n{json.dumps(final)}\n```")
+
+    assert parsed.summary.endswith("safely")
+
+
+def test_json_candidates_are_bounded_and_keep_a_large_outer_final_answer():
+    final = json.loads(PLAN)
+    final["changes"] = [
+        {"path": f"src/{index}.py", "intent": "change it"} for index in range(200)
+    ]
+    answer = "\n".join(["{}"] * 500 + [json.dumps(final)])
+
+    candidates = list(json_object_candidates(answer))
+    parsed = parse_reply("plan", answer)
+
+    assert len(candidates) <= MAX_JSON_CANDIDATES
+    assert len(parsed.changes) == 200
+
+
+def test_json_candidates_recover_after_an_impossible_newline_in_prose():
+    final = json.loads(PLAN)
+    final["summary"] = "recovered"
+    answer = 'Prose with a stray { and "unterminated quote\n' + json.dumps(final)
+
+    assert parse_reply("plan", answer).summary == "recovered"
+
+
+def test_json_candidates_keep_a_large_answer_before_trailing_object_noise():
+    final = json.loads(PLAN)
+    final["changes"] = [
+        {"path": f"src/{index}.py", "intent": "change it"} for index in range(100)
+    ]
+    answer = json.dumps(final) + "\n" + "\n".join("{}" for _ in range(100))
+
+    assert len(parse_reply("plan", answer).changes) == 100
+
+
+def test_json_candidates_keep_a_shorter_corrected_answer_after_a_long_draft():
+    draft = json.loads(PLAN)
+    draft["summary"] = "old draft"
+    draft["changes"] = [
+        {"path": f"src/{index}.py", "intent": "draft change"} for index in range(40)
+    ]
+    final = json.loads(PLAN)
+    final["summary"] = "corrected final"
+    answer = "\n".join(
+        [json.dumps(draft), json.dumps(final), *("{}" for _ in range(100))]
+    )
+
+    parsed = parse_reply("plan", answer)
+
+    assert parsed.summary == "corrected final"
+
+
+def test_step_reply_pairs_non_json_and_json_fences_independently():
+    final = json.loads(PLAN)
+    final["summary"] = "after shell"
+    answer = f"```sh\necho '{{'\n```\n```json\n{json.dumps(final)}\n```"
+
+    assert parse_reply("plan", answer).summary == "after shell"
+
+
+def test_step_reply_accepts_a_compact_json_fence():
+    final = json.loads(PLAN)
+    final["summary"] = "compact"
+
+    assert parse_reply("plan", f"```json {json.dumps(final)} ```").summary == "compact"
 
 
 class StubAdapter:
@@ -179,6 +267,48 @@ def build(tmp_path, repo, host_claude):
         return await StubWorkflow(config, "claude", adapters=adapters).open()
 
     return make
+
+
+async def test_recovery_sweep_is_background_and_scheduled_only_once(
+    build, monkeypatch
+):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def sweep():
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        return 0, 0
+
+    monkeypatch.setattr("orchestrator_mcp.workflow.service.sweep_recovery_artifacts", sweep)
+
+    service = await asyncio.wait_for(build(), timeout=1)
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    assert await service.open() is service
+    assert calls == 1
+    release.set()
+    await service._recovery_sweep_task
+    await service.close()
+
+
+async def test_recovery_sweep_failure_does_not_break_workflow_open(build, monkeypatch):
+    attempted = asyncio.Event()
+
+    async def fail():
+        attempted.set()
+        raise RuntimeError("broken abandoned worktree")
+
+    monkeypatch.setattr("orchestrator_mcp.workflow.service.sweep_recovery_artifacts", fail)
+
+    service = await build()
+    await asyncio.wait_for(attempted.wait(), timeout=1)
+    await service._recovery_sweep_task
+
+    assert await service.open() is service
+    await service.close()
 
 
 async def started(service, repo, **overrides):
@@ -359,8 +489,34 @@ async def test_a_failed_test_goes_back_to_fixing_unless_allowed(build, repo):
             service, workflow_id, "test",
             {"command": "pytest", "workdir": str(repo), "exit_code": 1, "status": "failed"},
         )
-        assert (await service.status(workflow_id)).status == expected
+        status = await service.status(workflow_id)
+        assert status.status == expected
+        assert status.workflow.fix_rounds == (0 if advance else 1)
         await service.close()
+
+
+async def test_repeated_failed_tests_stop_at_the_fix_round_cap(build, repo):
+    service = await build(max_fix_rounds=1)
+    workflow_id = await started(service, repo)
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
+    await host_step(
+        service, workflow_id, "implement", {"summary": "s", "files": [], "patch": PATCH}
+    )
+    first = await host_step(
+        service, workflow_id, "test",
+        {"command": "pytest", "workdir": str(repo), "exit_code": 1, "status": "failed"},
+    )
+    assert first.status == "fixing" and first.workflow.fix_rounds == 1
+
+    await host_step(service, workflow_id, "fix", {"summary": "s", "files": [], "patch": PATCH})
+    stopped = await host_step(
+        service, workflow_id, "test",
+        {"command": "pytest", "workdir": str(repo), "exit_code": 1, "status": "failed"},
+    )
+
+    assert stopped.status == "needs_attention"
+    assert "tests still fail" in (stopped.workflow.reason or "")
 
 
 async def test_reported_by_is_assigned_by_the_service(build, repo):
@@ -553,8 +709,8 @@ async def test_an_unreadable_reply_fails_the_step_rather_than_storing_prose(buil
     assert (await service.status(workflow_id)).status == "created"
 
 
-async def test_a_patch_comes_back_raw_once_and_is_stored_scrubbed(build, repo):
-    """The one carve-out in the storage rule, and the hash that ties the two together."""
+async def test_a_patch_comes_back_raw_and_is_recoverable_while_storage_stays_scrubbed(build, repo):
+    """The database stays safe while a private recovery copy survives transport loss."""
     secret = "sk-ant-api03-" + "A" * 40
     raw = PATCH.replace("+new", f"+TOKEN = \"{secret}\"")
     service = await build(
@@ -579,6 +735,113 @@ async def test_a_patch_comes_back_raw_once_and_is_stored_scrubbed(build, repo):
     assert secret not in json.dumps(stored)
     assert stored["raw_patch_sha256"] == _sha256(raw)
     assert stored["files"] == ["src/a.py"]
+    assert patch_path(workflow_id, step_id).stat().st_mode & 0o777 == 0o600
+
+    recovered = await service.status(workflow_id)
+    assert recovered.patch == raw
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        CodeError(ConsultErrorCode.TRANSPORT_ERROR, "recovery disk is full"),
+        OSError("recovery disk is full"),
+        UnicodeEncodeError("utf-8", "\udcff", 0, 1, "surrogate"),
+    ],
+    ids=["normalized", "raw-os-error", "raw-unicode-error"],
+)
+async def test_a_recovery_write_failure_still_returns_the_paid_patch(
+    build, repo, monkeypatch, failure
+):
+    service = await build(bindings={"implement": {"agent": "flash", "execution": "patch"}})
+    service.adapters["flash"].answers = [PATCH]
+    workflow_id = await started(service, repo)
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
+
+    async def fail(*_args):
+        raise failure
+
+    monkeypatch.setattr("orchestrator_mcp.workflow.service.save_patch", fail)
+    step_id, token = await step(service, workflow_id, "implement")
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is None and response.status == "awaiting_host_apply"
+    assert response.patch == PATCH
+    assert (
+        type(failure).__name__ in response.recovery_warning
+        or str(failure) in response.recovery_warning
+    )
+    stored_step = await service.store.get_step(step_id)
+    assert stored_step.status == "done"
+    assert stored_step.recovery_written == 0
+
+    later = await service.status(workflow_id)
+    assert later.patch == ""
+    assert "no raw patch recovery copy was written" in later.recovery_warning
+    assert "keep the patch returned by the run response" in later.recovery_warning
+
+
+async def test_a_missing_written_recovery_copy_still_reports_possible_expiry(build, repo):
+    service = await build(bindings={"implement": {"agent": "flash", "execution": "patch"}})
+    workflow_id = await _to_apply(service, repo)
+    source = next(row for row in await service.store.steps(workflow_id) if row.step == "implement")
+    assert source.recovery_written == 1
+    patch_path(workflow_id, source.id).unlink()
+
+    response = await service.status(workflow_id)
+
+    assert response.patch == ""
+    assert "may have expired after the seven-day retention window" in response.recovery_warning
+
+
+async def test_an_unsafe_recovery_file_does_not_break_workflow_status(build, repo):
+    service = await build(bindings={"implement": {"agent": "flash", "execution": "patch"}})
+    workflow_id = await _to_apply(service, repo)
+    source = next(row for row in await service.store.steps(workflow_id) if row.step == "implement")
+    patch_path(workflow_id, source.id).chmod(0o640)
+
+    response = await service.status(workflow_id)
+
+    assert response.error is None and response.status == "awaiting_host_apply"
+    assert response.patch == ""
+    assert "not a private regular file" in response.recovery_warning
+
+
+async def test_a_corrupt_recovery_file_is_not_returned_as_the_patch(build, repo):
+    service = await build(bindings={"implement": {"agent": "flash", "execution": "patch"}})
+    workflow_id = await _to_apply(service, repo)
+    source = next(row for row in await service.store.steps(workflow_id) if row.step == "implement")
+    patch_path(workflow_id, source.id).write_text("different patch")
+
+    response = await service.status(workflow_id)
+
+    assert response.error is None and response.patch == ""
+    assert "does not match the recorded patch hash" in response.recovery_warning
+
+
+async def test_recording_patch_application_removes_the_raw_recovery_copy(build, repo):
+    service = await build(bindings={"implement": {"agent": "flash", "execution": "patch"}})
+    workflow_id = await _to_apply(service, repo)
+    source = next(
+        row for row in await service.store.steps(workflow_id) if row.step == "implement"
+    )
+    assert patch_path(workflow_id, source.id).exists()
+    older = patch_path(workflow_id, "older-round")
+    older.write_text("raw old patch")
+    older.chmod(0o600)
+
+    step_id, token = await step(service, workflow_id, "apply_patch")
+    response = await service.record_host_step(
+        workflow_id,
+        step_id,
+        token,
+        {"summary": "applied", "files": ["src/a.py"], "commit": "new-commit"},
+    )
+
+    assert response.error is None and response.status == "testing"
+    assert not patch_path(workflow_id, source.id).exists()
+    assert not older.exists()
 
 
 async def test_the_material_the_host_shows_a_step_reaches_the_agent(build, repo):
@@ -955,6 +1218,41 @@ async def test_a_second_caller_cannot_take_a_lease_the_first_one_still_holds(bui
         assert held, "the first caller's lease was cleared by the one that was refused"
 
 
+async def test_a_live_workflow_lease_is_renewed_past_its_initial_expiry(build, repo):
+    service = await build()
+    workflow_id = await started(service, repo)
+    step_id, _ = await step(service, workflow_id, "research")
+
+    async with service.store.lease(workflow_id, step_id, ttl_s=0.06):
+        initial = (
+            await sql(
+                service, "SELECT lease_expires_at FROM workflow_steps WHERE id = ?", step_id
+            )
+        ).fetchone()[0]
+        await asyncio.sleep(0.08)
+        renewed = (
+            await sql(
+                service, "SELECT lease_expires_at FROM workflow_steps WHERE id = ?", step_id
+            )
+        ).fetchone()[0]
+        assert renewed > initial
+
+
+async def test_a_stolen_workflow_lease_interrupts_the_guarded_step(build, repo):
+    service = await build()
+    workflow_id = await started(service, repo)
+    step_id, _ = await step(service, workflow_id, "research")
+
+    with pytest.raises(StoreError, match="lost its execution lease"):
+        async with service.store.lease(workflow_id, step_id, ttl_s=0.03):
+            await sql(
+                service,
+                "UPDATE workflow_steps SET lease_holder = 'stolen' WHERE id = ?",
+                step_id,
+            )
+            await asyncio.sleep(1)
+
+
 # --- review, synthesis and the loop -----------------------------------------
 
 
@@ -976,6 +1274,25 @@ async def test_the_review_steps_token_is_the_review_plans_token(build, repo):
         await sql(service, "SELECT confirm_token_sha FROM reviews WHERE id = ?", review_id)
     ).fetchone()[0]
     assert stored == review_sha
+
+
+async def test_replanning_a_review_cancels_and_erases_the_superseded_pending_review(build, repo):
+    service = await build()
+    workflow_id = await started(service, repo)
+    await sql(service, "UPDATE workflow_runs SET status = 'reviewing' WHERE id = ?", workflow_id)
+    first = await service.plan_step(workflow_id, "review", context="first copy")
+    first_review = first.preview.review_id
+
+    second = await service.plan_step(workflow_id, "review", context="second copy")
+
+    old_step = await service.store.get_step(first.preview.step_id)
+    assert old_step.status == "cancelled" and old_step.review_id is None
+    reviews = (
+        await sql(service, "SELECT id, context, status FROM reviews WHERE workflow_id = ?", workflow_id)
+    ).fetchall()
+    assert [(row[0], row[2]) for row in reviews] == [(second.preview.review_id, "pending")]
+    assert "second copy" in reviews[0][1] and "first copy" not in reviews[0][1]
+    assert first_review != second.preview.review_id
 
 
 async def test_a_reviewer_that_is_the_implementer_is_refused(build, repo):
@@ -1279,6 +1596,8 @@ async def test_apply_patch_without_a_new_commit_is_a_failed_step(build, repo, co
         ({"exit_code": 1, "status": "passed"}, "cannot be `passed`"),
         ({"exit_code": None, "status": "passed"}, "cannot be `passed`"),
         ({"exit_code": 0, "status": "failed"}, "cannot be `failed`"),
+        ({"exit_code": 0, "status": "timeout"}, "cannot be `timeout`"),
+        ({"exit_code": 1, "status": "skipped"}, "cannot be `skipped`"),
     ],
 )
 async def test_a_test_report_whose_status_contradicts_its_exit_code_is_refused(
@@ -1299,6 +1618,25 @@ async def test_a_test_report_whose_status_contradicts_its_exit_code_is_refused(
     assert response.error is not None
     assert message in response.error.message
     assert (await service.status(workflow_id)).status == "testing"
+
+
+async def test_a_timeout_report_preserves_a_nonzero_wrapper_exit_code(build, repo):
+    service = await build()
+    workflow_id = await _to_testing(service, repo)
+    step_id, token = await step(service, workflow_id, "test")
+
+    response = await service.record_host_step(
+        workflow_id,
+        step_id,
+        token,
+        {"command": "timeout 30 pytest", "workdir": str(repo), "exit_code": 124,
+         "status": "timeout"},
+    )
+
+    assert response.error is None
+    stored = (await service.store.get_step(step_id)).output()
+    assert stored is not None
+    assert stored["status"] == "timeout" and stored["exit_code"] == 124
 
 
 async def test_a_contained_test_with_no_exit_code_is_skipped_rather_than_passed(

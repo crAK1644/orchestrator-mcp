@@ -4,13 +4,9 @@ Router picks the agent, prompts compile the turn, an adapter runs the CLI, the
 store records all of it. This module is the only place that knows the order, and
 the only place that turns a failure into an envelope.
 
-There are two entry points and two bind methods, paired by name and never by a
-value: `consult()` (the MCP tool) always binds through `_bind_public`, and
-`consult_step()` (the workflow, which is not reachable from MCP) always binds
-through `_bind_workflow`. No argument moves a call from one to the other, and
-neither method branches on whether a row happens to belong to a workflow -- a
-single path that did would be reachable from the public tool by resuming a
-workflow's consultation id.
+There are three entry points and three bind methods, paired by name and never by a
+public value: `consult()` binds through `_bind_public`, while review and workflow
+calls use private ownership-aware paths. No MCP argument moves a call between them.
 
 Two rules shape everything below. Every path returns a `ConsultResponse` -- an
 exception escaping here would leave the calling agent with a protocol error and no
@@ -47,7 +43,7 @@ from .contract import (
 )
 from .errors import ConsultErrorCode
 from .prompts import compile_prompt
-from .routing import ConsultRouter, SourceModeError, resolve_source_mode
+from .routing import ConsultRouter, RoutingDecision, SourceModeError, resolve_source_mode
 from .store import ConsultStore, StoreError
 
 
@@ -120,8 +116,43 @@ class ConsultService:
                 started,
             )
 
+    async def consult_review(
+        self, review_id: UUID | str, reviewer_id: str, **kwargs: Any
+    ) -> ConsultResponse:
+        """Review-only consult path that links ownership before the turn starts.
+
+        The owner fields are not MCP arguments. Creation writes the consultation and
+        its review link in one transaction, so it never looks like ordinary deletable
+        history between those writes.
+        """
+        started = time.perf_counter()
+        requested = kwargs.get("capability")
+        capability = requested if isinstance(requested, str) else "<invalid>"
+        try:
+            await self.open()
+            return await self._consult(
+                started,
+                capability,
+                kwargs,
+                review_owner=(str(review_id), reviewer_id),
+            )
+        except Exception as exc:
+            requested_id = kwargs.get("consultation_id")
+            return _failed(
+                requested_id if isinstance(requested_id, UUID) else None,
+                capability,
+                SourceMode.AUTO,
+                ConsultErrorCode.TRANSPORT_ERROR,
+                f"the consultation failed inside the orchestrator ({type(exc).__name__})",
+                started,
+            )
+
     async def _consult(
-        self, started: float, capability: str, kwargs: dict[str, Any]
+        self,
+        started: float,
+        capability: str,
+        kwargs: dict[str, Any],
+        review_owner: tuple[str, str] | None = None,
     ) -> ConsultResponse:
         # Second line of defence: the MCP layer validated against this same model,
         # but tests and direct callers arrive here too.
@@ -138,7 +169,11 @@ class ConsultService:
                            ConsultErrorCode.PROTOCOL_VALIDATION_FAILED, str(exc), started)
 
         try:
-            consultation, route, agent, resuming = await self._bind_public(request, capability)
+            consultation, route, agent, resuming = await (
+                self._bind_review(request, capability, review_owner)
+                if review_owner is not None
+                else self._bind_public(request, capability)
+            )
         except StoreError as exc:
             return _failed(request.consultation_id, capability, source_mode, exc.code, str(exc), started)
         except _RoutingFailure as exc:
@@ -254,6 +289,74 @@ class ConsultService:
         )
         await self.store.record_routing(consultation_id, decision)
         return consultation, decision.route, decision.selected, None
+
+    async def _bind_review(
+        self, request: Any, capability: str, owner: tuple[str, str]
+    ) -> tuple[Any, ConsultRoute, AgentConfig, str | None]:
+        """Bind the reviewer approved by ReviewService under identity-level exclusion."""
+        review_id, reviewer_id = owner
+        if request.target_agent != reviewer_id:
+            raise StoreError(
+                ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                f"review `{review_id}` reserved `{reviewer_id}`, not "
+                f"`{request.target_agent or '(automatic routing)'}`",
+            )
+        try:
+            self.config.check_reviewer(reviewer_id, "reviewers")
+        except ValueError as exc:
+            raise StoreError(ConsultErrorCode.SESSION_TARGET_MISMATCH, str(exc)) from exc
+        agent = self.config.agents[reviewer_id]
+        if conflict := host_identity_conflict(
+            agent.runtime, agent.model, self.host_runtime, self.config.host.model
+        ):
+            raise StoreError(
+                ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                f"review `{review_id}` cannot be sent to `{reviewer_id}`: {conflict}",
+            )
+
+        existing = await self.store.review_consultation(review_id, reviewer_id)
+        if existing is not None:
+            if request.consultation_id is not None and str(request.consultation_id) != existing.id:
+                raise StoreError(
+                    ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                    f"review `{review_id}` already owns consultation `{existing.id}`, not "
+                    f"`{request.consultation_id}`",
+                )
+            if (
+                existing.target_agent_id != agent.agent_id
+                or existing.target_runtime != agent.runtime
+                or existing.target_model != scrub_json(agent.model)
+            ):
+                raise StoreError(
+                    ConsultErrorCode.SESSION_TARGET_MISMATCH,
+                    f"review `{review_id}` was approved for {existing.target_runtime}/"
+                    f"{existing.target_model}, which is now {agent.runtime}/{agent.model}",
+                )
+            return existing, self._route_for(agent, capability), agent, existing.native_session_id
+        if request.consultation_id is not None:
+            raise StoreError(
+                ConsultErrorCode.SESSION_NOT_FOUND,
+                f"review `{review_id}` has no consultation `{request.consultation_id}` to resume",
+            )
+
+        route = self._route_for(agent, capability)
+        consultation_id = uuid4()
+        consultation = await self.store.create_consultation(
+            consultation_id=consultation_id,
+            origin_runtime=self.host_runtime,
+            route=route,
+            capability=capability,
+            protocol_version=self.config.protocol_version,
+            config_hash=self.config.config_hash(),
+            conversation_label=request.conversation_label,
+            review_id=review_id,
+            review_agent_id=reviewer_id,
+        )
+        await self.store.record_routing(
+            consultation_id,
+            RoutingDecision(capability=capability, selected=agent, route=route),
+        )
+        return consultation, route, agent, None
 
     # --- the workflow's private path ----------------------------------------
     #

@@ -28,6 +28,19 @@ def test_a_configured_pair_of_reviewers_loads():
     assert loaded.review.reviewers == ["codex-sol"]
 
 
+def test_a_relative_review_root_is_refused():
+    with pytest.raises(Exception, match="must be absolute"):
+        ConsultConfig(
+            **consult_block(
+                review={
+                    "reviewers": ["codex-sol"],
+                    "deep_reviewers": ["codex-sol"],
+                    "roots": ["relative/reviews"],
+                }
+            )
+        )
+
+
 def test_no_review_block_leaves_the_review_surface_off():
     """A server with no reviewers should not advertise a `review` tool that can only
     refuse."""

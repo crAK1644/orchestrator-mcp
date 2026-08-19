@@ -359,6 +359,27 @@ async def test_two_batches_cannot_hold_one_review_at_once(store):
                 pass
 
 
+async def test_a_live_review_lease_is_renewed_past_its_initial_expiry(store):
+    review_id = await plan(store)
+    async with store.lease(review_id, ttl_s=0.06):
+        initial = (
+            await store._run(
+                lambda: store._db.execute(
+                    "SELECT expires_at FROM review_leases WHERE review_id = ?", (review_id,)
+                ).fetchone()[0]
+            )
+        )
+        await asyncio.sleep(0.08)
+        renewed = (
+            await store._run(
+                lambda: store._db.execute(
+                    "SELECT expires_at FROM review_leases WHERE review_id = ?", (review_id,)
+                ).fetchone()[0]
+            )
+        )
+        assert renewed > initial and renewed > time.time()
+
+
 # --- delete-all -------------------------------------------------------------
 
 

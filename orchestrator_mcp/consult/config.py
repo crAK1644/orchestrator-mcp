@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from ..code.registry import runtime_capabilities, unsupported_reason
-from ..contract import ConfigError
+from ..contract import MAX_REVIEWERS, ConfigError
 from ..workflow.contract import STEPS, Step
 from .contract import PROTOCOL_VERSION, Capability, ExecutionMode, Runtime
 from .managed import DEFAULT_MANAGED_PATH, managed_path, read_managed_document
@@ -121,6 +121,24 @@ class ReviewConfig(BaseModel):
 
     reviewers: list[str] = Field(default_factory=list)
     deep_reviewers: list[str] = Field(default_factory=list)
+    # Files supplied through context_paths must resolve beneath one of these. Empty
+    # disables server-side path reads; callers can still pass material as context.
+    roots: list[Path] = Field(default_factory=list)
+
+    @field_validator("roots")
+    @classmethod
+    def _expand_roots(cls, value: list[Path]) -> list[Path]:
+        expanded: list[Path] = []
+        for root in value:
+            path = Path(os.path.expandvars(str(root))).expanduser()
+            if str(path).strip() in ("", "."):
+                raise ValueError("a review root must name a directory, not a blank path")
+            if not path.is_absolute():
+                raise ValueError(f"review root `{path}` must be absolute")
+            if path == Path(path.anchor):
+                raise ValueError(f"`{path}` is a filesystem root and cannot be a review root")
+            expanded.append(path)
+        return expanded
 
     @field_validator("reviewers")
     @classmethod
@@ -373,6 +391,11 @@ class ConsultConfig(BaseModel):
             return
         if binding.agents is not None and not definition.supports_multiple_agents:
             raise ValueError(f"{where} names several agents, but `{step}` takes one")
+        if step == "review" and binding.agents is not None and len(binding.agents) > MAX_REVIEWERS:
+            raise ValueError(
+                f"{where} names {len(binding.agents)} agents; a review takes at most "
+                f"{MAX_REVIEWERS}"
+            )
         if binding.execution not in definition.allowed_execution_modes:
             allowed = ", ".join(f"`{m}`" for m in definition.allowed_execution_modes)
             raise ValueError(

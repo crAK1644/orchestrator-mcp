@@ -22,8 +22,10 @@ destroy the work over a failure to read it.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import stat
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -37,6 +39,14 @@ from .registry import CodeError, code_adapter_for
 # Git is fast here, and every call is local. Long enough for a large checkout, short
 # enough that a hung `git` does not hold a workflow's lease until it expires.
 GIT_TIMEOUT_S = 60.0
+
+# Recovery is a bounded safety net, not archival storage for raw patches or abandoned
+# checkouts. Long enough for a human to recover a lost response across several days.
+RECOVERY_RETENTION_S = 7 * 24 * 60 * 60
+
+# Each stale worktree costs several git subprocesses. A startup sweep is a hygiene
+# pass, not an unbounded maintenance job, so leave any excess for a later process.
+MAX_RECOVERY_WORKTREES_PER_SWEEP = 8
 
 # Outside the repository being worked on, so a stray `git add .` in the user's own
 # shell cannot pick a worktree up, and so `git clean -fdx` in their tree does not
@@ -56,6 +66,268 @@ def worktree_path(workflow_id: str, step_id: str) -> Path:
     return WORKTREE_ROOT / workflow_id / step_id
 
 
+def patch_path(workflow_id: str, step_id: str) -> Path:
+    """Private recovery copy for a patch whose MCP response may be lost."""
+    return WORKTREE_ROOT / workflow_id / f"{step_id}.patch"
+
+
+async def save_patch(workflow_id: str, step_id: str, patch: str) -> Path:
+    """Persist a raw patch before its worktree or only response can disappear."""
+    target = patch_path(workflow_id, step_id)
+
+    def write() -> None:
+        try:
+            _private(target.parent)
+        except CodeError:
+            raise
+        except Exception as exc:
+            raise CodeError(
+                ConsultErrorCode.TRANSPORT_ERROR,
+                f"could not preserve the raw patch at `{target}`: {type(exc).__name__}",
+            ) from exc
+
+        descriptor: int | None = None
+        created = False
+        try:
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            created = True
+            handle = os.fdopen(descriptor, "w", encoding="utf-8")
+            descriptor = None
+            with handle:
+                handle.write(patch)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except CodeError:
+            if created:
+                with suppress(OSError):
+                    target.unlink()
+            raise
+        except Exception as exc:
+            if created:
+                with suppress(OSError):
+                    target.unlink()
+            raise CodeError(
+                ConsultErrorCode.TRANSPORT_ERROR,
+                f"could not preserve the raw patch at `{target}`: {type(exc).__name__}",
+            ) from exc
+        except BaseException:
+            if created:
+                with suppress(OSError):
+                    target.unlink()
+            raise
+        finally:
+            if descriptor is not None:
+                with suppress(OSError):
+                    os.close(descriptor)
+
+    await asyncio.to_thread(write)
+    return target
+
+
+async def read_patch(workflow_id: str, step_id: str) -> str | None:
+    target = patch_path(workflow_id, step_id)
+
+    def read() -> str | None:
+        descriptor: int | None = None
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        # O_NONBLOCK prevents a replaced FIFO from stalling before fstat; O_NOFOLLOW
+        # makes the opened descriptor, rather than an earlier pathname check, the
+        # object whose ownership and permissions we validate.
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        try:
+            descriptor = os.open(target, flags)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise CodeError(
+                ConsultErrorCode.INVALID_REQUEST,
+                f"raw patch recovery file `{target}` cannot be opened safely: "
+                f"{type(exc).__name__}",
+            ) from exc
+        try:
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_mode & 0o077
+            ):
+                raise CodeError(
+                    ConsultErrorCode.INVALID_REQUEST,
+                    f"raw patch recovery file `{target}` is not a private regular file",
+                )
+            handle = os.fdopen(descriptor, "r", encoding="utf-8")
+            descriptor = None
+            with handle:
+                return handle.read()
+        except CodeError:
+            raise
+        except (OSError, UnicodeError) as exc:
+            raise CodeError(
+                ConsultErrorCode.INVALID_REQUEST,
+                f"raw patch recovery file `{target}` cannot be read safely: "
+                f"{type(exc).__name__}",
+            ) from exc
+        finally:
+            if descriptor is not None:
+                with suppress(OSError):
+                    os.close(descriptor)
+
+    return await asyncio.to_thread(read)
+
+
+async def remove_patch(workflow_id: str, step_id: str) -> None:
+    target = patch_path(workflow_id, step_id)
+
+    def remove() -> None:
+        with suppress(FileNotFoundError):
+            target.unlink()
+        with suppress(OSError):
+            target.parent.rmdir()
+
+    await asyncio.to_thread(remove)
+
+
+def remove_workflow_patches_now(workflow_id: str) -> None:
+    """Best-effort removal of every raw patch owned by one workflow.
+
+    Never follows a replacement symlink and never removes worktree directories. The
+    database deletion path calls this after its transaction commits, where cleanup
+    failure must not resurrect rows that were already deleted.
+    """
+    directory = WORKTREE_ROOT / workflow_id
+    try:
+        info = directory.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        return
+    try:
+        children = list(directory.iterdir())
+    except OSError:
+        return
+    for child in children:
+        if child.suffix != ".patch":
+            continue
+        try:
+            child_info = child.lstat()
+            if stat.S_ISREG(child_info.st_mode) and child_info.st_uid == os.getuid():
+                child.unlink()
+        except OSError:
+            continue
+    with suppress(OSError):
+        directory.rmdir()
+
+
+async def remove_workflow_patches(workflow_id: str) -> None:
+    await asyncio.to_thread(remove_workflow_patches_now, workflow_id)
+
+
+async def sweep_recovery_artifacts(
+    max_age_s: float = RECOVERY_RETENTION_S,
+    max_worktrees: int = MAX_RECOVERY_WORKTREES_PER_SWEEP,
+) -> tuple[int, int]:
+    """Remove owned recovery patches and registered worktrees older than the TTL."""
+    if max_age_s < 0:
+        raise ValueError("recovery retention cannot be negative")
+    if max_worktrees < 0:
+        raise ValueError("recovery worktree limit cannot be negative")
+    patches, worktrees = await asyncio.to_thread(
+        _stale_recovery_artifacts, max_age_s, max_worktrees
+    )
+    removed_worktrees = 0
+    for path in worktrees:
+        if await _remove_expired_worktree(path):
+            removed_worktrees += 1
+        else:
+            await asyncio.to_thread(_defer_expired_worktree, path)
+        with suppress(OSError):
+            path.parent.rmdir()
+    return patches, removed_worktrees
+
+
+def _defer_expired_worktree(path: Path) -> None:
+    """Quarantine one failed cleanup attempt until the next retention window.
+
+    Unknown directories are deliberately preserved because they may hold the only
+    copy of a failed run. Refreshing only the owned directory's mtime keeps that
+    safety property while preventing the same few failures from consuming every
+    bounded sweep forever.
+    """
+    try:
+        info = path.lstat()
+        if stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid():
+            os.utime(path, None, follow_symlinks=False)
+    except OSError:
+        pass
+
+
+def _stale_recovery_artifacts(
+    max_age_s: float, max_worktrees: int
+) -> tuple[int, list[Path]]:
+    """Delete stale regular patch files and return stale worktrees for git cleanup."""
+    try:
+        root_info = WORKTREE_ROOT.lstat()
+    except FileNotFoundError:
+        return 0, []
+    if not stat.S_ISDIR(root_info.st_mode) or root_info.st_uid != os.getuid():
+        return 0, []
+
+    cutoff = time.time() - max_age_s
+    removed_patches = 0
+    worktrees: list[Path] = []
+    try:
+        workflows = list(WORKTREE_ROOT.iterdir())
+    except OSError:
+        return 0, []
+    for workflow in workflows:
+        try:
+            workflow_info = workflow.lstat()
+            if not stat.S_ISDIR(workflow_info.st_mode) or workflow_info.st_uid != os.getuid():
+                continue
+            children = list(workflow.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            try:
+                info = child.lstat()
+            except OSError:
+                continue
+            if info.st_uid != os.getuid() or info.st_mtime > cutoff:
+                continue
+            if stat.S_ISREG(info.st_mode) and child.suffix == ".patch":
+                try:
+                    child.unlink()
+                    removed_patches += 1
+                except OSError:
+                    pass
+            elif stat.S_ISDIR(info.st_mode) and len(worktrees) < max_worktrees:
+                worktrees.append(child)
+        with suppress(OSError):
+            workflow.rmdir()
+    return removed_patches, worktrees
+
+
+async def _remove_expired_worktree(path: Path) -> bool:
+    """Deregister a stale worktree; preserve it when git cannot identify its owner."""
+    code, common, _ = await _git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if code != 0 or not common.strip():
+        return False
+    common_dir = Path(common.strip())
+    code, _, _ = await _git(
+        common_dir,
+        "--git-dir",
+        str(common_dir),
+        "worktree",
+        "remove",
+        "--force",
+        str(path),
+    )
+    if code != 0:
+        return False
+    await _git(common_dir, "--git-dir", str(common_dir), "worktree", "prune")
+    return not path.exists()
+
+
 async def run_contained(
     config: ConsultConfig,
     agent: AgentConfig,
@@ -71,6 +343,8 @@ async def run_contained(
     path = worktree_path(workflow_id, step_id)
     gitdir = await _add_worktree(repo, path, baseline_commit)
     keep = False
+    recovery_warning = ""
+    recovery_written = False
     try:
         try:
             run = await adapter.execute(agent, prompt, path, timeout_s)
@@ -82,6 +356,19 @@ async def run_contained(
             raise CodeError(exc.code, str(exc)) from exc
         try:
             patch, files, ignored = await _capture(gitdir, path, baseline_commit)
+            if patch:
+                try:
+                    await save_patch(workflow_id, step_id, patch)
+                    recovery_written = True
+                except Exception as exc:
+                    # The raw response is still useful, and the worktree is a second
+                    # copy until an operator can repair the recovery directory.
+                    keep = True
+                    recovery_warning = (
+                        str(exc)
+                        if isinstance(exc, CodeError)
+                        else f"could not preserve the raw patch: {type(exc).__name__}"
+                    )
         except CodeError:
             # The worktree holds the only copy of what this step did. Deleting it
             # because *reading* it failed destroys the work over a problem the host
@@ -105,6 +392,8 @@ async def run_contained(
         model_verified=run.model_verified,
         raw_output=run.raw_output,
         usage=run.usage,
+        recovery_warning=recovery_warning,
+        recovery_written=recovery_written,
     )
 
 

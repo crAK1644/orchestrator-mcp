@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 
 import pytest
@@ -21,7 +22,8 @@ from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.store import ConsultStore
 from orchestrator_mcp.contract import Usage
 from orchestrator_mcp.review.contract import MAX_GOAL_CHARS, MAX_REVIEWERS, ReviewerResult
-from orchestrator_mcp.review.service import ReviewService, _total
+from orchestrator_mcp.review import service as review_service
+from orchestrator_mcp.review.service import ReviewService, _candidates, _parse_findings, _total
 
 from .conftest import agent
 
@@ -129,7 +131,11 @@ def build(tmp_path, host_claude):
             **{
                 "database_path": str(tmp_path / "c.sqlite3"),
                 "agents": dict(REVIEWERS),
-                "review": {"reviewers": ["codex-sol"], "deep_reviewers": list(REVIEWERS)},
+                "review": {
+                    "reviewers": ["codex-sol"],
+                    "deep_reviewers": list(REVIEWERS),
+                    "roots": [str(tmp_path)],
+                },
                 **overrides,
             }
         )
@@ -204,6 +210,19 @@ async def test_a_path_that_is_not_a_readable_file_is_refused_by_name(build, tmp_
     assert str(target) in response.error.message
 
 
+async def test_a_fifo_context_path_is_refused_without_waiting_for_a_writer(build, tmp_path):
+    target = tmp_path / "review.pipe"
+    os.mkfifo(target)
+    service = await build()
+
+    response = await asyncio.wait_for(
+        service.plan(goal="review the parser", context_paths=[str(target)]), timeout=1
+    )
+
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert "not a regular file" in response.error.message
+
+
 async def test_context_and_context_paths_together_are_refused(build, tmp_path):
     path = tmp_path / "a.py"
     path.write_text("def parse(): ...")
@@ -214,6 +233,75 @@ async def test_context_and_context_paths_together_are_refused(build, tmp_path):
     )
     assert response.error.code is ConsultErrorCode.INVALID_REQUEST
     assert "not both" in response.error.message
+
+
+async def test_a_context_path_outside_the_review_roots_is_refused(build, tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("private = True")
+    service = await build(
+        review={
+            "reviewers": ["codex-sol"],
+            "deep_reviewers": ["codex-sol"],
+            "roots": [str(allowed)],
+        }
+    )
+
+    response = await service.plan(goal="review", context_paths=[str(outside)])
+
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert "outside `consult.review.roots`" in response.error.message
+    assert str(allowed.resolve()) in response.error.message
+
+
+async def test_a_context_path_replaced_by_a_symlink_during_open_is_refused(
+    build, tmp_path, monkeypatch
+):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    target = allowed / "review.diff"
+    target.write_text("safe")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("do-not-send")
+    service = await build(
+        review={
+            "reviewers": ["codex-sol"],
+            "deep_reviewers": ["codex-sol"],
+            "roots": [str(allowed)],
+        }
+    )
+    real_open = review_service.os.open
+    replaced = False
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if path == target.name and kwargs.get("dir_fd") is not None and not replaced:
+            replaced = True
+            target.unlink()
+            target.symlink_to(outside)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(review_service.os, "open", swap_before_open)
+    response = await service.plan(goal="review", context_paths=[str(target)])
+
+    assert replaced
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert "cannot be read safely" in response.error.message
+    assert "do-not-send" not in response.error.message
+
+
+async def test_context_paths_are_disabled_when_no_review_roots_are_configured(build, tmp_path):
+    path = tmp_path / "a.py"
+    path.write_text("x = 1")
+    service = await build(
+        review={"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol"]}
+    )
+
+    response = await service.plan(goal="review", context_paths=[str(path)])
+
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert "is disabled" in response.error.message
 
 
 @pytest.mark.parametrize("over", ["goal", "reviewers"])
@@ -295,7 +383,49 @@ async def test_a_reviewer_on_the_hosts_runtime_is_refused_at_plan_time(build):
     response = await service.plan(goal="g")
 
     assert response.error.code == ConsultErrorCode.INVALID_REQUEST
-    assert "own runtime" in response.error.message
+    assert "cannot review this host's own work" in response.error.message
+
+
+async def test_a_different_versioned_model_on_the_host_runtime_may_review(build):
+    service = await build(
+        adapters={"other": SecondTurnAdapter('```json\n{"findings": []}\n```')},
+        agents={"other": agent("claude", "claude-opus-4.9")},
+        host={"runtime": "claude", "model": "claude-opus-5"},
+        review={"reviewers": ["other"], "deep_reviewers": ["other"]},
+    )
+
+    response = await service.plan(goal="g")
+
+    assert response.error is None
+    assert [reviewer.agent_id for reviewer in response.plan.reviewers] == ["other"]
+    run = await service.run(response.review_id, response.plan.confirm_token)
+    assert run.error is None
+    assert run.status == "awaiting_synthesis"
+    assert run.results[0].ok and run.results[0].findings_parsed
+
+
+def test_review_candidate_scan_keeps_a_large_outer_findings_object():
+    payload = {
+        "findings": [
+            {"location": f"a.py:{index}", "severity": "minor", "why": "still relevant"}
+            for index in range(100)
+        ]
+    }
+    answer = "\n".join(["{}"] * 500 + ["```json", json.dumps(payload)])
+
+    findings, parsed, dropped = _parse_findings("reviewer", answer)
+
+    assert parsed and dropped == 0
+    assert len(findings) == 100
+
+
+def test_review_fences_follow_non_json_blocks_and_accept_compact_json():
+    payload = '{"findings": []}'
+    after_shell = f"```sh\necho hi\n```\n```json\n{payload}\n```"
+    compact = f"```json {payload} ```"
+
+    assert next(_candidates(after_shell)) == (payload, True)
+    assert next(_candidates(compact)) == (payload, True)
 
 
 async def test_planning_with_no_goal_is_refused(build):
@@ -678,6 +808,36 @@ async def test_a_reviewer_that_dies_before_recording_still_counts_against_the_re
     assert {r.agent_id: r.ok for r in run.results} == {"codex-sol": True, "gemini-x": False}
 
 
+async def test_an_in_flight_reviewer_consultation_is_linked_before_it_can_be_deleted(build):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(entered=entered, release=release),
+            "gemini-x": StubAdapter(),
+        }
+    )
+    plan = await planned(service)
+    running = asyncio.create_task(service.run(plan.review_id, plan.plan.confirm_token))
+    await entered.wait()
+
+    row = (
+        await sql(
+            service,
+            "SELECT consultation_id FROM review_consultations "
+            "WHERE review_id = ? AND agent_id = ?",
+            str(plan.review_id),
+            "codex-sol",
+        )
+    ).fetchone()
+    assert row[0] is not None
+    _, count = await service.consult.store.request_delete_all_consultations()
+    assert count == 0
+
+    release.set()
+    assert (await running).error is None
+
+
 async def test_a_crash_after_the_token_is_spent_does_not_leave_the_review_running(build):
     """The token is gone and the status says `running`, but the lease is released and
     no reviewer exists. Left that way the review refuses to be deleted -- "still
@@ -831,6 +991,38 @@ async def test_unparsed_reviewer_findings_make_finalization_refuse(build):
     assert "unparsed findings" in response.error.message
     assert response.unparsed_reviewers == ["codex-sol"]
     assert response.status == "awaiting_synthesis"
+
+
+async def test_a_parser_upgrade_reconstructs_an_old_unparsed_result_from_its_answer(build):
+    answer = (
+        "review\n```json\n"
+        + json.dumps(
+            {
+                "findings": [
+                    {
+                        "severity": "important",
+                        "why": "quoted ```json {draft: true} ``` in the example",
+                    }
+                ]
+            }
+        )
+        + "\n```"
+    )
+    service = await build(adapters={"codex-sol": StubAdapter(answer), "gemini-x": StubAdapter()})
+    plan = await planned(service)
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+    assert run.results[0].findings_parsed
+
+    await sql(
+        service,
+        "UPDATE review_consultations SET findings_json = NULL, findings_parsed = 0 "
+        "WHERE review_id = ?",
+        str(plan.review_id),
+    )
+    rebuilt = await service.get(plan.review_id)
+
+    assert rebuilt.unparsed_reviewers == []
+    assert rebuilt.results[0].findings[0].severity == "important"
 
 
 class SecondTurnAdapter(StubAdapter):

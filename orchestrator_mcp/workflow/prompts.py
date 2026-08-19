@@ -16,11 +16,15 @@ an artifact's name.
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from ..json_objects import (
+    MAX_JSON_CANDIDATES,
+    fenced_json_objects,
+    json_object_candidates,
+)
 from ..review.contract import ReviewSummary
 from .contract import (
     ExecutionBrief,
@@ -121,9 +125,6 @@ def step_prompt(
     return "\n\n".join(parts), context
 
 
-_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S)
-
-
 def parse_reply(step: Step, answer: str) -> BaseModel:
     """The artifact this step's answer carries, or a `ValueError` naming what failed.
 
@@ -132,17 +133,7 @@ def parse_reply(step: Step, answer: str) -> BaseModel:
     same ordering as the review parser, which learned it the expensive way.
     """
     model = REPLY_MODELS[step]
-    blocks = [match.group(1) for match in _FENCE.finditer(answer)]
-    start, depth = answer.find("{"), 0
-    for index in range(start, len(answer)) if start != -1 else ():
-        if answer[index] == "{":
-            depth += 1
-        elif answer[index] == "}":
-            depth -= 1
-            if depth == 0:
-                blocks.append(answer[start : index + 1])
-                break
-    for chunk in reversed(blocks):
+    for _, chunk in _json_candidates(answer):
         try:
             return model.model_validate_json(chunk)
         except (ValidationError, ValueError):
@@ -151,3 +142,18 @@ def parse_reply(step: Step, answer: str) -> BaseModel:
         f"the `{step}` step's answer carried no `{model.__name__}` this server could "
         "read; the step is recorded as failed rather than stored as an artifact"
     )
+
+
+def _json_candidates(answer: str):
+    """Every complete JSON object candidate, with its document position.
+
+    The scanner understands strings and escapes, unlike brace counting. Fenced blocks
+    are included explicitly so a malformed final fence is not hidden by braces in the
+    surrounding prose; ordinary balanced objects keep unfenced answers supported.
+    """
+    blocks = list(fenced_json_objects(answer))
+    blocks.extend(json_object_candidates(answer))
+    for candidate in sorted(
+        blocks, key=lambda block: block[0], reverse=True
+    )[:MAX_JSON_CANDIDATES]:
+        yield candidate

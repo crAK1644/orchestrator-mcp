@@ -68,15 +68,20 @@ Same subscriptions. Less context shuffling.
 ```text
  Claude Code host  ──►  Orchestrator MCP  ──►  Codex CLI
  Codex host        ──►  Orchestrator MCP  ──►  Claude Code CLI
- Any host          ──►  Orchestrator MCP  ──►  OpenCode CLI (DeepSeek, Qwen, local…)
+ Any host          ──►  Orchestrator MCP  ──►  OpenCode CLI (DeepSeek, Qwen, Kimi…)
  Any host          ──►  Orchestrator MCP  ──►  Antigravity CLI (experimental)
 
                          local routing
                     no provider API keys
-                   no same-runtime loops
+                no same-execution-identity loops
 ```
 
-The host's own runtime is always excluded. Claude Code cannot consult Claude Code through this server, and Codex cannot consult Codex.
+Ordinary `orchestrator_consult` calls exclude the host's entire runtime: Claude Code
+cannot use that tool to consult Claude Code, and Codex cannot use it to consult Codex.
+Reviews and workflows use the narrower `(runtime, model)` execution identity; when
+`consult.host.model` names the host precisely, they may route to a provably different,
+versioned model on the same runtime. The host can never route work back to its own
+execution identity.
 
 ## Install
 
@@ -127,7 +132,8 @@ consult:
       scores: { coding: 90, research: 95, writing: 95, review: 95 }
 ```
 
-See [`config.example.yaml`](config.example.yaml) for every option, an OpenCode agent, and an experimental Antigravity example.
+See [`config.example.yaml`](config.example.yaml) for a broader annotated configuration,
+an OpenCode agent, and an experimental Antigravity example.
 
 ### 3. Add the server to your MCP client
 
@@ -203,10 +209,10 @@ The PyPI distribution is named `orchestrator-mcp-server`; the shorter PyPI name 
 | **Predictable routing** | Rank configured agents by capability score, priority, then agent ID. |
 | **Explicit model choice** | Verify the responding model when the CLI exposes that information; fail on a detected substitution. |
 | **Review panel** | Ask one reviewer, or up to five in deep mode, over the same approved material. |
-| **Three-phase workflow** | Run a whole job — research and planning, implementation and testing, review and fixing — with any model bound to any step it scores for. |
+| **Three-phase workflow** | Run a whole job — research and planning, implementation and testing, review and fixing — with eligible models bound to steps their runtime and configured execution mode permit. |
 | **Slash commands** | Drive consultations, reviews and workflows by name, with their checkpoints written down rather than hoped for. |
-| **Local history** | Store consultations and reviews in SQLite, with an optional loopback dashboard. |
-| **Answer-only isolation** | Codex, Claude Code, and OpenCode are prevented from using tools; experimental Antigravity detects and fails reported tool use but cannot yet prevent it. |
+| **Local history** | Store consultations, reviews, and workflows in SQLite, with an optional loopback dashboard. |
+| **Answer-only isolation** | Codex, Claude Code, and OpenCode are prevented from using action tools; explicit web mode enables only the target runtime's web-search facility. Experimental Antigravity detects and fails reported tool use but cannot yet prevent it. |
 
 ### The consultation tools
 
@@ -274,7 +280,7 @@ Request fields:
 
 | Field | Required | Meaning |
 |---|---|---|
-| `capability` | yes | `coding`, `research`, `writing`, `reasoning`, or `review`. |
+| `capability` | yes | `coding`, `research`, `writing`, `reasoning`, `review`, `planning`, `prompt_authoring`, `testing`, or `synthesis`. |
 | `prompt` | yes | Task or question, up to 100,000 characters. |
 | `context` | no | Evidence, up to 1,000,000 characters. |
 | `source_mode` | no | `auto`, `document`, `web`, or `model`. |
@@ -318,7 +324,14 @@ consult:
   review:
     reviewers: [codex]          # standard: exactly one
     deep_reviewers: [codex, claude]  # deep: one to five
+    roots: [~/src]              # context_paths is restricted to these trees
 ```
+
+`context_paths` is a convenience for material too large to paste into a tool argument.
+Orchestrator reads each named file beneath those roots and sends its contents to the
+reviewers. The path string supplied by the caller is also included as the file heading
+and manifest label, so an absolute path can disclose a username or directory layout. If
+that is sensitive, pass the bytes through `context` with neutral labels instead.
 
 The workflow is deliberately split:
 
@@ -367,14 +380,22 @@ Credential-shaped values are masked before storage. `secrets="send_as_is"` is an
 
 A consultation is one question. A review is one body of material. A **workflow** is a
 whole job held together: research and planning, implementation and testing, review and
-fixing, the last two in a capped loop, with every consultation and review it produces
-hanging off one `workflow_id`.
+fixing, with failed tests and open serious findings feeding a capped fix loop. Every
+consultation and review it produces hangs off one `workflow_id`.
 
 ```text
- research → plan → author_execution_prompt → implement → test → review → synthesize
-                                                 ▲                          │
-                                                 └────────── fix ◄──────────┘
-                                                   capped at max_fix_rounds
+ research? → plan → author_execution_prompt → implement
+                                               └→ [apply_patch if delegated] → test
+
+ test
+ ├─ failed by default → fix → [apply_patch if delegated] → test
+ └─ passed / advance_on_failed_test → review → synthesize
+
+ synthesize
+ ├─ clean → completed
+ └─ open serious findings → fix
+
+ `?` means research may be skipped. Fixing is capped at `max_fix_rounds`.
 ```
 
 Enable it in `config.yaml`. Without a `workflow:` block the workflow tools are not
@@ -466,8 +487,10 @@ routing time.
 your checkout — only the context the host sent it, exactly as a reviewer does — and the
 diff comes back for the host to apply. In `isolated_write` it sees a *copy*: a worktree
 under `~/.orchestrator-mcp/worktrees/<workflow_id>/<step_id>/`, checked out at the latest
-applied result (the workflow's baseline until the host has applied anything) and deleted
-as soon as the diff is captured. Either way the step ends in
+applied result (the workflow's baseline until the host has applied anything). It is
+normally deleted after the diff is captured and its private recovery copy is written.
+It is retained when capture fails or recovery cannot safely preserve the patch, because
+the worktree may then hold the only usable copy. Either way the successful step ends in
 `awaiting_host_apply` and the host owns the branch. `ConsultAdapter` gained nothing for
 any of this: it is still three verbs with no way to ask for anything agentic, and write
 capability lives in a separate package behind a separate protocol.
@@ -595,9 +618,10 @@ were retained, no critical or important finding is still `open`, `missing_seriou
 passed, and the workflow is in no exceptional state. Reaching `max_fix_rounds` with
 serious findings still open ends the workflow `needs_attention` — not `completed`.
 
-A fix round carries the findings that are still open, read back from the review row
-rather than from workflow storage, so the round is an answer to the review and not a
-second pass at the goal. A re-review gets them too.
+A fix round after review carries the findings that are still open, read back from the
+review row rather than from workflow storage, so the round is an answer to the review
+and not a second pass at the goal. A fix triggered by a failed test before review instead
+carries that failed `TestReport`. A re-review gets the open findings too.
 
 ### The execution contract, honestly scoped
 
@@ -642,10 +666,16 @@ A workflow's consultations are not reachable from the public tool: resuming one 
 crashed run resolves rather than leaving a status that outlives its process.
 
 **Patch integrity.** Redaction can rewrite credential-shaped text, and a rewritten patch
-is a corrupt patch. So the raw diff is returned to the host **once**, what is stored is a
-sanitized audit copy plus the sha256 of the raw patch, and the sanitized copy is never
-offered for application. After the host applies it, the resulting commit is the review
-artifact.
+is a corrupt patch. SQLite stores only a sanitized audit copy plus the sha256 of the raw
+patch. The applicable patch is kept in a private `0600` recovery file and returned by
+workflow status until `apply_patch` is recorded, then every raw patch from that workflow
+round is removed. If the recovery copy cannot be written or trusted, the raw response is
+still returned and `recovery_warning` explains that status cannot recover it later. After
+the host applies it, the resulting code commit becomes the workflow's review input.
+Recovery files and retained failure worktrees expire after seven days. The first
+workflow-service open schedules a bounded, best-effort background sweep of owned
+artifacts older than that window, so abandoned work does not become indefinite raw
+storage or request latency.
 
 </details>
 
@@ -667,7 +697,7 @@ artifact.
 | **Workflow scope** | A workdir must resolve beneath a configured root; `/` is refused and nothing is inferred from the working directory. A dirty tree needs explicit acknowledgement. |
 
 > [!WARNING]
-> **Redaction covers every retained database copy, and only this database.** Credential-shaped values are replaced before every insert while the target CLI still receives the original material. Detection is best-effort pattern matching rather than a scanner with perfect recall, so a secret with no recognizable shape can survive it. Keep the database private, or set `store_full_content: false`.
+> **Redaction covers every retained database copy, but what gets transmitted depends on the flow.** An ordinary consultation sends its original material while storing a scrubbed copy. Reviews normally send the masked copy; `secrets="send_as_is"` is the explicit path that sends the original. Workflow step material is redacted before both storage and transmission. Detection is best-effort pattern matching rather than a scanner with perfect recall, so a secret with no recognizable shape can survive it. Keep the database private, or set `store_full_content: false` where the selected feature permits it.
 >
 > **Vendor history is outside all of this.** Material sent to a reviewer also lands in that reviewer's own CLI history — Codex writes `~/.codex/sessions/`, and the others keep their own logs. Orchestrator cannot redact or erase those files. It does read from them, in three places and for two fields: the Codex adapter opens the rollout file for the session it just ran to recover the model identity the CLI does not otherwise report, and opens the newest rollout to read the latest Codex CLI rate-limit numbers; the OpenCode adapter runs `opencode export` on the session it just ran, for the same reason — the model identity is absent from that runtime's event stream. Nothing else is taken from any of them.
 
@@ -756,7 +786,7 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `database_path` | `~/.orchestrator-mcp/consultations.sqlite3` | Consultation and review history. |
+| `database_path` | `~/.orchestrator-mcp/consultations.sqlite3` | Consultation, review, and workflow history. |
 | `managed_agents_path` | `~/.orchestrator-mcp/agents.yaml` | Agents written by the dashboard. |
 | `timeout_s` | `180` | Limit for one consultation turn. |
 | `web_turn_limit` | `8` | Assistant turns allowed in web mode. Enforced by the Claude runtime only. |
@@ -771,10 +801,12 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 ## System requirements
 
 - macOS or Linux. Windows is not currently tested.
-- Python 3.11, 3.12, or 3.13.
+- Python 3.11 or newer. CI currently tests 3.11, 3.12, and 3.13.
 - Homebrew or [`uv`](https://docs.astral.sh/uv/).
 - A stdio MCP client such as Claude Code or Codex.
-- At least one other supported agent CLI installed and signed in.
+- At least one eligible configured agent. Ordinary consultation requires another
+  runtime; reviews and workflows may use a provably different versioned model on the
+  host's runtime.
 
 ## Test it
 
@@ -790,6 +822,7 @@ Live smoke tests use the agents in your configuration:
 ```bash
 ORCHESTRATOR_HOST_RUNTIME=claude uv run python smoke_consult_live.py
 ORCHESTRATOR_HOST_RUNTIME=claude uv run python smoke_review_live.py
+ORCHESTRATOR_HOST_RUNTIME=claude uv run python smoke_workflow_live.py
 ```
 
 Live tests make real requests and may use paid capacity. Do not run them in CI unless that is intentional.
@@ -811,7 +844,8 @@ Live tests make real requests and may use paid capacity. Do not run them in CI u
 ## Deliberately not included
 
 - No direct provider API routing or provider API-key configuration.
-- No file edits, shell commands, MCP tools, or subagents for consulted agents.
+- No file edits, shell commands, MCP tools, or subagents for ordinary consulted agents;
+  explicit web mode enables only the target runtime's web-search facility.
 - No automatic fixes; the host agent owns edits and tests. A workflow records and validates the phases, it does not run the job unattended.
 - No delegated write to your actual working tree. `isolated_write` runs in a throwaway worktree and is codex-only; every other runtime refuses it, and the host applies every patch.
 - No streaming; each consultation returns one complete envelope.
