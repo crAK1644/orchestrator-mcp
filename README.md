@@ -646,7 +646,7 @@ useful than overclaiming.
 | `orchestrator_workflow_plan_step` | Preview one step and mint its one-time token, with the optional `context` the step is shown. A review step returns the review plan's own token rather than an unrelated second approval. |
 | `orchestrator_workflow_run_step` | Spend the token and run the step through its bound agent. |
 | `orchestrator_workflow_record_host_step` | Record work the host did itself. The token is consumed as the host's attestation. |
-| `orchestrator_workflow_status` | State, artifacts, selected agents, round count, and what may happen next. |
+| `orchestrator_workflow_status` | State, artifacts, selected agents, round count, spend, and what may happen next. |
 | `orchestrator_workflow_plan_replan` / `orchestrator_workflow_replan` | Change the binding snapshot under the same preview-and-approve handshake. |
 | `orchestrator_workflow_cancel` | Cancel pending work and terminate a child this process owns, with the same caveat `orchestrator_cancel_review` carries about another process's children. |
 | `orchestrator_delete_workflow` | Delete one workflow with its steps, consultations and reviews. Refused while the workflow is open or a step's lease is live. |
@@ -657,6 +657,15 @@ consultation delete path and `orchestrator_delete_review` refuses a review that 
 workflow step, because a step pointing at a row that is gone still reads as intact —
 and the next fix round would answer from the goal instead of from the review. So these
 three tools are the only way any of those rows leave the database.
+
+`orchestrator_workflow_status` reports what the workflow spent: per step, and totalled
+over the workflow with its reviewers included. The numbers are rebuilt from the
+consultations' turn ledgers at read time, so a step that took two turns counts both and
+a re-read counts neither twice. A host step reports no usage — nothing was spent on it
+here, which is not the same as it having cost zero. `cost_usd` is set only when every
+turn behind it was priced: an agent on a free tier reports no price, and one unpriced
+turn makes the total a floor rather than a sum, so it comes back unknown instead. The
+dashboard shows the same numbers on the workflow list and per step.
 
 A review step's reviewers come from its binding, so a workflow needs no `review:` block
 unless that binding is left to `auto` — then it falls back to the configured reviewers

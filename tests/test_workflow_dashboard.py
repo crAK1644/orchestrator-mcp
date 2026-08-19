@@ -328,3 +328,49 @@ async def test_the_workflow_pages_offer_no_way_to_delete_anything(
         _, body = get(path)
         assert "<form" not in body
         assert "Delete" not in body
+
+
+# --- spend -------------------------------------------------------------------
+
+
+async def test_the_workflow_pages_report_what_was_spent(serve, workflow_config, repo):  # noqa: F811
+    """Both the delegated step and the reviewer, whose consultation hangs off the
+    review rather than off the workflow."""
+    consult_config = workflow_config()
+    workflow_id = await make_workflow(consult_config, repo)
+    get, _ = serve(consult_config)
+
+    _, listing = get("/workflows")
+    _, page = get(f"/workflows/{workflow_id}")
+
+    assert "<th>Spend" in listing and "<th>Spend" in page
+    # Two consulted steps at 12 tokens each, and the reviewer is one of them.
+    assert "24 tokens" in listing
+    assert page.count("12 tokens") == 2
+
+
+async def test_an_unpriced_workflow_says_unknown_rather_than_zero(
+    serve, workflow_config, repo  # noqa: F811
+):
+    """A free tier reports no price. `$0.0000` there would read as free."""
+    consult_config = workflow_config()
+    workflow_id = await make_workflow(consult_config, repo)
+    get, _ = serve(consult_config)
+
+    _, listing = get("/workflows")
+    _, page = get(f"/workflows/{workflow_id}")
+
+    assert "cost unknown" in listing and "cost unknown" in page
+    assert "$0.00" not in listing and "$0.00" not in page
+
+
+async def test_a_host_only_workflow_shows_no_spend_at_all(serve, workflow_config, repo):  # noqa: F811
+    """Nothing was consulted, so there is nothing to report -- not a row of zeroes."""
+    consult_config = workflow_config()
+    await make_workflow(consult_config, repo, finish=False)
+    get, _ = serve(consult_config)
+
+    _, listing = get("/workflows")
+
+    assert "tokens" not in listing
+    assert "cost unknown" not in listing

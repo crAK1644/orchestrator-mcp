@@ -741,6 +741,53 @@ class ConsultStore:
 
         return await self._run(work)
 
+    async def workflow_usage(self, workflow_id: str) -> dict[str, Usage]:
+        """What each step of one workflow spent, keyed by step id.
+
+        Rebuilt from the turn ledger at read time rather than stored on the step, so
+        a retried step counts every attempt exactly once and nothing has to be kept
+        in sync -- the same property the reviewer rollup relies on.
+
+        Two links reach the same place. A delegated step owns its consultation
+        directly (`consultations.workflow_id`); a review step owns a review, and the
+        reviewers' consultations carry the review rather than the workflow. The join
+        covers both, so a workflow's total includes what its reviewers cost.
+
+        `cost_usd` is `None` unless *every* turn behind that step was priced. A free
+        tier reports no price, and a zero there would read as free rather than as
+        unmeasured.
+        """
+
+        def work() -> dict[str, Usage]:
+            rows = self._db.execute(
+                "SELECT COALESCE(c.step_id, r.step_id) AS step_id, COUNT(*) AS turns, "
+                "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
+                "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
+                "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
+                "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd "
+                "FROM consultation_turns t JOIN consultations c ON c.id = t.consultation_id "
+                # A scalar subquery rather than a join to `review_consultations`: a
+                # join there would multiply one turn by however many rows point at
+                # its consultation, and this number is money.
+                "LEFT JOIN reviews r ON r.id = (SELECT rc.review_id FROM review_consultations rc "
+                "WHERE rc.consultation_id = c.id LIMIT 1) "
+                "WHERE c.workflow_id = :workflow_id OR r.workflow_id = :workflow_id "
+                "GROUP BY 1",
+                {"workflow_id": workflow_id},
+            ).fetchall()
+            return {
+                row["step_id"]: Usage(
+                    prompt_tokens=row["input_tokens"],
+                    completion_tokens=row["output_tokens"],
+                    total_tokens=row["total_tokens"],
+                    cost_usd=row["cost_usd"] if row["priced_turns"] == row["turns"] else None,
+                )
+                for row in rows
+                if row["step_id"] is not None
+            }
+
+        return await self._run(work)
+
     async def latest_response(self, consultation_id: UUID | str) -> dict[str, Any] | None:
         """The latest retained structured answer, for rebuilding a review result."""
 

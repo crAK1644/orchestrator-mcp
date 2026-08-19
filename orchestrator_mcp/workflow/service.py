@@ -29,7 +29,7 @@ import asyncio
 import json
 import secrets as secrets_mod
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
@@ -45,7 +45,7 @@ from ..code.service import (
     sweep_recovery_artifacts,
     worktree_path,
 )
-from ..contract import MAX_ERROR_CHARS, scrub_json
+from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
 from ..consult.config import ConsultConfig, ReviewPolicy, StepBinding, WorkflowConfig
 from ..consult.contract import ConsultError, Runtime
 from ..consult.errors import ConsultErrorCode
@@ -1309,7 +1309,8 @@ class WorkflowService:
                             f"raw patch recovery for step `{source.id}` is unavailable; "
                             "it may have expired after the seven-day retention window"
                         )
-        views = [_step_view(row) for row in rows]
+        spend = await self.consult.store.workflow_usage(workflow_id)
+        views = [_step_view(row, spend.get(row.id)) for row in rows]
         return WorkflowResponse(
             workflow_id=workflow_id,
             status=workflow.status,  # type: ignore[arg-type]
@@ -1325,6 +1326,7 @@ class WorkflowService:
                 reason=workflow.reason,
                 bindings=json.loads(workflow.bindings_json),
                 steps=views,
+                usage=_total(spend.values()),
                 next_steps=[
                     step for step, definition in STEPS.items()
                     if workflow.status in definition.runs_from
@@ -1405,7 +1407,26 @@ def _validated(model: type, payload: dict[str, Any], step: str):
         ) from exc
 
 
-def _step_view(row: StepRow) -> StepView:
+def _total(spent: Iterable[Usage]) -> Usage | None:
+    """The workflow's spend, or `None` when nothing has been spent on it yet.
+
+    Steps that spent nothing are absent rather than zero, so a host-only workflow
+    reports no usage instead of a row of zeroes. One unpriced step makes the whole
+    cost unknown, matching what the reviewer rollup does across reviewers.
+    """
+    used = list(spent)
+    if not used:
+        return None
+    priced = all(u.cost_usd is not None for u in used)
+    return Usage(
+        prompt_tokens=sum(u.prompt_tokens for u in used),
+        completion_tokens=sum(u.completion_tokens for u in used),
+        total_tokens=sum(u.total_tokens for u in used),
+        cost_usd=sum(u.cost_usd for u in used) if priced else None,  # type: ignore[misc]
+    )
+
+
+def _step_view(row: StepRow, usage: Usage | None = None) -> StepView:
     return StepView(
         step_id=row.id,
         step=row.step,  # type: ignore[arg-type]
@@ -1421,6 +1442,7 @@ def _step_view(row: StepRow) -> StepView:
         reported_by=row.reported_by,  # type: ignore[arg-type]
         raw_patch_sha256=row.raw_patch_sha256,
         output=row.output(),
+        usage=usage,
     )
 
 
