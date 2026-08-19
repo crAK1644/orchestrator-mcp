@@ -300,6 +300,7 @@ Agent configuration:
 | `scores` | none | 0–100 per capability; missing means ineligible. |
 | `web_search` | `false` | Permit `source_mode: web` for this agent. |
 | `reasoning_effort` | unset | `low`, `medium`, `high`, `xhigh`, or `max`; Codex only. |
+| `timeout_s` | unset | Limit for one turn with this agent, overriding `consult.timeout_s`. |
 
 </details>
 
@@ -789,6 +790,7 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 | `database_path` | `~/.orchestrator-mcp/consultations.sqlite3` | Consultation, review, and workflow history. |
 | `managed_agents_path` | `~/.orchestrator-mcp/agents.yaml` | Agents written by the dashboard. |
 | `timeout_s` | `180` | Limit for one consultation turn. |
+| `preflight_ttl_s` | `300` | How long a *ready* login check is reused before the CLI is probed again. Only a ready answer is cached; `0` probes once per turn. |
 | `web_turn_limit` | `8` | Assistant turns allowed in web mode. Enforced by the Claude runtime only. |
 | `store_full_content` | `true` | Set false to keep metadata and routing only — except a review's goal and context, which are stored either way. Reviews cannot be finalized under it — see below. |
 | `review` | absent | Configured reviewers; absent means no review tools. |

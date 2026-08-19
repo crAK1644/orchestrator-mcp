@@ -49,11 +49,13 @@ class StubAdapter:
         self._content = content
         self.calls: list[tuple[str, str | None, SourceMode, int]] = []
         self.prompts: list[str] = []
+        self.preflights = 0
 
     def connect_command(self, agent):
         return f"{agent.command} login"
 
     async def preflight(self, agent):
+        self.preflights += 1
         return self._status or AgentStatus(agent.agent_id, installed=True, authenticated=True)
 
     async def start(self, agent, prompt, source_mode, session_id=None):
@@ -357,3 +359,126 @@ async def test_a_filtered_listing_refuses_unknown_agent_ids(service_factory):
     service = await service_factory()
     with pytest.raises(ValueError, match="unknown agent id"):
         await service.list_agents(check=False, agent_ids=["nobody"])
+
+
+# --- the preflight cache ----------------------------------------------------
+
+
+async def test_one_consultation_probes_the_cli_once(service_factory):
+    """Turn five of a live conversation used to pay a subprocess to re-ask a question
+    whose answer changes when a human runs a login command."""
+    adapter = StubAdapter()
+    service = await service_factory(adapter)
+
+    first = await service.consult(capability="coding", prompt="q1")
+    await service.consult(capability="coding", prompt="q2", consultation_id=first.consultation_id)
+    await service.consult(capability="coding", prompt="q3", consultation_id=first.consultation_id)
+
+    assert adapter.preflights == 1
+
+
+async def test_a_failed_preflight_is_never_cached(service_factory):
+    """The asymmetry the cache is built around.
+
+    A failure hands the caller a `required_action` login command. The retry after
+    the user runs it must reach the CLI, or the cache becomes the reason the agent
+    stays unusable for the rest of its TTL."""
+    adapter = StubAdapter(
+        status=AgentStatus("codex-sol", installed=True, authenticated=False, detail="log in")
+    )
+    service = await service_factory(adapter)
+
+    first = await service.consult(capability="coding", prompt="q1")
+    assert first.error.code is ConsultErrorCode.CONNECTION_REQUIRED
+
+    await service.consult(capability="coding", prompt="q2")
+    assert adapter.preflights == 2
+
+
+async def test_a_turn_that_disproves_the_cache_clears_it(service_factory):
+    """A CLI can be logged out between the probe and the run."""
+    adapter = StubAdapter()
+    service = await service_factory(adapter)
+    await service.consult(capability="coding", prompt="q1")
+    assert adapter.preflights == 1
+
+    adapter._error = AdapterError(ConsultErrorCode.CONNECTION_REQUIRED, "signed out")
+    failed = await service.consult(capability="coding", prompt="q2")
+    assert failed.error.code is ConsultErrorCode.CONNECTION_REQUIRED
+    # Served from cache, so still one probe -- and then dropped, so the next call
+    # asks the CLI rather than answering `ready` for the rest of the TTL.
+    assert adapter.preflights == 1
+
+    adapter._error = None
+    await service.consult(capability="coding", prompt="q3")
+    assert adapter.preflights == 2
+
+
+async def test_a_zero_ttl_restores_a_probe_per_turn(service_factory):
+    adapter = StubAdapter()
+    service = await service_factory(adapter, preflight_ttl_s=0)
+
+    first = await service.consult(capability="coding", prompt="q1")
+    await service.consult(capability="coding", prompt="q2", consultation_id=first.consultation_id)
+
+    assert adapter.preflights == 2
+
+
+async def test_an_expired_entry_is_probed_again(service_factory, monkeypatch):
+    adapter = StubAdapter()
+    service = await service_factory(adapter, preflight_ttl_s=1)
+
+    now = [1000.0]
+    monkeypatch.setattr("orchestrator_mcp.consult.service.time.monotonic", lambda: now[0])
+    await service.consult(capability="coding", prompt="q1")
+    now[0] += 2.0
+    await service.consult(capability="coding", prompt="q2")
+
+    assert adapter.preflights == 2
+
+
+async def test_listing_agents_always_probes(service_factory):
+    """`list_agents(check=True)` *is* the probe.
+
+    A dashboard refresh answered from memory would report a login state nobody
+    checked, under a timestamp that says somebody did."""
+    adapter = StubAdapter()
+    service = await service_factory(adapter)
+    await service.consult(capability="coding", prompt="q1")
+    assert adapter.preflights == 1
+
+    await service.list_agents(check=True)
+    await service.list_agents(check=True)
+
+    # One per listing, on top of the turn's own: claude-opus is the host and is
+    # never probed.
+    assert adapter.preflights == 3
+
+
+async def test_a_cache_hit_records_no_status_check(service_factory):
+    """`agent_status_checks` means "we probed", which is what the dashboard reads it
+    as. A row for a probe that did not happen would make that column a guess."""
+    adapter = StubAdapter()
+    service = await service_factory(adapter)
+    first = await service.consult(capability="coding", prompt="q1")
+    await service.consult(capability="coding", prompt="q2", consultation_id=first.consultation_id)
+
+    rows = await service.store._run(
+        lambda: service.store._db.execute(
+            "SELECT COUNT(*) FROM agent_status_checks WHERE agent_id = ?", ("codex-sol",)
+        ).fetchone()
+    )
+    assert rows[0] == 1
+
+
+async def test_editing_an_agent_invalidates_its_entry(service_factory):
+    """Keyed on command and model, not the id alone: an agent repointed at another
+    CLI in the dashboard must not be answered from the old one's probe."""
+    adapter = StubAdapter()
+    service = await service_factory(adapter)
+    await service.consult(capability="coding", prompt="q1")
+
+    service.config.agents["codex-sol"].model = "gpt-5.6-pro"
+    await service.consult(capability="coding", prompt="q2")
+
+    assert adapter.preflights == 2

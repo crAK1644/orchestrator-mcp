@@ -27,6 +27,11 @@ consult:
   store_full_content: true  # false stores metadata and routing only
   web_turn_limit: 8         # web mode: assistant turns allowed; the one that spends
                             # the last of them still answers, the next is killed
+  preflight_ttl_s: 300      # how long a *ready* login check is reused before the CLI
+                            # is probed again. Only a ready answer is cached: a
+                            # failure hands you a login command, and the retry after
+                            # you run it must not be answered from a stale "no".
+                            # 0 probes once per turn, as before this setting existed.
   protocol_version: consult-v1
 
   agents:
@@ -42,6 +47,10 @@ consult:
                                 # passes `--ignore-user-config` on purpose, so unset
                                 # means the model's own default, not yours.
       priority: 10          # ascending: lower wins a tie
+      timeout_s: 1800       # this agent only, overriding `consult.timeout_s`. One
+                            # global limit has to be set for the slowest agent
+                            # configured, which hands every other agent the same
+                            # rope. Omit to use the global value.
       web_search: true      # required before `source_mode: web` will route here
       execution_modes: [consultation, patch]
                             # what this agent may be *asked* for, which is trust and

@@ -27,14 +27,18 @@ def adapter_for(agent: AgentConfig, config: ConsultConfig) -> ConsultAdapter:
     # Explicit, with no fallthrough: a runtime this function does not recognise used to
     # land on Codex, which means a mistyped or not-yet-implemented runtime would quietly
     # be consulted through the wrong CLI -- wrong model, wrong flags, plausible answer.
+    # One agent's own limit where it has one. Adapters take their timeout at
+    # construction and this is the only place they are constructed, so nothing below
+    # here has to know the value can differ per agent.
+    timeout_s = agent.timeout_s or config.timeout_s
     if agent.runtime == "claude":
-        return ClaudeCliAdapter(config.timeout_s, config.web_turn_limit)
+        return ClaudeCliAdapter(timeout_s, config.web_turn_limit)
     if agent.runtime == "codex":
-        return CodexCliAdapter(config.timeout_s)
+        return CodexCliAdapter(timeout_s)
     if agent.runtime == "antigravity":
-        return AntigravityCliAdapter(config.timeout_s)
+        return AntigravityCliAdapter(timeout_s)
     if agent.runtime == "opencode":
-        return OpenCodeCliAdapter(config.timeout_s)
+        return OpenCodeCliAdapter(timeout_s)
     raise AdapterError(
         ConsultErrorCode.AGENT_UNAVAILABLE,
         f"no adapter is implemented for runtime `{agent.runtime}`",

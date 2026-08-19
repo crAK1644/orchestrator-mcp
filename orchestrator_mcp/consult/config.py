@@ -42,6 +42,12 @@ class AgentConfig(BaseModel):
     # as spelling out `0`. Omission is the common way to say "not this one".
     scores: dict[Capability, Score] = Field(default_factory=dict)
     web_search: bool = False
+    # Overrides `consult.timeout_s` for this agent alone. One global limit has to be
+    # set for the slowest configured agent, which hands every other agent the same
+    # rope: a reasoning model at high effort needs half an hour, and a fast model
+    # that wedges should not get half an hour to do it in. `None` means the global
+    # value, so an existing config is unchanged.
+    timeout_s: int | None = Field(default=None, ge=1)
     # Codex only, and worth spelling out because the adapter passes
     # `--ignore-user-config`: whatever `~/.codex/config.toml` says about reasoning is
     # deliberately not inherited, so an unset field here is the model's own default,
@@ -289,6 +295,11 @@ class ConsultConfig(BaseModel):
     # load; see `managed.py` for why they are not simply kept here.
     managed_agents_path: Path = DEFAULT_MANAGED_PATH
     timeout_s: int = Field(default=180, ge=1)
+    # How long a *ready* preflight answer is reused before the CLI is probed again.
+    # Every turn used to pay a subprocess to ask a question whose answer changes when
+    # a human runs a login command, which is not on the timescale of a conversation.
+    # `0` disables the cache and restores a probe per turn.
+    preflight_ttl_s: int = Field(default=300, ge=0)
     protocol_version: str = PROTOCOL_VERSION
     store_full_content: bool = True
     # Claude Code 2.1.220 has no `--max-turns`, so the bound on a web-mode

@@ -45,6 +45,9 @@ from .errors import ConsultErrorCode
 from .prompts import compile_prompt
 from .routing import ConsultRouter, RoutingDecision, SourceModeError, resolve_source_mode
 from .store import ConsultStore, StoreError
+from ..log import get_logger
+
+log = get_logger(__name__)
 
 
 class ConsultService:
@@ -69,6 +72,12 @@ class ConsultService:
         # SQLite passes through this function. Injection remains available for a
         # stricter embedding, but opting out accidentally is no longer the default.
         self._scrub: Callable[[Any], Any] = store_sanitizer or scrub_json
+        # In-process, deliberately: a fresh process re-probing once is fine, and a
+        # SQLite round-trip to avoid a subprocess is not obviously the cheaper of the
+        # two. Keyed on what actually decides the answer, so editing an agent's
+        # command or model in the dashboard cannot be answered from the old one's
+        # entry.
+        self._ready_until: dict[tuple[str, str, str], tuple[float, AgentStatus]] = {}
 
     async def open(self) -> ConsultService:
         await self.store.open()
@@ -80,8 +89,9 @@ class ConsultService:
     def adapter(self, agent: AgentConfig) -> ConsultAdapter:
         return adapter_for(agent, self.config)
 
-    def _lease_ttl(self) -> float:
-        return self.config.timeout_s + PREFLIGHT_TIMEOUT_S + GRACE_S + 30.0
+    def _lease_ttl(self, agent: AgentConfig | None = None) -> float:
+        timeout_s = (agent.timeout_s if agent else None) or self.config.timeout_s
+        return timeout_s + PREFLIGHT_TIMEOUT_S + GRACE_S + 30.0
 
     # --- consultation -------------------------------------------------------
 
@@ -185,7 +195,7 @@ class ConsultService:
             # bounded by `timeout_s`, and the grace period spent killing a child that
             # ignored SIGTERM. Expiring earlier would let a second caller in beside a
             # consultation that is still running.
-            async with self.store.lease(consultation_id, ttl_s=self._lease_ttl()):
+            async with self.store.lease(consultation_id, ttl_s=self._lease_ttl(agent)):
                 return await self._turn(
                     consultation_id, agent, route, request, source_mode, resuming, started
                 )
@@ -425,7 +435,7 @@ class ConsultService:
 
         consultation_id = UUID(consultation.id)
         try:
-            async with self.store.lease(consultation_id, ttl_s=self._lease_ttl()):
+            async with self.store.lease(consultation_id, ttl_s=self._lease_ttl(agent)):
                 return await self._turn(
                     consultation_id, agent, route, request, source_mode, resuming, started
                 )
@@ -540,7 +550,7 @@ class ConsultService:
             return _failed(consultation_id, capability, source_mode, code, message, started,
                            agent_id=agent.agent_id, required_action=action)
 
-        status = await self._status(adapter, agent)
+        status = await self._status(adapter, agent, cached=True)
         if not status.ready:
             # No fallback to the next-best agent, ever: quietly consulting a model
             # nobody chose is the substitution this protocol exists to prevent. The
@@ -567,6 +577,11 @@ class ConsultService:
                     agent, prompt, source_mode, session_id=str(consultation_id)
                 )
         except AdapterError as exc:
+            if exc.code in (
+                ConsultErrorCode.AGENT_NOT_INSTALLED,
+                ConsultErrorCode.CONNECTION_REQUIRED,
+            ):
+                self._forget_status(agent)
             return await fail(exc.code, str(exc), exc.required_action)
 
         await self.store.bind_native_session(consultation_id, result.native_session_id)
@@ -605,7 +620,32 @@ class ConsultService:
             latency_ms=int((time.perf_counter() - started) * 1000),
         ).check_invariants()
 
-    async def _status(self, adapter: ConsultAdapter, agent: AgentConfig) -> AgentStatus:
+    async def _status(
+        self, adapter: ConsultAdapter, agent: AgentConfig, cached: bool = False
+    ) -> AgentStatus:
+        """Probe the CLI, optionally reusing a recent `ready` answer.
+
+        `cached=True` is for the preflight a turn pays on its way to the real work.
+        It is off by default because `list_agents(check=True)` *is* the probe: a
+        dashboard refresh that answered from memory would report a login state
+        nobody checked, under a timestamp that says somebody did.
+
+        **Only a ready status is ever cached.** A failure hands the caller a
+        `required_action` login command, and the retry after the user runs it must
+        not be answered from a stale "not authenticated" -- which would make the
+        cache the reason the agent stays unusable.
+        """
+        key = (agent.agent_id, agent.command, agent.model)
+        if cached and (hit := self._ready_until.get(key)) is not None:
+            expires_at, status = hit
+            if expires_at > time.monotonic():
+                # No `agent_status_checks` row: that table means "we probed", which is
+                # what the dashboard reads it as, and a row here would be a probe that
+                # did not happen.
+                log.debug("preflight served from cache for %s", agent.agent_id)
+                return status
+            del self._ready_until[key]
+
         try:
             status = await adapter.preflight(agent)
         except AdapterError as exc:
@@ -614,7 +654,20 @@ class ConsultService:
         await self.store.record_status_check(
             agent.agent_id, status.installed, status.authenticated, status.detail
         )
+        if status.ready and self.config.preflight_ttl_s:
+            self._ready_until[key] = (
+                time.monotonic() + self.config.preflight_ttl_s,
+                status,
+            )
         return status
+
+    def _forget_status(self, agent: AgentConfig) -> None:
+        """Drop a cached `ready` that the turn itself just disproved.
+
+        A CLI can be logged out between the probe and the run, and without this the
+        cache would keep answering `ready` for the rest of its TTL while every turn
+        failed for the reason it is holding stale."""
+        self._ready_until.pop((agent.agent_id, agent.command, agent.model), None)
 
     # --- read-only surfaces -------------------------------------------------
 
