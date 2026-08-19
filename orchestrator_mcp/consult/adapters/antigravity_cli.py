@@ -458,6 +458,19 @@ def _fragments(text: str, limit: int) -> list[str]:
 # --- parsing ----------------------------------------------------------------
 
 
+# Tool steps that end the turn rather than reach outside it. This runtime emits
+# `finish` as a tool call -- it is how the model says it is done, and every complete
+# answer carries one -- so refusing every tool step refused every successful run,
+# killing the child at the exact moment it had succeeded. Three reviews in a row
+# recorded `gemini-flash` as unusable for this reason.
+#
+# An allow-list rather than a rule about what a name looks like: everything else
+# still fails closed, and adding to this set is a decision somebody has to write
+# down. `finish` takes no path, runs no command, and reaches no MCP server; it
+# carries the model's own signal that the response is complete.
+CONTROL_TOOLS = frozenset({"finish"})
+
+
 def _check_event(event: dict) -> None:
     """Fail closed on the agent acting rather than answering.
 
@@ -465,6 +478,10 @@ def _check_event(event: dict) -> None:
     `init.tools` always advertises the full builtin surface -- `run_command`,
     `call_mcp_tool`, `write_to_file` -- so a check on availability would refuse every
     run, including the ones that never touch any of it.
+
+    A step happening is still not the same as the agent reaching outside the
+    conversation, and `CONTROL_TOOLS` is the difference. Fail-closed remains the
+    rule; the exception is named, not inferred.
     """
     if event.get("event") != "step_update":
         return
@@ -473,6 +490,8 @@ def _check_event(event: dict) -> None:
         return
     if str(step.get("step_type", "")).lower() == "tool":
         name = step.get("tool_name")
+        if isinstance(name, str) and name.strip().lower() in CONTROL_TOOLS:
+            return
         # Bounded: it is named by the runtime, not chosen from a vocabulary we control.
         named = name.strip()[:60] if isinstance(name, str) and name.strip() else "<unnamed>"
         raise AdapterError(

@@ -382,6 +382,49 @@ async def test_a_tool_step_is_a_protocol_violation(tmp_path, monkeypatch, adapte
     assert "run_command" in str(exc.value)
 
 
+async def test_the_finish_tool_is_not_acting(tmp_path, monkeypatch, adapter):
+    """`finish` is how this runtime says the model is done, and it arrives as a tool
+    step. Refusing every tool step therefore refused every *successful* run: the
+    child was killed at the exact moment it had produced an answer, and three
+    reviews in a row recorded this agent as unusable for it.
+
+    The answer after the `finish` step is what proves the run was not aborted."""
+    stdout = jsonl(
+        init(),
+        {"event": "step_update", "step_update": {"step_index": 2, "state": "DONE",
+                                                 "step_type": "tool", "tool_name": "finish"}},
+        {"event": "step_update", "step_update": {"step_index": 3, "state": "DONE",
+                                                 "step_type": "agent_response",
+                                                 "text_delta": "..."}},
+        result_event(),
+    )
+    agent_stub.install("agy", tmp_path, monkeypatch, runs=[{"stdout": stdout}])
+
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert result.content.answer == CONTENT["answer"]
+
+
+async def test_a_tool_that_is_not_on_the_allow_list_still_refuses(
+    tmp_path, monkeypatch, adapter
+):
+    """The allow-list is one name, not a shape. A tool called `finish_writing_files`
+    shares a prefix with it and reaches outside the conversation, and membership --
+    not resemblance -- is what decides."""
+    stdout = jsonl(
+        init(),
+        {"event": "step_update", "step_update": {"step_index": 2, "state": "ACTIVE",
+                                                 "step_type": "tool",
+                                                 "tool_name": "finish_writing_files"}},
+    ) + transcript()
+    agent_stub.install("agy", tmp_path, monkeypatch, runs=[{"stdout": stdout}])
+
+    with pytest.raises(AdapterError) as exc:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert exc.value.code is ConsultErrorCode.PROTOCOL_VALIDATION_FAILED
+    assert "finish_writing_files" in str(exc.value)
+
+
 @pytest.mark.parametrize(
     "structured", [None, {}, ""], ids=["null", "an empty object", "an empty string"]
 )
