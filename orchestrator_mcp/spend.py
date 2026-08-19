@@ -6,8 +6,9 @@ both: an agent on a free tier reports no price, so a total built from its turns 
 handling; presenting the floor as a sum is not.
 
 The refusal this produces is deliberately narrow. A request cannot be priced before
-it is made, so what a ceiling buys is that the next request after it is crossed is
-refused -- not that spend never exceeds it.
+it is made, so what a ceiling buys is that the next request after it is *reached* is
+refused -- not that spend never exceeds it. Reached, not exceeded: spending exactly
+the ceiling refuses the next request rather than allowing one more.
 """
 
 from __future__ import annotations
@@ -54,9 +55,12 @@ def refusal(spend: Mapping[str, Spend], ceiling: float | None, subject: str) -> 
     if total < ceiling:
         return None
     # The unpriced part is named rather than dropped: a caller who reads "$5.10 of
-    # $5.00" without it will read the total as complete, and it is a floor.
+    # $5.00" without it will read the total as complete, and it is a floor. Those
+    # keys may also have contributed to the total already -- a group is listed here
+    # when *any* of its turns went unpriced, not when all of them did.
     unknown = (
-        f", and {len(unpriced)} more spent an unpriced amount on top ({', '.join(unpriced)})"
+        f", and {len(unpriced)} more spent an unpriced amount beyond that "
+        f"({', '.join(unpriced)})"
         if unpriced
         else ""
     )

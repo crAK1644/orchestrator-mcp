@@ -806,7 +806,13 @@ class ConsultStore:
 
         def work() -> dict[str, Spend]:
             rows = self._db.execute(
-                "SELECT COALESCE(c.step_id, r.step_id) AS step_id, COUNT(*) AS turns, "
+                # The step is read from whichever relationship put this row in *this*
+                # workflow. `COALESCE(c.step_id, r.step_id)` would prefer a non-null
+                # direct step even on a row that only qualified through its review,
+                # keying another workflow's step into this one's rollup.
+                "SELECT CASE WHEN c.workflow_id = :workflow_id "
+                "THEN COALESCE(c.step_id, r.step_id) ELSE COALESCE(r.step_id, c.step_id) END "
+                "AS step_id, COUNT(*) AS turns, "
                 "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
@@ -818,9 +824,18 @@ class ConsultStore:
                 # workflow's reviews, because `review_consultations.consultation_id`
                 # carries no uniqueness constraint: an unconstrained `LIMIT 1` would
                 # pick some other workflow's review and drop the turn from both.
+                #
+                # `ORDER BY rc.rowid` for the residue that narrowing leaves. A
+                # consultation is created and linked to exactly one `(review_id,
+                # agent_id)` row, so two reviews in one workflow cannot claim it
+                # today -- but nothing in the schema says so, and if that ever
+                # changed an unordered `LIMIT 1` would move a step's spend between
+                # two refreshes of the same page. Deterministically wrong is a bug
+                # somebody can see; intermittently wrong is one nobody can.
                 "LEFT JOIN reviews r ON r.id = (SELECT rc.review_id FROM review_consultations rc "
                 "JOIN reviews r2 ON r2.id = rc.review_id "
-                "WHERE rc.consultation_id = c.id AND r2.workflow_id = :workflow_id LIMIT 1) "
+                "WHERE rc.consultation_id = c.id AND r2.workflow_id = :workflow_id "
+                "ORDER BY rc.rowid LIMIT 1) "
                 "WHERE c.workflow_id = :workflow_id OR r.workflow_id = :workflow_id "
                 "GROUP BY 1",
                 {"workflow_id": workflow_id},

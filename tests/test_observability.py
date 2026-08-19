@@ -8,7 +8,9 @@ output, it is a corrupt protocol frame and a dead session.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
+import sys
 
 import pytest
 
@@ -211,3 +213,176 @@ async def test_the_context_parameter_is_not_advertised(host_claude):
     ):
         assert "ctx" not in by_name[name].input_schema.get("properties", {}), name
         assert "ctx" not in (by_name[name].input_schema.get("required") or []), name
+
+
+# --- what the second review found -------------------------------------------
+
+
+def test_a_credential_in_a_traceback_is_masked(fresh_logger, capsys, monkeypatch):
+    """The escape a `logging.Filter` cannot close.
+
+    A filter only ever sees `record.msg`. `Formatter.format` appends `exc_text`
+    afterwards, so one `exc_info=True` on an error whose traceback quotes a token
+    walks straight past a filter that already approved the message."""
+    monkeypatch.setenv(logmod.LEVEL_ENV, "DEBUG")
+    logmod.configure()
+    try:
+        raise AdapterError(ConsultErrorCode.TRANSPORT_ERROR, f"--token {SECRET}")
+    except AdapterError:
+        logmod.get_logger("orchestrator_mcp.probe").warning("child died", exc_info=True)
+
+    err = capsys.readouterr().err
+    assert "Traceback" in err
+    assert SECRET not in err
+
+
+def test_a_stdout_handler_on_the_package_logger_is_dropped(fresh_logger, capsys, monkeypatch):
+    """`propagate = False` stops the root logger and nothing attached directly here.
+
+    An embedder that configured `orchestrator_mcp` itself keeps its handler, and if
+    that handler's stream is stdout every line it writes is framed as an MCP message.
+    Removing it is rude; it is also the only outcome where the server still works."""
+    monkeypatch.setenv(logmod.LEVEL_ENV, "DEBUG")
+    fresh_logger.addHandler(logging.StreamHandler(sys.stdout))
+    logmod.configure()
+    logmod.get_logger("orchestrator_mcp.probe").warning("a visible line")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "a visible line" in captured.err
+
+
+def test_a_handler_pointed_somewhere_else_is_left_alone(fresh_logger):
+    """Only stdout, and only by identity. A file or a socket is somebody's choice."""
+    theirs = logging.StreamHandler(io.StringIO())
+    fresh_logger.addHandler(theirs)
+    logmod.configure()
+
+    assert theirs in fresh_logger.handlers
+
+
+def test_the_record_is_left_intact_for_other_handlers(fresh_logger, monkeypatch):
+    """Redaction formats, it does not rewrite.
+
+    The old filter set `record.msg` and cleared `record.args` on an object shared
+    with every other handler on the logger, so what a second sink wrote depended on
+    handler order. Our own sink is what this module guarantees."""
+    monkeypatch.setenv(logmod.LEVEL_ENV, "DEBUG")
+    logmod.configure()
+    seen: list[logging.LogRecord] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            seen.append(record)
+
+    fresh_logger.addHandler(Capture())
+    logmod.get_logger("orchestrator_mcp.probe").warning("pid=%d rc=%d", 4321, 0)
+
+    assert seen[0].args == (4321, 0)
+
+
+async def test_a_sink_that_never_answers_does_not_stall_the_run(monkeypatch):
+    """Suppressing exceptions was not enough: a `report_progress` that never returns
+    is not a failure, it is a hang -- and the start notification is awaited *before*
+    the body runs."""
+    monkeypatch.setattr(progress, "EMIT_TIMEOUT_S", 0.05)
+    ran = False
+
+    class Wedged:
+        async def report_progress(self, progress_, total=None, message=None):
+            await asyncio.sleep(3600)
+
+    async with progress.reporting(Wedged(), "consulting"):
+        ran = True
+
+    assert ran
+
+
+# --- what the third review found --------------------------------------------
+
+
+def test_the_context_parameter_is_still_injectable():
+    """The other half of the schema test, and the half that fails silently.
+
+    `_tool_signature` annotates `ctx` as `Context | None` rather than `Context`, and
+    the SDK decides both injection *and* schema exclusion from that annotation. A
+    widening it did not recognise would keep every schema assertion green while no
+    tool ever received a context again -- so this asserts against the SDK's own
+    predicate. If that private helper is renamed, this failing is the point: the
+    contract it stands for is the thing worth knowing about."""
+    from mcp.server.mcpserver.resolve import _is_context_annotation
+
+    from orchestrator_mcp.consult.contract import ConsultRequest, ConsultResponse
+    from orchestrator_mcp.server import _tool_signature
+
+    ctx = _tool_signature(ConsultRequest, ConsultResponse, context=True).parameters["ctx"]
+
+    assert _is_context_annotation(ctx.annotation)
+    assert ctx.default is None
+
+
+def test_a_stdout_handler_on_a_child_logger_is_dropped(fresh_logger, capsys, monkeypatch):
+    """A child's handlers run before the record ever reaches the package logger.
+
+    Checking only `orchestrator_mcp` leaves the one sink that gets first look at
+    every record from `orchestrator_mcp.consult`."""
+    child = logging.getLogger("orchestrator_mcp.consult")
+    kept = child.handlers[:]
+    child.handlers.clear()
+    monkeypatch.setenv(logmod.LEVEL_ENV, "DEBUG")
+    child.addHandler(logging.StreamHandler(sys.stdout))
+    try:
+        logmod.configure()
+        child.warning("a visible line")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "a visible line" in captured.err
+    finally:
+        child.handlers[:] = kept
+
+
+def test_a_handler_holding_the_real_stdout_is_dropped(fresh_logger, monkeypatch):
+    """Identity against `sys.stdout` alone misses the interesting cases.
+
+    A handler built from `sys.__stdout__`, or a file opened on `/dev/stdout`, holds
+    a different object and the same descriptor -- and the descriptor is what the
+    MCP peer is reading."""
+    monkeypatch.setenv(logmod.LEVEL_ENV, "DEBUG")
+    theirs = logging.StreamHandler(sys.__stdout__)
+    fresh_logger.addHandler(theirs)
+    logmod.configure()
+
+    assert theirs not in fresh_logger.handlers
+
+
+async def test_an_outer_cancellation_is_not_swallowed_by_the_emit_timeout(monkeypatch):
+    """`asyncio.timeout` cancels the current task to fire, which is the same
+    mechanism an outer cancellation uses. The final emission runs in a `finally`,
+    so the two meet there -- and a `TimeoutError` claimed from somebody else's
+    cancel would leave a cancelled tool call running.
+
+    The bound is what makes this terminate at all: teardown waits out
+    `EMIT_TIMEOUT_S` against a sink that will not answer, and only then does the
+    cancellation resume. Real value, real wait."""
+    monkeypatch.setattr(progress, "EMIT_TIMEOUT_S", 0.05)
+
+    class WedgesOnTheWayOut:
+        """Answers the start notification, hangs on the one in the `finally`."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def report_progress(self, progress_, total=None, message=None):
+            self.calls += 1
+            if self.calls > 1:
+                await asyncio.sleep(3600)
+
+    async def body():
+        async with progress.reporting(WedgesOnTheWayOut(), "consulting"):
+            await asyncio.sleep(3600)
+
+    task = asyncio.create_task(body())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

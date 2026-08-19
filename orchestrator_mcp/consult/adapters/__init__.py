@@ -30,7 +30,10 @@ def adapter_for(agent: AgentConfig, config: ConsultConfig) -> ConsultAdapter:
     # One agent's own limit where it has one. Adapters take their timeout at
     # construction and this is the only place they are constructed, so nothing below
     # here has to know the value can differ per agent.
-    timeout_s = agent.timeout_s or config.timeout_s
+    # `is not None` rather than truthiness: `0` falling back to the global would be
+    # a silent override of an explicit setting, and this must not depend on
+    # `AgentConfig.timeout_s` keeping its `ge=1`.
+    timeout_s = agent.timeout_s if agent.timeout_s is not None else config.timeout_s
     if agent.runtime == "claude":
         return ClaudeCliAdapter(timeout_s, config.web_turn_limit)
     if agent.runtime == "codex":

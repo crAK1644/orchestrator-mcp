@@ -121,7 +121,16 @@ def _tool_signature(
     ]
     if context:
         parameters.append(
-            inspect.Parameter("ctx", inspect.Parameter.KEYWORD_ONLY, annotation=Context)
+            # Optional, matching the three hand-written tools: the SDK injects it,
+            # but a direct call or a test invoking the function must not fail on a
+            # missing keyword argument for something the body already treats as
+            # absent-able.
+            inspect.Parameter(
+                "ctx",
+                inspect.Parameter.KEYWORD_ONLY,
+                default=None,
+                annotation=Context | None,
+            )
         )
     return inspect.Signature(parameters, return_annotation=return_annotation)
 
@@ -197,7 +206,12 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         # a server whose consult path is configured but never called should not create
         # a database for it, and an open that fails is an envelope like any other.
         ctx = kwargs.pop("ctx", None)
-        async with reporting(ctx, "consulting", service.config.timeout_s):
+        # No total. `consult.timeout_s` is the *default* deadline, and since agents
+        # may carry their own `timeout_s` the one this turn will actually be killed
+        # at is not known until routing has picked an agent, several frames below
+        # here. Elapsed with no total still separates "working" from "wedged"; a bar
+        # drawn against the wrong ceiling fills and then keeps going, which is worse.
+        async with reporting(ctx, "consulting"):
             return await service.consult(**kwargs)
 
     consult.__name__ = "consult"
@@ -377,7 +391,9 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         `orchestrator_finalize_review`. A reviewer that failed leaves the others' answers intact --
         `orchestrator_retry_review` re-runs only the failures.
         """
-        async with reporting(ctx, "review", service.config.timeout_s):
+        # No total: reviewers run in parallel and each may carry its own
+        # `timeout_s`, so there is no single deadline this fan-out runs under.
+        async with reporting(ctx, "review"):
             return await service.run(
                 review_id,
                 confirm_token,
@@ -400,7 +416,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         goal and context in `raw` again. Its hash is checked against the original
         plan so a retry cannot silently send the
         stored redacted copy as though it were the same payload."""
-        async with reporting(ctx, "retrying review", service.config.timeout_s):
+        # No total, for the same reason as `orchestrator_review_run`.
+        async with reporting(ctx, "retrying review"):
             return await service.retry(
                 review_id, agent_ids, raw.model_dump(mode="json") if raw else None
             )

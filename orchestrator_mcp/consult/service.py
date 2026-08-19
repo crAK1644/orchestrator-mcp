@@ -50,6 +50,17 @@ from ..log import get_logger
 log = get_logger(__name__)
 
 
+# What decides whether a preflight answer still applies: the agent, the CLI it
+# shells out to, the model it asks for, and the runtime that owns the adapter doing
+# the asking. Two configs alike in the first three and different in the fourth are
+# probed by different code and must not share an answer.
+_StatusKey = tuple[str, str, str, str]
+
+
+def _status_key(agent: AgentConfig) -> _StatusKey:
+    return (agent.agent_id, agent.runtime, agent.command, agent.model)
+
+
 class ConsultService:
     def __init__(
         self,
@@ -77,7 +88,7 @@ class ConsultService:
         # two. Keyed on what actually decides the answer, so editing an agent's
         # command or model in the dashboard cannot be answered from the old one's
         # entry.
-        self._ready_until: dict[tuple[str, str, str], tuple[float, AgentStatus]] = {}
+        self._ready_until: dict[_StatusKey, tuple[float, AgentStatus]] = {}
 
     async def open(self) -> ConsultService:
         await self.store.open()
@@ -90,7 +101,11 @@ class ConsultService:
         return adapter_for(agent, self.config)
 
     def _lease_ttl(self, agent: AgentConfig | None = None) -> float:
-        timeout_s = (agent.timeout_s if agent else None) or self.config.timeout_s
+        # `is not None`, not truthiness: `0` is out of range today only because
+        # `AgentConfig.timeout_s` is `ge=1`, and a bound that depends on a validator
+        # two files away is a bound that breaks when the validator moves.
+        own = agent.timeout_s if agent is not None else None
+        timeout_s = own if own is not None else self.config.timeout_s
         return timeout_s + PREFLIGHT_TIMEOUT_S + GRACE_S + 30.0
 
     # --- consultation -------------------------------------------------------
@@ -635,7 +650,7 @@ class ConsultService:
         not be answered from a stale "not authenticated" -- which would make the
         cache the reason the agent stays unusable.
         """
-        key = (agent.agent_id, agent.command, agent.model)
+        key = _status_key(agent)
         if cached and (hit := self._ready_until.get(key)) is not None:
             expires_at, status = hit
             if expires_at > time.monotonic():
@@ -659,6 +674,12 @@ class ConsultService:
                 time.monotonic() + self.config.preflight_ttl_s,
                 status,
             )
+        else:
+            # A real probe that came back not-ready is newer evidence than whatever
+            # is cached, and the uncached path is the one the dashboard takes. Without
+            # this a `list_agents(check=True)` could observe an agent logged out and
+            # the very next turn would still be answered `ready` from before it.
+            self._ready_until.pop(key, None)
         return status
 
     def _forget_status(self, agent: AgentConfig) -> None:
@@ -667,7 +688,7 @@ class ConsultService:
         A CLI can be logged out between the probe and the run, and without this the
         cache would keep answering `ready` for the rest of its TTL while every turn
         failed for the reason it is holding stale."""
-        self._ready_until.pop((agent.agent_id, agent.command, agent.model), None)
+        self._ready_until.pop(_status_key(agent), None)
 
     # --- read-only surfaces -------------------------------------------------
 

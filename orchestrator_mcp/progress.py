@@ -37,6 +37,13 @@ log = get_logger(__name__)
 # an hour of waiting is a hundred-odd notifications rather than thousands.
 HEARTBEAT_INTERVAL_S = 15.0
 
+# How long one notification gets to be delivered. Failures were already suppressed,
+# but a `report_progress` that never returns is not a failure -- it is a hang, and
+# the start notification is awaited *before* the body runs. Without this bound a
+# backpressured client could stop a consultation from ever starting, which is the
+# one thing this module promises never to do.
+EMIT_TIMEOUT_S = 5.0
+
 
 class ProgressSink(Protocol):
     """The one method this module needs from `mcp.server.mcpserver.Context`."""
@@ -71,10 +78,13 @@ async def reporting(
 ) -> AsyncIterator[None]:
     """Install `ctx` as the progress sink and heartbeat while the body runs.
 
-    `timeout_s` becomes the `total`, so a client rendering a bar is drawing elapsed
-    against the deadline the run will actually be killed at rather than against a
-    guess. Without one the notifications carry elapsed seconds and no total, which
-    is still the difference between "working" and "wedged".
+    `timeout_s` becomes the `total`, and belongs here only when the caller knows the
+    deadline this run will *actually* be killed at. No tool passes one today: a
+    per-agent `timeout_s` means the consult deadline is unknown until routing picks
+    an agent, and a review fan-out has one deadline per reviewer rather than one for
+    the call. Without a total the notifications carry elapsed seconds alone, which is
+    still the difference between "working" and "wedged" -- and better than a bar that
+    fills at a ceiling the run is not held to.
     """
     if ctx is None or not hasattr(ctx, "report_progress"):
         # A direct call, or a test harness that passed no context. The body still
@@ -111,7 +121,8 @@ async def _emit(
     sink: ProgressSink, progress: float, total: float | None, message: str | None
 ) -> None:
     try:
-        await sink.report_progress(progress, total, message)
+        async with asyncio.timeout(EMIT_TIMEOUT_S):
+            await sink.report_progress(progress, total, message)
     except asyncio.CancelledError:
         raise
     except Exception as exc:

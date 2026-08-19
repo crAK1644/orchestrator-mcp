@@ -482,3 +482,38 @@ async def test_editing_an_agent_invalidates_its_entry(service_factory):
     await service.consult(capability="coding", prompt="q2")
 
     assert adapter.preflights == 2
+
+
+async def test_a_probe_that_comes_back_not_ready_evicts_the_cached_ready(service_factory):
+    """A real probe is newer evidence than whatever is cached.
+
+    `list_agents(check=True)` takes the uncached path, so it can observe an agent
+    logged out while a `ready` from before the logout is still inside its TTL. The
+    turn after that must not be answered from the stale entry."""
+    adapter = StubAdapter()
+    service = await service_factory(adapter)
+    await service.consult(capability="coding", prompt="q1")
+    assert adapter.preflights == 1
+
+    adapter._status = AgentStatus(
+        "codex-sol", installed=True, authenticated=False, detail="log in"
+    )
+    await service.list_agents(check=True)
+
+    answer = await service.consult(capability="coding", prompt="q2")
+    assert answer.error.code is ConsultErrorCode.CONNECTION_REQUIRED
+    # Three: the first turn, the listing, and the turn that had to re-probe rather
+    # than read the entry the listing disproved.
+    assert adapter.preflights == 3
+
+
+async def test_repointing_an_agent_at_another_runtime_invalidates_its_entry(service_factory):
+    """Runtime decides which adapter does the probing, so it decides the answer."""
+    adapter = StubAdapter()
+    service = await service_factory(adapter)
+    await service.consult(capability="coding", prompt="q1")
+
+    service.config.agents["codex-sol"].runtime = "opencode"
+    await service.consult(capability="coding", prompt="q2")
+
+    assert adapter.preflights == 2
