@@ -34,7 +34,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib.metadata import PackageNotFoundError, version as _distribution_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _distribution_version
 from pathlib import Path
 from typing import Any, get_args
 from urllib.parse import parse_qs, unquote, urlparse

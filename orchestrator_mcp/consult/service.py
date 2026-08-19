@@ -23,6 +23,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json
+from ..log import get_logger
 from ..workflow.contract import StepSnapshot
 from ..workflow.identity import host_identity_conflict
 from .adapters import AdapterError, adapter_for
@@ -43,9 +44,13 @@ from .contract import (
 )
 from .errors import ConsultErrorCode
 from .prompts import compile_prompt
-from .routing import ConsultRouter, RoutingDecision, SourceModeError, resolve_source_mode
+from .routing import (
+    ConsultRouter,
+    RoutingDecision,
+    SourceModeError,
+    resolve_source_mode,
+)
 from .store import ConsultStore, StoreError
-from ..log import get_logger
 
 log = get_logger(__name__)
 

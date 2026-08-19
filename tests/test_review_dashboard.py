@@ -35,7 +35,7 @@ SUMMARY = {
 
 
 @pytest.fixture
-def review_config(config, host_claude):  # noqa: F811 -- the imported fixture
+def review_config(config, host_claude):
     """The dashboard's config, with reviewers configured.
 
     Agents on `codex` and `antigravity` because the host runtime is `claude` here and
@@ -120,7 +120,7 @@ def old_database(path) -> None:
 # --- an un-migrated database ------------------------------------------------
 
 
-async def test_the_reviews_page_asks_for_a_restart_rather_than_raising(serve, review_config):  # noqa: F811
+async def test_the_reviews_page_asks_for_a_restart_rather_than_raising(serve, review_config):
     """The read-only connection cannot create the table, so the page has to say so."""
     consult_config = review_config()
     old_database(consult_config.database_path)
@@ -134,7 +134,7 @@ async def test_the_reviews_page_asks_for_a_restart_rather_than_raising(serve, re
 
 
 async def test_a_review_page_on_an_un_migrated_database_is_a_sentence_not_a_500(
-    serve, review_config  # noqa: F811
+    serve, review_config
 ):
     consult_config = review_config()
     old_database(consult_config.database_path)
@@ -146,7 +146,7 @@ async def test_a_review_page_on_an_un_migrated_database_is_a_sentence_not_a_500(
     assert "restart the MCP server" in body
 
 
-async def test_the_index_carries_the_notice_when_reviews_are_configured(serve, review_config):  # noqa: F811
+async def test_the_index_carries_the_notice_when_reviews_are_configured(serve, review_config):
     consult_config = review_config()
     old_database(consult_config.database_path)
     get, _ = serve(consult_config)
@@ -157,7 +157,7 @@ async def test_the_index_carries_the_notice_when_reviews_are_configured(serve, r
     assert "restart the MCP server" in body
 
 
-async def test_a_database_that_does_not_exist_yet_is_not_a_restart(serve, review_config):  # noqa: F811
+async def test_a_database_that_does_not_exist_yet_is_not_a_restart(serve, review_config):
     """Nothing has been consulted here at all, and no restart would conjure a review
     into a file that does not exist."""
     get, _ = serve(review_config())
@@ -169,7 +169,7 @@ async def test_a_database_that_does_not_exist_yet_is_not_a_restart(serve, review
     assert "restart" not in body
 
 
-async def test_an_install_that_does_not_review_gets_no_reviews_section(serve):  # noqa: F811
+async def test_an_install_that_does_not_review_gets_no_reviews_section(serve):
     """No `review:` block and no history: the index does not advertise a feature
     nobody configured."""
     get, _ = serve()
@@ -182,7 +182,7 @@ async def test_an_install_that_does_not_review_gets_no_reviews_section(serve):  
 # --- history and detail -----------------------------------------------------
 
 
-async def test_a_review_appears_in_the_list_with_its_mode_and_outcome(serve, review_config):  # noqa: F811
+async def test_a_review_appears_in_the_list_with_its_mode_and_outcome(serve, review_config):
     get, consult_config = serve(review_config())
     review_id = await make_review(consult_config)
 
@@ -195,7 +195,7 @@ async def test_a_review_appears_in_the_list_with_its_mode_and_outcome(serve, rev
 
 
 async def test_the_index_groups_a_reviewers_consultations_under_its_review(
-    serve, review_config  # noqa: F811
+    serve, review_config
 ):
     """Three deep-review calls are evidence for one review, not three competing events."""
     get, consult_config = serve(review_config())
@@ -216,7 +216,7 @@ async def test_the_index_groups_a_reviewers_consultations_under_its_review(
     assert body.index("<h2>Reviews</h2>") < body.index("<h2>Other consultations</h2>")
 
 
-async def test_the_monitor_strip_counts_the_reviews_that_have_not_finished(serve, review_config):  # noqa: F811
+async def test_the_monitor_strip_counts_the_reviews_that_have_not_finished(serve, review_config):
     """The one lifecycle on this page that is real: an unfinalized review is open, a
     finalized one is not, so the tile counts something other than the row total."""
     get, consult_config = serve(review_config())
@@ -233,7 +233,7 @@ async def test_the_monitor_strip_counts_the_reviews_that_have_not_finished(serve
     assert "All reviews" in body
 
 
-async def test_the_detail_page_shows_every_reviewer_and_its_findings(serve, review_config):  # noqa: F811
+async def test_the_detail_page_shows_every_reviewer_and_its_findings(serve, review_config):
     get, consult_config = serve(review_config())
     review_id = await make_review(consult_config)
 
@@ -255,7 +255,7 @@ async def test_the_detail_page_shows_every_reviewer_and_its_findings(serve, revi
     assert body.index("Recommendation.") < body.index("The parser reads an unbounded file.")
 
 
-async def test_the_detail_page_says_a_synthesis_is_still_missing(serve, review_config):  # noqa: F811
+async def test_the_detail_page_says_a_synthesis_is_still_missing(serve, review_config):
     """Reviewers replying is not a finished review, and the page says which it is."""
     get, consult_config = serve(review_config())
     review_id = await make_review(consult_config, finalize=False)
@@ -266,7 +266,7 @@ async def test_the_detail_page_says_a_synthesis_is_still_missing(serve, review_c
     assert "finalize_review" in body
 
 
-async def test_a_reviewer_that_answered_prose_still_renders(serve, review_config):  # noqa: F811
+async def test_a_reviewer_that_answered_prose_still_renders(serve, review_config):
     """`findings_parsed=False` is a usable review, not a broken page."""
     get, consult_config = serve(review_config())
     review_id = await make_review(
@@ -282,7 +282,7 @@ async def test_a_reviewer_that_answered_prose_still_renders(serve, review_config
 # --- the credential ---------------------------------------------------------
 
 
-async def test_the_detail_page_shows_the_fix_rounds_as_claims(serve, review_config):  # noqa: F811
+async def test_the_detail_page_shows_the_fix_rounds_as_claims(serve, review_config):
     """Nothing in this server edits a file, so a table of outcomes must not read
     like a record of work this machine watched happen."""
     get, consult_config = serve(review_config())
@@ -294,7 +294,7 @@ async def test_the_detail_page_shows_the_fix_rounds_as_claims(serve, review_conf
     assert "claims about work done elsewhere" in body
 
 
-async def test_a_review_with_no_fix_rounds_has_no_fix_section(serve, review_config):  # noqa: F811
+async def test_a_review_with_no_fix_rounds_has_no_fix_section(serve, review_config):
     get, consult_config = serve(review_config())
     review_id = await make_review(consult_config)
 
@@ -312,7 +312,7 @@ def test_a_citation_is_rendered_by_the_name_the_contract_gives_it():
     assert "CVE-1" in rendered and "https://example.test/1" in rendered
 
 
-async def test_a_planted_credential_reaches_no_review_page(serve, review_config):  # noqa: F811
+async def test_a_planted_credential_reaches_no_review_page(serve, review_config):
     """What the store holds is the redacted copy, and the page can only show that."""
     get, consult_config = serve(review_config())
     review_id = await make_review(
@@ -344,7 +344,7 @@ def editable(review_config):
     return build
 
 
-async def test_the_reviewers_page_is_not_served_when_editing_is_off(serve, review_config):  # noqa: F811
+async def test_the_reviewers_page_is_not_served_when_editing_is_off(serve, review_config):
     get, _ = serve(review_config())
 
     status, body = get("/reviewers")
@@ -353,7 +353,7 @@ async def test_the_reviewers_page_is_not_served_when_editing_is_off(serve, revie
     assert "editable" in body
 
 
-async def test_the_form_comes_up_on_who_reviews_now(serve, editable):  # noqa: F811
+async def test_the_form_comes_up_on_who_reviews_now(serve, editable):
     get, _ = serve(editable())
 
     status, body = get("/reviewers")
@@ -366,7 +366,7 @@ async def test_the_form_comes_up_on_who_reviews_now(serve, editable):  # noqa: F
     assert "textarea name=roots" in body
 
 
-async def test_dashboard_can_save_review_material_roots(serve, editable, tmp_path):  # noqa: F811
+async def test_dashboard_can_save_review_material_roots(serve, editable, tmp_path):
     get, consult_config = serve(editable())
     first = tmp_path / "review material"
     second = tmp_path / "other"
@@ -386,7 +386,7 @@ async def test_dashboard_can_save_review_material_roots(serve, editable, tmp_pat
     assert review["roots"] == [str(first), str(second)]
 
 
-async def test_dashboard_refuses_a_relative_review_material_root(serve, editable):  # noqa: F811
+async def test_dashboard_refuses_a_relative_review_material_root(serve, editable):
     get, consult_config = serve(editable())
 
     status, body, _ = get.post(
@@ -404,7 +404,7 @@ async def test_dashboard_refuses_a_relative_review_material_root(serve, editable
     assert not consult_config.managed_agents_path.exists()
 
 
-async def test_saving_reviewers_keeps_the_agents_in_the_same_file(serve, editable):  # noqa: F811
+async def test_saving_reviewers_keeps_the_agents_in_the_same_file(serve, editable):
     """One file, two blocks, written together -- a reviewer save that dropped the
     agents would be a save that succeeded and lost."""
     get, consult_config = serve(editable())
@@ -427,7 +427,7 @@ async def test_saving_reviewers_keeps_the_agents_in_the_same_file(serve, editabl
     }
 
 
-async def test_saving_reviewers_preserves_managed_review_roots(serve, editable):  # noqa: F811
+async def test_saving_reviewers_preserves_managed_review_roots(serve, editable):
     get, consult_config = serve(editable())
     write_managed(
         consult_config.managed_agents_path,
@@ -452,7 +452,7 @@ async def test_saving_reviewers_preserves_managed_review_roots(serve, editable):
     }
 
 
-async def test_saving_an_agent_keeps_the_reviewers(serve, editable):  # noqa: F811
+async def test_saving_an_agent_keeps_the_reviewers(serve, editable):
     get, consult_config = serve(editable())
     write_managed(
         consult_config.managed_agents_path,
@@ -474,7 +474,7 @@ async def test_saving_an_agent_keeps_the_reviewers(serve, editable):  # noqa: F8
 
 
 async def test_an_agent_save_refuses_a_hand_edited_invalid_review_block(
-    serve, editable  # noqa: F811
+    serve, editable
 ):
     get, consult_config = serve(editable())
     # Two standard reviewers: something only a hand-edit produces, and something the
@@ -492,7 +492,7 @@ async def test_an_agent_save_refuses_a_hand_edited_invalid_review_block(
 
 
 async def test_more_than_one_standard_reviewer_is_refused_by_the_same_rule_boot_uses(
-    serve, editable  # noqa: F811
+    serve, editable
 ):
     """A second opinion nobody compared is a slower first one; `deep_reviewers` is
     the list for asking several."""
@@ -506,7 +506,7 @@ async def test_more_than_one_standard_reviewer_is_refused_by_the_same_rule_boot_
 
 
 @pytest.fixture
-def unconfigured(config):  # noqa: F811
+def unconfigured(config):
     """Editable, with no `review:` block yet -- the state the form exists to leave.
 
     Not built through `review_config`, because these agents are exactly the ones a
@@ -521,7 +521,7 @@ def unconfigured(config):  # noqa: F811
     return build
 
 
-async def test_an_agent_that_is_not_offered_review_work_cannot_be_named(serve, unconfigured):  # noqa: F811
+async def test_an_agent_that_is_not_offered_review_work_cannot_be_named(serve, unconfigured):
     agents = {
         "codex-sol": agent("codex", "gpt-5.6-sol", 10, scores={"coding": 90}),
         "gemini-x": agent("antigravity", "gemini-3.6", 20),
@@ -536,7 +536,7 @@ async def test_an_agent_that_is_not_offered_review_work_cannot_be_named(serve, u
     assert "not offered `review` work" in body
 
 
-async def test_a_disabled_agent_cannot_be_named(serve, unconfigured):  # noqa: F811
+async def test_a_disabled_agent_cannot_be_named(serve, unconfigured):
     agents = {
         "codex-sol": agent("codex", "gpt-5.6-sol", 10),
         "gemini-x": agent("antigravity", "gemini-3.6", 20, enabled=False),
@@ -553,7 +553,7 @@ async def test_a_disabled_agent_cannot_be_named(serve, unconfigured):  # noqa: F
 
 
 async def test_reviewers_written_in_the_operators_own_file_are_shown_not_edited(
-    tmp_path, serve, editable  # noqa: F811
+    tmp_path, serve, editable
 ):
     """`review:` in both files is a startup error, not a merge -- so this page has to
     refuse rather than write a file the next boot rejects."""

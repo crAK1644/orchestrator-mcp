@@ -12,7 +12,14 @@ import os
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from ..code.registry import runtime_capabilities, unsupported_reason
 from ..contract import MAX_REVIEWERS, ConfigError

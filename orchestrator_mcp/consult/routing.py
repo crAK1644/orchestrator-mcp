@@ -15,10 +15,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ..log import get_logger
 from .config import AgentConfig, ConsultConfig
 from .contract import ConsultRoute, SourceMode
 from .errors import ConsultErrorCode
-from ..log import get_logger
 
 log = get_logger(__name__)
 

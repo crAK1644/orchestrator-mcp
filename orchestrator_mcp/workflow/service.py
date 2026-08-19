@@ -45,15 +45,17 @@ from ..code.service import (
     sweep_recovery_artifacts,
     worktree_path,
 )
-from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
-from ..spend import Spend, refusal as spend_refusal
 from ..consult.config import ConsultConfig, ReviewPolicy, StepBinding, WorkflowConfig
 from ..consult.contract import ConsultError, Runtime
 from ..consult.errors import ConsultErrorCode
 from ..consult.prompts import compile_execution_prompt
 from ..consult.store import ConsultStore, StoreError
+from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
+from ..log import get_logger
 from ..review.contract import SERIOUS, ReviewSummary, open_serious
 from ..review.service import ReviewService
+from ..spend import Spend
+from ..spend import refusal as spend_refusal
 from .contract import (
     ARTIFACT_MODELS,
     HOST_REVIEW_REFUSAL,
@@ -83,7 +85,6 @@ from .store import (
     canonical,
 )
 from .store import _sha256 as _text_sha256
-from ..log import get_logger
 
 log = get_logger(__name__)
 

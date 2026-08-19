@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from ..config import AgentConfig, ConsultConfig
+from ..errors import ConsultErrorCode
 from .antigravity_cli import AntigravityCliAdapter
 from .base import AdapterError, AdapterResult, AgentStatus, ConsultAdapter
 from .claude_cli import ClaudeCliAdapter
 from .codex_cli import CodexCliAdapter
 from .opencode_cli import OpenCodeCliAdapter
-from ..errors import ConsultErrorCode
 
 __all__ = [
     "AdapterError",

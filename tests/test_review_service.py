@@ -15,15 +15,32 @@ import uuid
 
 import pytest
 
-from orchestrator_mcp.consult.adapters.base import AdapterError, AdapterResult, AgentStatus
+from orchestrator_mcp.consult.adapters.base import (
+    AdapterError,
+    AdapterResult,
+    AgentStatus,
+)
 from orchestrator_mcp.consult.config import ConsultConfig
-from orchestrator_mcp.consult.contract import ConsultationContent, ConsultSource, SourceMode
+from orchestrator_mcp.consult.contract import (
+    ConsultationContent,
+    ConsultSource,
+    SourceMode,
+)
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.store import ConsultStore
 from orchestrator_mcp.contract import Usage
-from orchestrator_mcp.review.contract import MAX_GOAL_CHARS, MAX_REVIEWERS, ReviewerResult
 from orchestrator_mcp.review import service as review_service
-from orchestrator_mcp.review.service import ReviewService, _candidates, _parse_findings, _total
+from orchestrator_mcp.review.contract import (
+    MAX_GOAL_CHARS,
+    MAX_REVIEWERS,
+    ReviewerResult,
+)
+from orchestrator_mcp.review.service import (
+    ReviewService,
+    _candidates,
+    _parse_findings,
+    _total,
+)
 
 from .conftest import agent
 

@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from orchestrator_mcp.code.service import patch_path
 from orchestrator_mcp.code.registry import CodeError
+from orchestrator_mcp.code.service import patch_path
 from orchestrator_mcp.consult.adapters.base import AdapterResult, AgentStatus
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import ConsultationContent, Usage

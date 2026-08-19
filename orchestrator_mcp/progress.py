@@ -30,7 +30,6 @@ from typing import Any, Protocol
 
 from .log import get_logger
 
-
 log = get_logger(__name__)
 
 # Often enough that a watching agent sees the run is alive, rare enough that half

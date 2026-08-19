@@ -25,9 +25,6 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 
 from .commands import add_commands
-from .contract import ConfigError
-from .log import configure as configure_logging
-from .progress import reporting
 from .consult.config import StepBinding, host_runtime, load_consult_config
 from .consult.contract import (
     ConsultAgentsResponse,
@@ -39,6 +36,9 @@ from .consult.contract import (
 from .consult.service import ConsultService
 from .consult.store import DELETE_CONFIRM_TTL_S as CONSULT_DELETE_CONFIRM_TTL_S
 from .consult.store import ConsultStore
+from .contract import ConfigError
+from .log import configure as configure_logging
+from .progress import reporting
 from .review.contract import (
     CombinedFinding,
     DeleteApproval,
@@ -49,7 +49,6 @@ from .review.contract import (
     ReviewListing,
     ReviewMode,
     ReviewResponse,
-    ReviewSummary,
 )
 from .review.service import ReviewService
 from .review.store import DELETE_CONFIRM_TTL_S

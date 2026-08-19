@@ -22,7 +22,6 @@ from orchestrator_mcp.server import build_server
 
 from .conftest import consult_block
 
-
 SECRET = "sk-ant-api03-0123456789abcdefghijklmnopqrstuvwxyz"  # noqa: S105 - shaped, not real
 
 

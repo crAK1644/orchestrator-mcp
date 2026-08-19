@@ -12,7 +12,6 @@ import re
 from collections import deque
 from collections.abc import Iterator
 
-
 MAX_JSON_CANDIDATES = 64
 
 _FENCE_LINE = re.compile(r"(?m)^[ \t]*```(?P<info>[^`\r\n]*)[ \t]*\r?$")

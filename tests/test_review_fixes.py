@@ -10,12 +10,16 @@ from one anywhere else in the review path.
 
 from __future__ import annotations
 
-import pytest
-
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.review.contract import MAX_FIX_ROUNDS
 
-from .test_review_service import FINDINGS, REVIEWERS, StubAdapter, build, planned  # noqa: F401
+from .test_review_service import (  # noqa: F401
+    FINDINGS,
+    REVIEWERS,
+    StubAdapter,
+    build,
+    planned,
+)
 
 SECRET = "sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH"
 

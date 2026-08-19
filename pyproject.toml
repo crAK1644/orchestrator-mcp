@@ -35,7 +35,11 @@ orchestrator-mcp-server = "orchestrator_mcp.server:main"
 orchestrator-mcp-dashboard = "orchestrator_mcp.consult.dashboard:main"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.16.3",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -46,3 +50,27 @@ packages = ["orchestrator_mcp"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.ruff]
+# Only what this repo installs and runs. `.venv` is excluded by ruff already.
+target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly rather than left to ruff's default, because that default has
+# widened across releases: the same `ruff check` that passed on one version fails
+# on the next over style rules nobody chose. This is the classic default -- the
+# pyflakes and pycodestyle-error rules that catch real mistakes -- plus import
+# sorting, which is mechanical and has an exact fix.
+#
+# Deliberately not selected: `S` fires on every subprocess launch, and launching
+# subprocesses is what this server is for; `ASYNC` objects to the same calls;
+# `BLE` objects to the broad `except Exception` at each service boundary, which is
+# how a crash becomes a structured error envelope instead of a dead session.
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# A pytest fixture requested by name shadows the module-level import of the same
+# name, which is the documented way to use one and reads to pyflakes as a
+# redefinition. Silencing it per-file beats a `noqa` on every test that takes a
+# fixture.
+"tests/*" = ["F811"]

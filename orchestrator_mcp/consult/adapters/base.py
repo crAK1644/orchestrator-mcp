@@ -33,12 +33,12 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
+from ...contract import Usage
+from ...log import get_logger
 from ..config import AgentConfig
 from ..contract import ConsultationContent, RequiredAction, SourceMode
 from ..errors import ConsultErrorCode
 from ..prompts import CompiledPrompt
-from ...contract import Usage
-from ...log import get_logger
 
 log = get_logger(__name__)
 

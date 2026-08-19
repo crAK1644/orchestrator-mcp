@@ -23,9 +23,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..contract import MAX_ERROR_CHARS, Usage
 from ..consult.contract import Capability, ConsultError, ExecutionMode, Runtime
 from ..consult.errors import ConsultErrorCode
+from ..contract import MAX_ERROR_CHARS, Usage
 
 
 class WorkflowError(Exception):

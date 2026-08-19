@@ -30,22 +30,25 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
-from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json, secret_lines
-from ..json_objects import fenced_json_objects, json_object_candidates
 from ..consult.config import ConsultConfig
 from ..consult.contract import (
+    MAX_CONTEXT_CHARS,
     ConsultAgentsResponse,
+    ConsultationContent,
     ConsultError,
     ConsultResponse,
     ConsultSource,
-    ConsultationContent,
     Runtime,
     SourceMode,
 )
 from ..consult.errors import ConsultErrorCode
 from ..consult.service import ConsultService
 from ..consult.store import ConsultStore, StoreError
-from ..consult.contract import MAX_CONTEXT_CHARS
+from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json, secret_lines
+from ..json_objects import fenced_json_objects, json_object_candidates
+from ..log import get_logger
+from ..progress import step as progress_step
+from ..spend import refusal as spend_refusal
 from ..workflow.identity import host_identity_conflict, same_execution_identity
 from .contract import (
     FIX_STEPS,
@@ -65,9 +68,9 @@ from .contract import (
     MaterialItem,
     Outcome,
     RawReviewMaterial,
-    ReviewListing,
     ReviewerResult,
     ReviewerSnapshot,
+    ReviewListing,
     ReviewMode,
     ReviewPlan,
     ReviewResponse,
@@ -77,9 +80,6 @@ from .contract import (
     missing_serious,
 )
 from .store import REVIEW_LEASE_SLACK_S, ReviewStore, _now, canonical, sha256
-from ..log import get_logger
-from ..progress import step as progress_step
-from ..spend import refusal as spend_refusal
 
 log = get_logger(__name__)
 

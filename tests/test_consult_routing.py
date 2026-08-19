@@ -7,7 +7,11 @@ import pytest
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import SourceMode
 from orchestrator_mcp.consult.errors import ConsultErrorCode
-from orchestrator_mcp.consult.routing import ConsultRouter, SourceModeError, resolve_source_mode
+from orchestrator_mcp.consult.routing import (
+    ConsultRouter,
+    SourceModeError,
+    resolve_source_mode,
+)
 
 from .conftest import agent, consult_block
 

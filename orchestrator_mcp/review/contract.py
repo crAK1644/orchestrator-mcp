@@ -26,9 +26,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..contract import MAX_REVIEWERS, Usage
 from ..consult.contract import MAX_CONTEXT_CHARS as CONSULT_MAX_CONTEXT_CHARS
 from ..consult.contract import ConsultError, ConsultSource, Runtime
+from ..contract import MAX_REVIEWERS, Usage
 
 ReviewMode = Literal["standard", "deep"]
 ReviewStatus = Literal[

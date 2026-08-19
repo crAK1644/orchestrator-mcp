@@ -26,7 +26,6 @@ import sys
 
 from .contract import redact
 
-
 ROOT = "orchestrator_mcp"
 LEVEL_ENV = "ORCHESTRATOR_LOG_LEVEL"
 DEFAULT_LEVEL = "WARNING"

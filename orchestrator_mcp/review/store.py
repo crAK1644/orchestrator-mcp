@@ -31,9 +31,9 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from ..contract import scrub_json
 from ..consult.errors import ConsultErrorCode
 from ..consult.store import ConsultStore, StoreError, _renewing_lease
+from ..contract import scrub_json
 
 # Long enough to outlive a whole reviewer batch. They run in parallel, so the bound
 # is the slowest one plus its preflight, not the sum of all of them.

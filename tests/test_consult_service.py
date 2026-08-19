@@ -13,7 +13,11 @@ from uuid import uuid4
 
 import pytest
 
-from orchestrator_mcp.consult.adapters.base import AdapterError, AdapterResult, AgentStatus
+from orchestrator_mcp.consult.adapters.base import (
+    AdapterError,
+    AdapterResult,
+    AgentStatus,
+)
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import ConsultationContent, SourceMode
 from orchestrator_mcp.consult.errors import ConsultErrorCode

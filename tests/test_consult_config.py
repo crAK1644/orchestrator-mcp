@@ -6,8 +6,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
-from orchestrator_mcp.contract import ConfigError
 from pydantic import ValidationError
 
 from orchestrator_mcp.consult.adapters import adapter_for
@@ -18,7 +16,11 @@ from orchestrator_mcp.consult.config import (
     host_runtime,
     load_consult_config,
 )
-from orchestrator_mcp.consult.contract import ConsultationContent, consultation_content_schema
+from orchestrator_mcp.consult.contract import (
+    ConsultationContent,
+    consultation_content_schema,
+)
+from orchestrator_mcp.contract import ConfigError
 from orchestrator_mcp.server import validate_config
 
 from .conftest import agent, consult_block
