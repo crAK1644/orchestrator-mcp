@@ -18,6 +18,9 @@ from dataclasses import dataclass, field
 from .config import AgentConfig, ConsultConfig
 from .contract import ConsultRoute, SourceMode
 from .errors import ConsultErrorCode
+from ..log import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,12 @@ class ConsultRouter:
 
         eligible = [a for a in agents.values() if not self._ineligible(a, capability)]
         if not eligible:
+            log.warning(
+                "no agent eligible for %s; %d excluded, host runtime %s",
+                capability,
+                len(excluded),
+                self.host_runtime,
+            )
             return RoutingDecision(
                 capability=capability,
                 excluded=excluded,
@@ -134,6 +143,18 @@ class ConsultRouter:
         excluded: list[ExcludedCandidate],
         explicit: bool,
     ) -> RoutingDecision:
+        # One line for the whole funnel: `_explicit` lands here too, so a routing
+        # decision is logged once regardless of how it was reached.
+        log.debug(
+            "routed %s to %s (%s/%s) score=%d %s, %d excluded",
+            capability,
+            agent.agent_id,
+            agent.runtime,
+            agent.model or "default",
+            agent.score_for(capability),
+            "explicit" if explicit else "by score",
+            len(excluded),
+        )
         return RoutingDecision(
             capability=capability,
             selected=agent,

@@ -38,9 +38,12 @@ from typing import Any, TypeVar
 from uuid import UUID
 
 from ..contract import Usage, scrub_json
+from ..log import get_logger
 from .contract import ConsultRoute, SourceMode
 from .errors import ConsultErrorCode
 from .routing import RoutingDecision
+
+log = get_logger(__name__)
 
 # Applied in order, by index. Append only -- an edit to a shipped migration is a
 # database that disagrees with itself depending on when it was created.
@@ -984,6 +987,7 @@ class ConsultStore:
         # release keyed on the process would delete a lease it does not own.
         token = f"pid-{os.getpid()}-{uuid.uuid4().hex[:12]}"
         await self._run(lambda: self._acquire(str(consultation_id), ttl_s, token))
+        log.debug("lease taken on %s ttl=%gs", consultation_id, ttl_s)
         async with _renewing_lease(
             self._run,
             lambda: self._renew(str(consultation_id), ttl_s, token),
@@ -1012,6 +1016,7 @@ class ConsultStore:
         db.execute("COMMIT")
 
         if not taken:
+            log.info("lease refused on %s: a turn is already in flight", consultation_id)
             raise StoreError(
                 ConsultErrorCode.SESSION_BUSY,
                 f"consultation `{consultation_id}` already has a turn in flight; "
@@ -1031,6 +1036,9 @@ class ConsultStore:
             (time.time() + ttl_s, consultation_id, token),
         )
         if cursor.rowcount != 1:
+            # The turn is about to be cancelled out from under itself, so this is the
+            # one lease event that is never routine.
+            log.warning("lease lost on %s while its turn was still running", consultation_id)
             raise StoreError(
                 ConsultErrorCode.SESSION_BUSY,
                 f"consultation `{consultation_id}` lost its execution lease while its turn "

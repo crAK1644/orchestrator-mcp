@@ -77,6 +77,10 @@ from .contract import (
     missing_serious,
 )
 from .store import REVIEW_LEASE_SLACK_S, ReviewStore, _now, canonical, sha256
+from ..log import get_logger
+from ..progress import step as progress_step
+
+log = get_logger(__name__)
 
 # Statuses a review may be retried from. `failed` is here on purpose: a review
 # where every reviewer was offline is exactly the one worth running again.
@@ -538,6 +542,10 @@ class ReviewService:
         """
         prompt = f"{goal}\n\n{REVIEWER_INSTRUCTIONS}"
         source_mode = SourceMode.WEB if review.web_requested else SourceMode.AUTO
+        # Counted here rather than from `done`, because the point of reporting it is to
+        # say so while the others are still running. Incremented with no await between
+        # the read and the write, so the tasks cannot interleave on it.
+        answered = 0
         ttl = self.config.timeout_s + REVIEW_LEASE_SLACK_S
 
         async def one(agent_id: str) -> ReviewerResult:
@@ -571,6 +579,13 @@ class ReviewService:
                 answer=result.answer,
                 error_code=result.error.code.value if result.error else None,
                 sources=[s.model_dump(mode="json") for s in result.sources] or None,
+            )
+            nonlocal answered
+            answered += 1
+            await progress_step(
+                f"{answered} of {len(agent_ids)} reviewers answered",
+                float(answered),
+                float(len(agent_ids)),
             )
             return result
 
@@ -617,6 +632,10 @@ class ReviewService:
                         raise ValueError(
                             f"review `{review.id}` was cancelled before its reviewers started"
                         )
+                    log.info("review %s: %d reviewers starting", review.id, len(agent_ids))
+                    await progress_step(
+                        f"asking {len(agent_ids)} reviewers", 0, float(len(agent_ids))
+                    )
                     tasks = [asyncio.create_task(one(agent_id)) for agent_id in agent_ids]
                     self._tasks[review_key] = tasks
                     try:
@@ -653,6 +672,12 @@ class ReviewService:
                         agent_id=agent_id,
                     ),
                 )
+        log.info(
+            "review %s: %d of %d reviewers answered",
+            review.id,
+            sum(1 for r in out.values() if r.ok),
+            len(agent_ids),
+        )
         return out
 
     async def _settle(

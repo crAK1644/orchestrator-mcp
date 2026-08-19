@@ -796,6 +796,29 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 | `host` | runtime from the environment | Asserted host runtime, and the host model that makes same-runtime routing possible. |
 | `dashboard` | off | Loopback history UI and optional agent editor. |
 
+### Watching a run
+
+`ORCHESTRATOR_LOG_LEVEL` turns on stderr logging: routing decisions, child
+processes started and exited, leases taken and lost, reviewer fan-out, and
+workflow step transitions. `WARNING` by default, so an ordinary server is quiet;
+`INFO` or `DEBUG` when you want to see what a slow run is doing.
+
+```bash
+ORCHESTRATOR_LOG_LEVEL=INFO
+```
+
+Records go to **stderr only**, never stdout — stdout is the MCP transport, and a
+log line there is a corrupt protocol frame. Credential-shaped text is masked in
+the rendered line before it is written, on the same best-effort basis as the
+database copy.
+
+The four tools that can run for minutes — `orchestrator_consult`,
+`orchestrator_review_run`, `orchestrator_retry_review` and
+`orchestrator_workflow_run_step` — also emit MCP progress notifications: a
+heartbeat every 15 seconds carrying elapsed time against the configured timeout,
+and reviewer counts as each one answers. Clients that ask for progress see them;
+clients that do not are unaffected.
+
 `consult` is the only top-level section. Configuration from releases before 0.4 containing `capabilities`, `model_list`, `router_settings`, or `limits` is rejected at startup because direct API routing was removed.
 
 ## System requirements

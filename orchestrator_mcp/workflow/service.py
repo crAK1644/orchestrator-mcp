@@ -82,6 +82,9 @@ from .store import (
     canonical,
 )
 from .store import _sha256 as _text_sha256
+from ..log import get_logger
+
+log = get_logger(__name__)
 
 
 # Recovery cleanup must never become request latency. The worktree count is bounded
@@ -442,7 +445,22 @@ class WorkflowService:
             async with self.store.lease(workflow_id, step_id, ttl_s=self._lease_ttl(contained)):
                 await self.store.consume_step_token(step_id, workflow_id, confirm_token)
                 async with self._finished(step_id):
-                    return await self._run_step(started, workflow, row, confirm_token)
+                    log.info(
+                        "workflow %s: running step %s (%s, %s)",
+                        workflow_id,
+                        step_id,
+                        row.step,
+                        row.snapshot().execution_mode,
+                    )
+                    response = await self._run_step(started, workflow, row, confirm_token)
+                    log.info(
+                        "workflow %s: step %s finished as %s in %.1fs",
+                        workflow_id,
+                        step_id,
+                        response.status,
+                        time.perf_counter() - started,
+                    )
+                    return response
         except (WorkflowError, StoreError, CodeError) as exc:
             return _failed(workflow_id, await self._status(workflow_id), exc.code, str(exc), started)
         except Exception as exc:  # noqa: BLE001 -- the envelope is the contract
@@ -1224,6 +1242,12 @@ class WorkflowService:
         workflow simply stayed where it was with nothing said about why.
         """
         if not await self.store.transition(workflow_id, to_status, allowed_from, **kwargs):
+            log.warning(
+                "workflow %s could not move to %s; it is no longer in %s",
+                workflow_id,
+                to_status,
+                _or_list(allowed_from),
+            )
             raise WorkflowError(
                 ConsultErrorCode.INVALID_REQUEST,
                 f"this workflow could not move to `{to_status}`: it is no longer in "
@@ -1231,6 +1255,7 @@ class WorkflowService:
                 "running -- read `orchestrator_workflow_status` before doing anything "
                 "else. The step's own result was recorded",
             )
+        log.debug("workflow %s moved to %s", workflow_id, to_status)
 
     async def _status(self, workflow_id: str) -> WorkflowState:
         """The workflow's state for an error envelope, or `failed` if it has none."""

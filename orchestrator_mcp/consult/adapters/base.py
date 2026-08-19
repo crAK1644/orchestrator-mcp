@@ -26,6 +26,7 @@ import os
 import re
 import shutil
 import signal
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -37,6 +38,9 @@ from ..contract import ConsultationContent, RequiredAction, SourceMode
 from ..errors import ConsultErrorCode
 from ..prompts import CompiledPrompt
 from ...contract import Usage
+from ...log import get_logger
+
+log = get_logger(__name__)
 
 # How long a child gets to exit on SIGTERM before the group is killed outright.
 GRACE_S = 2.0
@@ -311,6 +315,7 @@ async def run_process(
     not need is output that must not reach this process's memory.
     """
     sink = asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL
+    started = time.monotonic()
     try:
         process = await asyncio.create_subprocess_exec(
             *argv,
@@ -324,9 +329,14 @@ async def run_process(
             start_new_session=True,
         )
     except OSError as exc:
+        log.warning("could not start %s: %s", argv[0], exc)
         raise AdapterError(
             ConsultErrorCode.TRANSPORT_ERROR, f"could not start `{argv[0]}`: {exc}"
         ) from exc
+
+    # Only the executable and the flags: the prompt goes in over stdin and never
+    # reaches a log line, so a `%s` of the whole argv cannot spill a consultation.
+    log.debug("started %s pid=%d timeout=%gs", argv[0], process.pid, timeout_s)
 
     # Read both streams under a cap rather than `communicate()`, which buffers
     # whatever a child chooses to send. Two tasks, because draining only one of a
@@ -356,12 +366,24 @@ async def run_process(
             reader.cancel()
         await _terminate(process)
         if isinstance(exc, _OutputTooLarge):
+            log.warning(
+                "%s pid=%d exceeded the %d MiB output cap and was terminated",
+                argv[0],
+                process.pid,
+                MAX_OUTPUT_BYTES // 1024 // 1024,
+            )
             raise AdapterError(
                 ConsultErrorCode.PROTOCOL_VALIDATION_FAILED,
                 f"`{argv[0]}` produced more than {MAX_OUTPUT_BYTES // 1024 // 1024} MiB "
                 "instead of an answer, and was terminated",
             ) from exc
         if isinstance(exc, TimeoutError):
+            log.warning(
+                "%s pid=%d timed out after %gs and was terminated",
+                argv[0],
+                process.pid,
+                timeout_s,
+            )
             raise AdapterError(
                 ConsultErrorCode.TIMEOUT,
                 f"`{argv[0]}` did not answer within {timeout_s:g}s and was terminated",
@@ -369,6 +391,13 @@ async def run_process(
         raise
 
     stdout, stderr = captured if capture else (b"", b"")
+    log.debug(
+        "exited %s pid=%d rc=%d in %.1fs",
+        argv[0],
+        process.pid,
+        process.returncode or 0,
+        time.monotonic() - started,
+    )
     return ProcessResult(
         returncode=process.returncode or 0,
         stdout=stdout.decode(errors="replace"),
@@ -391,6 +420,7 @@ async def run_streaming(
     `--max-turns`, so the turn budget is counted in the event stream and enforced
     by ending the process, not by asking it to stop.
     """
+    started = time.monotonic()
     try:
         process = await asyncio.create_subprocess_exec(
             *argv,
@@ -403,9 +433,12 @@ async def run_streaming(
             limit=STREAM_LINE_LIMIT,
         )
     except OSError as exc:
+        log.warning("could not start %s: %s", argv[0], exc)
         raise AdapterError(
             ConsultErrorCode.TRANSPORT_ERROR, f"could not start `{argv[0]}`: {exc}"
         ) from exc
+
+    log.debug("started %s pid=%d timeout=%gs streaming", argv[0], process.pid, timeout_s)
 
     assert process.stdin is not None and process.stdout is not None and process.stderr is not None
     # Drained in the background: a child that fills the stderr pipe while we are
@@ -450,6 +483,12 @@ async def run_streaming(
         await _terminate(process)
         stderr_task.cancel()
         if isinstance(exc, TimeoutError):
+            log.warning(
+                "%s pid=%d timed out after %gs and was terminated",
+                argv[0],
+                process.pid,
+                timeout_s,
+            )
             raise AdapterError(
                 ConsultErrorCode.TIMEOUT,
                 f"`{argv[0]}` did not answer within {timeout_s:g}s and was terminated",
@@ -471,6 +510,14 @@ async def run_streaming(
             ) from exc
         raise
 
+    log.debug(
+        "exited %s pid=%d rc=%d in %.1fs after %d events",
+        argv[0],
+        process.pid,
+        process.returncode or 0,
+        time.monotonic() - started,
+        len(lines),
+    )
     return ProcessResult(
         returncode=process.returncode or 0,
         stdout="".join(lines),
@@ -489,6 +536,9 @@ async def _terminate(process: asyncio.subprocess.Process) -> None:
         async with asyncio.timeout(GRACE_S):
             await process.wait()
             return
+    # Worth a line at WARNING: a group that outlived SIGTERM had helpers of its own,
+    # and that is the case where something is left holding the account.
+    log.warning("pid=%d did not exit within %gs of SIGTERM; killing group", process.pid, GRACE_S)
     _signal_group(process, signal.SIGKILL)
     with contextlib.suppress(Exception):
         await process.wait()
