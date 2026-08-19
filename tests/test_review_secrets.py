@@ -363,9 +363,11 @@ def test_the_reviewers_own_history_is_out_of_reach():
 
     readme = Path(__file__).resolve().parents[1] / "README.md"
     guardrail = readme.read_text()
-    assert "Redaction covers every retained database copy, and only this database" in guardrail
+    assert "Redaction covers every retained database copy" in guardrail
+    assert "Vendor history is outside all of this" in guardrail
     assert "best-effort" in guardrail and "~/.codex/sessions/" in guardrail
     # The original material still reaches the vendor CLI and its own history; only
-    # this database's retained copy is scrubbed.
-    assert "target CLI still receives the original material" in guardrail
+    # this database's retained copy is scrubbed. What is transmitted differs by
+    # flow, so the README names the flows rather than making one blanket claim.
+    assert "An ordinary consultation sends its original material" in guardrail
     assert "the Codex adapter opens the rollout file" in guardrail
