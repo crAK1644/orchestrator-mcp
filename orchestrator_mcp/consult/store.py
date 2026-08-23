@@ -67,6 +67,11 @@ def _spend(row: sqlite3.Row) -> Spend:
         turns=row["turns"],
     )
 
+# The rule the three token columns of a *new* turn are counted by; see the migration
+# that adds the column. Bumped only when `Usage` changes what its fields mean, which
+# is the one event that makes a row written before it incomparable with one after.
+USAGE_SEMANTICS = 1
+
 # Applied in order, by index. Append only -- an edit to a shipped migration is a
 # database that disagrees with itself depending on when it was created.
 MIGRATIONS: list[str] = [
@@ -280,6 +285,23 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE workflow_steps ADD COLUMN recovery_written INTEGER;
     """,
+    # Which definition of the three token columns a row was written under.
+    #
+    # 0 is every row already on disk: each adapter filled these from whatever its own
+    # CLI reported, so `input_tokens` means the uncached remainder on a Claude row and
+    # the whole prompt on a Codex one, and `total_tokens` exceeds its parts on the
+    # first while falling short on the second. 1 is the definition `Usage` now states:
+    # prompt is every input token billed, completion is every token generated, total
+    # is the two added.
+    #
+    # Not a backfill. What a turn reported is what was measured at the time, and the
+    # fields needed to restate an old row live in `raw_output` when they are anywhere
+    # at all -- absent entirely under `store_full_content: false`. Recording which rule
+    # was in force costs one column and cannot be recovered later, where inventing the
+    # numbers would be a claim about data nobody counted.
+    """
+    ALTER TABLE consultation_turns ADD COLUMN usage_semantics INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 DEFAULT_PROFILE = "default"
@@ -458,6 +480,15 @@ class ConsultStore:
                 # together, or a half-applied migration re-runs into a CREATE that
                 # already exists. Splitting on `;` is safe for these -- no statement
                 # here contains one inside a literal.
+                #
+                # Which is also why a migration's prose is a Python comment above the
+                # string rather than a `--` comment inside it. Two things here read the
+                # statement text as SQL and nothing else: this split, which would end a
+                # statement at a semicolon written as ordinary punctuation, and the
+                # `ADD COLUMN` tolerance below, which checks the text *starts* with
+                # `ALTER TABLE` and so stops applying to a statement wearing a comment.
+                # Both fail as a syntax error or a duplicate column, neither of which
+                # reads as a comment problem.
                 for statement in filter(str.strip, statements.split(";")):
                     try:
                         db.execute(statement)
@@ -700,8 +731,8 @@ class ConsultStore:
             self._db.execute(
                 "INSERT INTO consultation_turns (consultation_id, sequence_number, source_mode, "
                 "user_prompt, context, compiled_prompt, raw_output, validated_response_json, "
-                "input_tokens, output_tokens, total_tokens, cost_usd, latency_ms, error_code, "
-                "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "input_tokens, output_tokens, total_tokens, usage_semantics, cost_usd, latency_ms, "
+                "error_code, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(consultation_id),
                     sequence_number,
@@ -714,6 +745,7 @@ class ConsultStore:
                     input_tokens,
                     output_tokens,
                     total_tokens,
+                    USAGE_SEMANTICS,
                     cost_usd,
                     latency_ms,
                     error_code.value if error_code else None,

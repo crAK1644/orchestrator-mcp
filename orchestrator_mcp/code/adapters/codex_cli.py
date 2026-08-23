@@ -34,10 +34,11 @@ from ...consult.adapters.base import (
     AdapterError,
     ProcessResult,
     check_model,
+    check_reported_total,
     child_env,
     resolve_command,
     run_process,
-    usage_count,
+    usage_any,
 )
 from ...consult.adapters.codex_cli import (
     FAILURE_EVENT_MARKERS,
@@ -268,13 +269,25 @@ def _usage(events: list[dict]) -> Usage:
         # the same tokens twice. The other adapters have to add their cache and
         # thinking figures because those runtimes report them disjoint; this one does
         # not, and the difference is the whole reason `Usage` states a meaning.
-        prompt_tokens = usage_count(raw.get("input_tokens") or raw.get("prompt_tokens"))
-        completion_tokens = usage_count(raw.get("output_tokens") or raw.get("completion_tokens"))
+        #
+        # Measured, not assumed. A consultation is a fresh single-shot invocation and
+        # never hits cache, so every `cached_input_tokens` this server has ever stored
+        # is 0 and none of them can tell the two readings apart. 21,164 usage envelopes
+        # from this machine's own interactive Codex rollouts can: all 21,164 report a
+        # `total_tokens` equal to `input_tokens + output_tokens`, none equal to
+        # `input_tokens + cached_input_tokens + output_tokens`, and `cached_input_tokens`
+        # never once exceeds `input_tokens` -- it reaches exactly it and stops.
+        prompt_tokens = usage_any(raw.get("input_tokens"), raw.get("prompt_tokens"))
+        completion_tokens = usage_any(raw.get("output_tokens"), raw.get("completion_tokens"))
+        # The event this adapter reads carries no total, but the rollout envelopes above
+        # do, so one may appear here. Checked rather than used: `input + output` is what
+        # those 21,164 samples say a Codex total covers.
+        check_reported_total(raw.get("total_tokens"), prompt_tokens + completion_tokens, "codex")
         return Usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            # Derived rather than read: this envelope carries no total today, and one
-            # that appeared later would be counting whatever the CLI decided to count.
+            # Derived rather than read, like every other adapter: a CLI total counts
+            # whatever that CLI counts, and the rollups have to add these across agents.
             total_tokens=prompt_tokens + completion_tokens,
         )
     return Usage()

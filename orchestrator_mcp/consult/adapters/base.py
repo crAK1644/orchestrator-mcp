@@ -143,19 +143,83 @@ class ConsultAdapter(Protocol):
     ) -> AdapterResult: ...
 
 
+def _parse_count(value: Any) -> int | None:
+    """`value` as a token count, or `None` if it does not read as one."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def usage_count(value: Any) -> int:
     """One token count off a runtime's usage envelope, or nothing.
 
     Never an exception: usage is reporting, and a `"N/A"` where a number was expected
     must not be what loses an answer that already arrived, validated, and was paid for.
-    Shared rather than per-adapter because `Usage` now derives its total from these,
-    so every field it counts is a field that can end a consultation if it is read
+    Shared rather than per-adapter because `Usage` derives its total from these, so
+    every field it counts is a field that can end a consultation if it is read
     strictly -- and the runtimes disagree about which fields they even fill.
+
+    An absent field is nothing and says so quietly; a field that is *present* and
+    unreadable is a reporting failure, and the count returned for it is a guess that
+    reads exactly like a measurement. It still returns, because losing a paid answer
+    over its receipt is worse -- but it says so first, which is the whole difference
+    between an incomplete number and a wrong one nobody can find.
     """
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
+    if value is None:
         return 0
+    count = _parse_count(value)
+    if count is None:
+        log.warning("usage: %r is not a token count; counting it as 0", value)
+        return 0
+    if count < 0:
+        # Not clamped quietly. A negative token count is a runtime reporting a
+        # quantity that cannot exist, and the zero substituted for it is this
+        # function's invention, not that runtime's measurement.
+        log.warning("usage: token count %d is negative; counting it as 0", count)
+        return 0
+    return count
+
+
+def usage_any(*values: Any) -> int:
+    """The first of these that reads as a count, for a field spelled more than one way.
+
+    Not `usage_count(a or b)`: that resolves the alias by truthiness before anything
+    checks whether the winner is a number, so a present-but-malformed first spelling
+    takes the slot and the good second one is never reached.
+    """
+    for value in values:
+        if _parse_count(value) is not None:
+            return usage_count(value)
+    return usage_count(values[-1]) if values else 0
+
+
+def check_reported_total(reported: Any, expected: int, runtime: str) -> None:
+    """Compare a runtime's own total against what that runtime's total should be.
+
+    `Usage.total_tokens` is derived from the two parts and never read from here --
+    each CLI totals a different set, which is why deriving it is the only way the
+    rollups can add them. But a reported total is still a checksum over the fields
+    beside it: it is how the parts were confirmed correct in the first place, and
+    discarding it means the day a runtime adds a sixth token category, the derived
+    total drifts and nothing anywhere notices.
+
+    `expected` is what *that runtime* documents its total to cover, not the canonical
+    one. Antigravity totals input and output alone; Opencode counts all four of its
+    disjoint figures. Comparing either against the wrong one would warn on every
+    healthy turn, which is the same as not warning at all.
+    """
+    count = _parse_count(reported)
+    if count is not None and count != expected:
+        log.warning(
+            "usage: %s reported a total of %d where its own fields make %d; "
+            "the derived total is unaffected, but a token category may be unread",
+            runtime,
+            count,
+            expected,
+        )
 
 
 def parse_content(text: str) -> ConsultationContent:

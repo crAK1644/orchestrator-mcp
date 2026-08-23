@@ -118,6 +118,12 @@ def scrub_json(value: Any) -> Any:
 # prints the sum in one column. So each adapter converts, and `total_tokens` is derived
 # from the two parts rather than read from a CLI that counts a different set.
 #
+# The token fields are the answering model's alone, which is narrower than the money
+# beside them: Claude reports a whole-invocation `total_cost_usd` covering any internal
+# helper model it ran, while the counts it reports are the one that answered. Two
+# different questions -- what a consultation spent, and how large the answer was --
+# and the docstring says so rather than letting a reader assume one scope covers both.
+#
 # No validator enforces the sum. Turns written before this definition existed carry the
 # old per-runtime meanings and still have to be readable: a stored turn is what was
 # measured at the time, and an old Claude row's total exceeds its parts where an old
@@ -126,9 +132,11 @@ def scrub_json(value: Any) -> Any:
 class Usage(BaseModel):
     """What one turn cost in tokens, counted the same way whatever runtime answered.
 
-    `prompt_tokens` is every input token billed, cache reads and writes included -- a
-    cached prompt was still sent. `completion_tokens` is every token generated,
-    reasoning and thinking included. `total_tokens` is always the two added together.
+    `prompt_tokens` is every input token the answering model was billed for, cache
+    reads and writes included -- a cached prompt was still sent. `completion_tokens`
+    is every token it generated, reasoning and thinking included. `total_tokens` is
+    always the two added together. `cost_usd`, where a runtime reports one, may cover
+    the whole invocation rather than the answering model alone.
     """
 
     prompt_tokens: int = 0

@@ -19,7 +19,12 @@ import pytest
 from orchestrator_mcp.consult.contract import ConsultRoute, SourceMode
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.routing import ExcludedCandidate, RoutingDecision
-from orchestrator_mcp.consult.store import MIGRATIONS, ConsultStore, StoreError
+from orchestrator_mcp.consult.store import (
+    MIGRATIONS,
+    USAGE_SEMANTICS,
+    ConsultStore,
+    StoreError,
+)
 from orchestrator_mcp.review.store import ReviewStore
 
 ROUTE = ConsultRoute(
@@ -72,6 +77,19 @@ async def test_an_existing_shared_database_directory_is_refused(tmp_path):
 
     assert stat.S_IMODE(shared.stat().st_mode) == 0o755
     assert not (shared / "consultations.sqlite3").exists()
+
+
+def test_a_migration_carries_no_sql_comment():
+    """Prose about a migration is a Python comment above the string, not a `--` comment
+    inside it, and the reason is that two things here read the statement text as SQL and
+    nothing else. The runner splits on `;`, so a semicolon written as ordinary
+    punctuation ends the statement early. The `ADD COLUMN` tolerance checks the text
+    *starts* with `ALTER TABLE`, so a statement wearing a comment stops being idempotent
+    and fails the next time a rewound ledger replays it. Both surface as a syntax error
+    or a duplicate column, and neither reads as a comment problem."""
+    for version, statements in enumerate(MIGRATIONS):
+        for line in statements.splitlines():
+            assert not line.strip().startswith("--"), f"migration {version}: {line.strip()}"
 
 
 async def test_opening_twice_is_not_a_second_migration(tmp_path):
@@ -401,6 +419,79 @@ async def test_turns_are_stored_in_full_and_numbered(store):
     assert turn.raw_output == '{"answer": "blue"}'
     assert json.loads(turn.validated_response_json) == {"answer": "blue"}
     assert (turn.input_tokens, turn.output_tokens, turn.latency_ms) == (11, 3, 1234)
+
+
+
+async def test_a_new_turn_records_which_definition_its_tokens_were_counted_by(store, tmp_path):
+    """The three token columns changed meaning, and a row cannot say which one it used.
+
+    Every row written before `Usage` fixed its fields carries whatever its own CLI
+    reported: `input_tokens` is the uncached remainder on a Claude row and the whole
+    prompt on a Codex one, and `total_tokens` exceeds its parts on the first while
+    falling short on the second. Added beside a row written since, they produce a
+    number in no unit at all -- and the rollups do add them, across agents, into one
+    column of the dashboard.
+    """
+    consultation_id = await new_consultation(store)
+    await store.record_turn(
+        consultation_id,
+        1,
+        SourceMode.DOCUMENT,
+        user_prompt="what colour is the sky",
+        context=None,
+        compiled_prompt="SYSTEM...",
+        input_tokens=1800,
+        output_tokens=200,
+        total_tokens=2000,
+    )
+
+    assert usage_semantics_rows(tmp_path) == [USAGE_SEMANTICS]
+    # 0 is reserved for what came before, so the definition in force can never be it.
+    assert USAGE_SEMANTICS > 0
+
+
+async def test_a_turn_written_before_the_column_existed_reads_as_legacy(store, tmp_path):
+    """Not a backfill, which is the point of the default.
+
+    What a turn reported is what was measured at the time, and the fields needed to
+    restate an old row live in `raw_output` when they are anywhere at all -- absent
+    entirely under `store_full_content: false`. Recording which rule was in force costs
+    one column and cannot be recovered later; inventing the numbers would be a claim
+    about data nobody counted.
+    """
+    consultation_id = await new_consultation(store)
+    scratch = sqlite3.connect(tmp_path / "nested" / "consultations.sqlite3")
+    try:
+        # The column list as it stood before the migration: every row already on disk
+        # was inserted by a statement that did not name `usage_semantics`.
+        scratch.execute(
+            "INSERT INTO consultation_turns (consultation_id, sequence_number, source_mode, "
+            "user_prompt, compiled_prompt, input_tokens, output_tokens, total_tokens, "
+            "latency_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (str(consultation_id), 1, SourceMode.DOCUMENT.value, "q", "p", 22, 305704, 1744808, 0, "x"),
+        )
+        scratch.commit()
+    finally:
+        scratch.close()
+
+    assert usage_semantics_rows(tmp_path) == [0]
+
+
+def usage_semantics_rows(tmp_path):
+    """The column for every stored turn, read past the store's own reader.
+
+    `turns()` does not select it: nothing in the server reads the marker yet, and a
+    field added to `Turn` for a test to assert on would be a consumer this change does
+    not have. The column has to be on disk from the first row regardless -- it is the
+    one thing about an old row that cannot be reconstructed after the fact.
+    """
+    scratch = sqlite3.connect(tmp_path / "nested" / "consultations.sqlite3")
+    try:
+        return [row[0] for row in scratch.execute(
+            "SELECT usage_semantics FROM consultation_turns ORDER BY sequence_number"
+        )]
+    finally:
+        scratch.close()
 
 
 async def test_a_failed_turn_keeps_its_code_and_no_answer(store):
