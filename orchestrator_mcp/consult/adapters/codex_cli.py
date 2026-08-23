@@ -34,6 +34,7 @@ from .base import (
     parse_content,
     resolve_command,
     run_process,
+    usage_count,
 )
 
 PREFLIGHT_TIMEOUT_S = 30.0
@@ -463,11 +464,18 @@ def _usage(events: list[dict]) -> Usage:
         raw: Any = event.get("usage")
         if not isinstance(raw, dict):
             continue
-        prompt_tokens = int(raw.get("input_tokens") or raw.get("prompt_tokens") or 0)
-        completion_tokens = int(raw.get("output_tokens") or raw.get("completion_tokens") or 0)
+        # `cached_input_tokens` and `reasoning_output_tokens` ride alongside these two
+        # as breakdowns *of* them, not additions to them -- adding either would count
+        # the same tokens twice. The other adapters have to add their cache and
+        # thinking figures because those runtimes report them disjoint; this one does
+        # not, and the difference is the whole reason `Usage` states a meaning.
+        prompt_tokens = usage_count(raw.get("input_tokens") or raw.get("prompt_tokens"))
+        completion_tokens = usage_count(raw.get("output_tokens") or raw.get("completion_tokens"))
         return Usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            total_tokens=int(raw.get("total_tokens") or prompt_tokens + completion_tokens),
+            # Derived rather than read: this envelope carries no total today, and one
+            # that appeared later would be counting whatever the CLI decided to count.
+            total_tokens=prompt_tokens + completion_tokens,
         )
     return Usage()

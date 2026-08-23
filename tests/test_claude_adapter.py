@@ -144,13 +144,14 @@ async def test_a_successful_consultation_returns_content_session_and_usage(
     assert result.usage.cost_usd == 0.0123
 
 
-async def test_the_cached_share_of_a_prompt_is_counted_in_the_total(
+async def test_the_cached_share_of_a_prompt_is_counted_as_prompt(
     tmp_path, monkeypatch, adapter
 ):
     """Live numbers from a resumed turn: 2 fresh input tokens, 2771 from cache.
 
-    `input_tokens` alone made that turn look like 1323 tokens. It was nearer 4100, and
-    the cost reported beside it was billed on the larger figure.
+    Both were sent and both were billed, so `Usage` wants all 2773 in `prompt_tokens`.
+    Reporting the 2 there described a prompt three orders of magnitude smaller than the
+    one that ran -- and left a total that did not equal its own parts.
     """
     usage = {
         "input_tokens": 2,
@@ -162,8 +163,9 @@ async def test_the_cached_share_of_a_prompt_is_counted_in_the_total(
 
     result = await adapter.start(agent(), prompt(), SourceMode.DOCUMENT)
 
-    assert (result.usage.prompt_tokens, result.usage.completion_tokens) == (2, 1321)
-    assert result.usage.total_tokens == 2 + 1321 + 1334 + 1437
+    assert (result.usage.prompt_tokens, result.usage.completion_tokens) == (2 + 1334 + 1437, 1321)
+    assert result.usage.total_tokens == 2 + 1334 + 1437 + 1321
+    assert result.usage.total_tokens == result.usage.prompt_tokens + result.usage.completion_tokens
 
 
 async def test_a_boolean_cost_stays_unknown(tmp_path, monkeypatch, adapter):

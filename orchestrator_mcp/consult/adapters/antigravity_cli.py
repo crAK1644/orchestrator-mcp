@@ -52,6 +52,7 @@ from .base import (
     parse_content,
     resolve_command,
     run_streaming,
+    usage_count,
 )
 
 # The most this adapter will put in a single `-p` value. Linux's per-argument ceiling
@@ -598,29 +599,23 @@ def _reported_model(events: list[dict]) -> str | None:
     return None
 
 
-def _count(value: Any) -> int:
-    """A token count from a field this runtime fills, or nothing.
-
-    Never an exception: usage is reporting, and a `"N/A"` where a number was expected
-    must not be what loses an answer that already arrived and validated.
-    """
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _usage(envelope: dict) -> Usage:
     raw: Any = envelope.get("usage")
     raw = raw if isinstance(raw, dict) else {}
-    prompt_tokens = _count(raw.get("input_tokens"))
+    # `cache_read_tokens` is prompt this turn was billed for and is counted separately
+    # from `input_tokens`, not inside it -- an envelope reporting 900 and 800 sent 1700.
+    # It used to land in no field at all.
+    prompt_tokens = usage_count(raw.get("input_tokens")) + usage_count(raw.get("cache_read_tokens"))
     # Thinking is generated and billed, so it belongs on the completion side rather
     # than in a field this envelope does not have.
-    completion_tokens = _count(raw.get("output_tokens")) + _count(raw.get("thinking_tokens"))
+    completion_tokens = usage_count(raw.get("output_tokens")) + usage_count(raw.get("thinking_tokens"))
     return Usage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        total_tokens=_count(raw.get("total_tokens")) or prompt_tokens + completion_tokens,
+        # Not `raw["total_tokens"]`. This CLI totals input and output alone, so against
+        # the two lines above -- which count the cache and the thinking it leaves out --
+        # its own total came out *smaller* than the parts beside it.
+        total_tokens=prompt_tokens + completion_tokens,
         # No cost anywhere in this runtime's output, and no quota surface either.
     )
 

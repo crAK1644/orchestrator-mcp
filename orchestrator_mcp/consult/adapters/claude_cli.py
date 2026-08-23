@@ -33,6 +33,7 @@ from .base import (
     resolve_command,
     run_process,
     run_streaming,
+    usage_count,
 )
 
 # What web mode is allowed to reach for. Anything else in the init event's tool
@@ -351,16 +352,17 @@ def _reported_model(envelope: dict) -> str | None:
 def _usage(envelope: dict) -> Usage:
     raw = envelope.get("usage")
     raw = raw if isinstance(raw, dict) else {}
-    prompt_tokens = int(raw.get("input_tokens") or 0)
-    completion_tokens = int(raw.get("output_tokens") or 0)
     # `input_tokens` counts only what was not served from cache, and on a consultation
     # that is almost nothing: a live resumed turn reported 2 against 1334 read from
-    # cache and 1437 written to it. Summing input and output alone called that turn 1323
-    # tokens when it was nearer 4100, and the cost beside it came from the real figure.
-    # Same correction opencode's `_usage` already makes for the same reason.
-    cached = int(raw.get("cache_read_input_tokens") or 0) + int(
-        raw.get("cache_creation_input_tokens") or 0
+    # cache and 1437 written to it. Both cached figures are prompt that was sent and
+    # billed, so `Usage` wants them here -- reporting 2 as the prompt described a turn
+    # three orders of magnitude smaller than the one that ran.
+    prompt_tokens = (
+        usage_count(raw.get("input_tokens"))
+        + usage_count(raw.get("cache_read_input_tokens"))
+        + usage_count(raw.get("cache_creation_input_tokens"))
     )
+    completion_tokens = usage_count(raw.get("output_tokens"))
     # Whole-invocation, so it covers any internal helper model too, while the token
     # counts above are the answering model's alone. Not an inconsistency to reconcile:
     # what a consultation spent and how large the answer was are different questions.
@@ -368,7 +370,7 @@ def _usage(envelope: dict) -> Usage:
     return Usage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens + cached,
+        total_tokens=prompt_tokens + completion_tokens,
         cost_usd=(
             float(cost)
             if isinstance(cost, (int, float)) and not isinstance(cost, bool)

@@ -219,8 +219,11 @@ async def test_a_successful_consultation_returns_content_conversation_and_usage(
     assert result.native_session_id == CONV
     assert result.model_used == MODEL
     assert result.model_verified, "`init` named the model, so this is checked not assumed"
-    # Thinking is generated and billed, so it lands on the completion side.
-    assert (result.usage.prompt_tokens, result.usage.completion_tokens) == (900, 150)
+    # Thinking is generated and billed, so it lands on the completion side; the cache
+    # read was prompt that was sent, so it lands on the other one. The envelope's own
+    # `total_tokens` of 1020 counted neither and is not what gets reported.
+    assert (result.usage.prompt_tokens, result.usage.completion_tokens) == (1700, 150)
+    assert result.usage.total_tokens == 1700 + 150
 
 
 async def test_the_advertised_tool_list_is_not_itself_a_violation(tmp_path, monkeypatch, adapter):
@@ -358,8 +361,9 @@ async def test_the_turns_of_a_chunked_consultation_are_all_billed(tmp_path, monk
               {"stdout": transcript()}],
     )
     result = await adapter.start(agent(), big_prompt(), SourceMode.MODEL)
-    assert result.usage.prompt_tokens == 900 * 4
+    assert result.usage.prompt_tokens == 1700 * 4
     assert result.usage.completion_tokens == 150 * 4
+    assert result.usage.total_tokens == (1700 + 150) * 4
 
 
 # --- refusals ---------------------------------------------------------------

@@ -59,6 +59,7 @@ from .base import (
     parse_content,
     resolve_command,
     run_process,
+    usage_count,
 )
 
 # How long a preflight gets. It is one local command; a slow one is a broken one.
@@ -687,25 +688,28 @@ def _read_stream(result: ProcessResult, fallback_session: str | None) -> tuple[s
 def _usage(part: dict) -> Usage:
     tokens = part.get("tokens")
     tokens = tokens if isinstance(tokens, dict) else {}
-    prompt_tokens = int(tokens.get("input") or 0)
-    completion_tokens = int(tokens.get("output") or 0)
-    # opencode's own total, which is not `input + output`: it counts `reasoning` and the
-    # `cache` read and write as well, and a cached prompt is mostly cache. Deriving the
-    # total here under-reported by the whole cached share -- 2231 against 439 on a turn
-    # measured against the binary. Falls back to the sum only if the field is absent,
-    # which is the old behaviour and still better than reporting nothing.
-    total = tokens.get("total")
-    if not isinstance(total, int) or isinstance(total, bool):
-        total = prompt_tokens + completion_tokens
-    # `bool` excluded for the same reason it is excluded from `total` two lines up:
-    # it is a subclass of `int`, so a `"cost": true` passes the isinstance check and
-    # `float(True)` bills the turn at one dollar. An unknown cost has to stay unknown.
+    cache = tokens.get("cache")
+    cache = cache if isinstance(cache, dict) else {}
+    # `input`, `reasoning` and the two `cache` figures are four disjoint counts here,
+    # not a total and its breakdown: a turn measured against the binary reported
+    # 424 + 15 + 1792, and opencode called it 2231. Sorting them by which side of the
+    # turn they were billed on is what makes the derived total that same 2231 --
+    # `input + output` alone was 439 of it, the whole cached share missing.
+    prompt_tokens = (
+        usage_count(tokens.get("input"))
+        + usage_count(cache.get("read"))
+        + usage_count(cache.get("write"))
+    )
+    completion_tokens = usage_count(tokens.get("output")) + usage_count(tokens.get("reasoning"))
+    # `bool` excluded because it is a subclass of `int`, so a `"cost": true` passes the
+    # isinstance check and `float(True)` bills the turn at one dollar. An unknown cost
+    # has to stay unknown.
     cost = part.get("cost")
     known_cost = isinstance(cost, (int, float)) and not isinstance(cost, bool)
     return Usage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        total_tokens=total,
+        total_tokens=prompt_tokens + completion_tokens,
         cost_usd=float(cost) if known_cost else None,
     )
 
