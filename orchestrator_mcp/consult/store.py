@@ -769,6 +769,17 @@ class ConsultStore:
         Same ledger and same rule as `workflow_usage`: cumulative over the linked
         consultation's turns, so a retried reviewer counts every attempt exactly once,
         and `usage.cost_usd` is `None` unless every one of those turns was priced.
+
+        This one can join `review_consultations` directly where `workflow_usage` had to
+        use a scalar subquery, and the difference is worth naming: a join multiplies a
+        turn by however many link rows point at its consultation, and this number is
+        money. Two things bound it to one. `PRIMARY KEY (review_id, agent_id)` allows a
+        review only one row per agent, and the link is written as `UPDATE ... WHERE
+        consultation_id IS NULL` against a consultation id that was just generated, so
+        it cannot already sit on another agent's row. Neither is a uniqueness constraint
+        on `consultation_id` itself -- if a second write path ever linked one
+        consultation to two agents of the same review, this query would count its turns
+        twice, once under each.
         """
 
         def work() -> dict[str, Spend]:
