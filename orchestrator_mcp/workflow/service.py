@@ -899,7 +899,37 @@ class WorkflowService:
             findings = await self._open_findings(steps)
             if findings:
                 inputs["open_findings"] = findings
+        if step == "synthesize":
+            review = await self._review_outcome(steps)
+            if review is not None:
+                inputs["review_outcome"] = review
         return inputs
+
+    async def _review_outcome(self, steps: list[StepRow]) -> dict[str, Any] | None:
+        """Machine-readable review input for a delegated synthesis.
+
+        A review step stores its result in the review tables and keeps only the
+        `review_id` on the workflow step, so `_artifacts` cannot produce the declared
+        `review_outcome` input. Read that row here. Reviewer prose and usage are
+        deliberately omitted: findings carry the provenance synthesis must preserve,
+        and re-sending answers would undo the one-body-per-call rule.
+        """
+        review_id = _review_id(steps)
+        if review_id is None:
+            return None
+        response = await self.reviews.get(review_id)
+        if response.error is not None:
+            raise WorkflowError(response.error.code, response.error.message)
+        return {
+            "review_id": str(response.review_id),
+            "outcome": response.outcome,
+            "results": [
+                result.model_dump(mode="json", exclude={"answer", "usage"})
+                for result in response.results
+            ],
+            "host_findings": response.host_findings,
+            "unparsed_reviewers": response.unparsed_reviewers,
+        }
 
     async def _open_findings(self, steps: list[StepRow]) -> list[dict[str, Any]]:
         """The serious findings the last review left open, in full.
