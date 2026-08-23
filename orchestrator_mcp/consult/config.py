@@ -215,12 +215,21 @@ class SpendPolicy(BaseModel):
     before it is made, so the guarantee is **the next request after the ceiling is
     crossed is refused**, not that spend never exceeds the ceiling. A fan-out of five
     reviewers is one request in that sense; the ceiling stops the round after it.
+
+    Set a turn ceiling as well as a dollar one if the routing includes an agent on a
+    flat-rate plan. Those report no per-turn price, and a dollar ceiling can only
+    count what was priced -- over agents that price nothing it never leaves $0.00.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     max_cost_usd_per_review: float | None = Field(default=None, gt=0)
     max_cost_usd_per_workflow: float | None = Field(default=None, gt=0)
+    # The bound for work that cannot be priced. An agent on a flat-rate plan reports
+    # no per-turn cost, so a dollar ceiling over it stays at $0.00 and never fires --
+    # a ceiling that reads as a bound and is not one. Turns are always counted.
+    max_turns_per_review: int | None = Field(default=None, gt=0)
+    max_turns_per_workflow: int | None = Field(default=None, gt=0)
 
 
 class ReviewPolicy(BaseModel):
