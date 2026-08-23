@@ -6,10 +6,21 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
+from orchestrator_mcp.consult.adapters import adapter_for
+from orchestrator_mcp.consult.config import (
+    HOST_RUNTIME_ENV,
+    AgentConfig,
+    ConsultConfig,
+    host_runtime,
+    load_consult_config,
+)
+from orchestrator_mcp.consult.contract import (
+    ConsultationContent,
+    consultation_content_schema,
+)
 from orchestrator_mcp.contract import ConfigError
-from orchestrator_mcp.consult.config import HOST_RUNTIME_ENV, ConsultConfig, host_runtime, load_consult_config
-from orchestrator_mcp.consult.contract import ConsultationContent, consultation_content_schema
 from orchestrator_mcp.server import validate_config
 
 from .conftest import agent, consult_block
@@ -184,3 +195,59 @@ def test_the_example_config_still_loads(tmp_path):
     assert sorted(config.agents) == ["claude-opus", "codex-sol", "deepseek-flash", "gemini-reviewer"]
     assert config.review.reviewers == ["codex-sol"]
     assert config.dashboard.enabled is False
+
+
+# --- per-agent timeout ------------------------------------------------------
+
+
+def test_an_agent_may_carry_its_own_timeout():
+    config = ConsultConfig(
+        **consult_block(
+            timeout_s=180,
+            agents={
+                "codex-sol": agent("codex", "gpt-5.6-sol", 10, timeout_s=1800),
+                "deepseek-flash": agent("opencode", "deepseek", 20),
+            },
+        )
+    )
+    assert config.agents["codex-sol"].timeout_s == 1800
+    # Unset means the global one, so an existing config is unchanged.
+    assert config.agents["deepseek-flash"].timeout_s is None
+
+
+def test_a_zero_timeout_is_refused():
+    """`None` is how an agent says "the global value". A `0` would be a config that
+    reads as "no limit" and behaves as "kill it immediately"."""
+    with pytest.raises(ValidationError):
+        AgentConfig(runtime="codex", command="codex", model="m", timeout_s=0)
+
+
+def test_the_adapter_is_built_with_the_agent_s_own_timeout():
+    """Adapters take their timeout at construction, and `adapter_for` is the only
+    place they are constructed -- so nothing below it has to know the value can
+    differ per agent."""
+    config = ConsultConfig(
+        **consult_block(
+            timeout_s=180,
+            agents={
+                "codex-sol": agent("codex", "gpt-5.6-sol", 10, timeout_s=1800),
+                "codex-fast": agent("codex", "gpt-5.6-mini", 20),
+            },
+        )
+    )
+    assert adapter_for(config.agents["codex-sol"], config).timeout_s == 1800
+    assert adapter_for(config.agents["codex-fast"], config).timeout_s == 180
+
+
+@pytest.mark.parametrize(
+    "runtime,command",
+    [("claude", "claude"), ("codex", "codex"), ("opencode", "opencode"), ("antigravity", "ag")],
+)
+def test_every_runtime_honours_the_override(runtime, command):
+    config = ConsultConfig(
+        **consult_block(
+            timeout_s=180,
+            agents={"one": agent(runtime, "m", 10, command=command, timeout_s=42)},
+        )
+    )
+    assert adapter_for(config.agents["one"], config).timeout_s == 42

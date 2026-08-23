@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from orchestrator_mcp.code.service import patch_path
 from orchestrator_mcp.code.registry import CodeError
+from orchestrator_mcp.code.service import patch_path
 from orchestrator_mcp.consult.adapters.base import AdapterResult, AgentStatus
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import ConsultationContent, Usage
@@ -148,10 +148,13 @@ def test_step_reply_accepts_a_compact_json_fence():
 class StubAdapter:
     """A CLI that is installed, authenticated, and answers whatever it was handed."""
 
-    def __init__(self, *answers: str) -> None:
+    def __init__(self, *answers: str, cost_usd: float | None = None) -> None:
         self.answers = list(answers) or ["{}"]
         self.prompts: list[str] = []
         self.modes: list[Any] = []
+        # Unpriced by default, which is what a free tier reports and the harder case
+        # for anything that adds these up.
+        self.cost_usd = cost_usd
 
     def connect_command(self, agent):
         return ["true"]
@@ -178,7 +181,9 @@ class StubAdapter:
             model_used=agent.model,
             model_verified=True,
             raw_output="{}",
-            usage=Usage(prompt_tokens=10, completion_tokens=2, total_tokens=12),
+            usage=Usage(
+                prompt_tokens=10, completion_tokens=2, total_tokens=12, cost_usd=self.cost_usd
+            ),
         )
 
 
@@ -248,6 +253,7 @@ def build(tmp_path, repo, host_claude):
         adapters: dict[str, StubAdapter] | None = None,
         bindings: dict[str, dict[str, Any]] | None = None,
         agents: dict[str, dict] | None = None,
+        spend: dict[str, Any] | None = None,
         **workflow_overrides,
     ):
         agents = dict(AGENTS if agents is None else agents)
@@ -257,6 +263,7 @@ def build(tmp_path, repo, host_claude):
             agents=agents,
             host={"runtime": "claude", "model": "claude-opus-5"},
             review={"reviewers": ["codex-sol"], "deep_reviewers": list(agents)},
+            spend=spend or {},
             workflow={
                 "roots": [str(repo.parent)],
                 "bindings": {**HOST_BINDINGS, "review": {"agents": ["codex-sol"]},
@@ -1848,3 +1855,248 @@ async def test_a_workflows_consultation_is_not_deleted_with_the_ordinary_ones(bu
     with pytest.raises(StoreError, match="is a step of workflow"):
         await service.store.store.delete_consultation(consultation_id)
     assert (await sql(service, "SELECT COUNT(*) FROM consultations")).fetchone()[0] == 1
+
+
+# --- what a workflow spent ---------------------------------------------------
+
+
+async def _spent(service, workflow_id: str):
+    """The workflow view's own totals: `(workflow usage, {step name: usage})`."""
+    response = await service.status(workflow_id)
+    assert response.error is None, response.error
+    view = response.workflow
+    assert view is not None
+    return view.usage, {v.step: v.usage for v in view.steps}
+
+
+async def test_a_workflow_totals_what_its_steps_spent(build, repo):
+    service = await build(bindings={"research": {"agent": "codex-sol"}})
+    service.adapters["codex-sol"].answers = [RESEARCH]
+    workflow_id = await started(service, repo)
+    step_id, token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, step_id, token)).error is None
+
+    total, steps = await _spent(service, workflow_id)
+    assert steps["research"].total_tokens == 12
+    assert total.total_tokens == 12
+    assert total.prompt_tokens == 10 and total.completion_tokens == 2
+
+
+async def test_a_host_step_reports_no_usage_rather_than_zero(build, repo):
+    """Nothing was spent on it here, which is not the same as it having cost zero."""
+    service = await build()
+    workflow_id = await started(service, repo)
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+
+    total, steps = await _spent(service, workflow_id)
+    assert steps["plan"] is None
+    assert total is None
+
+
+async def test_a_reviewers_spend_is_charged_to_the_review_step(build, repo):
+    """The reviewer's consultation carries its review, not the workflow.
+
+    A rollup that only followed `consultations.workflow_id` would report the most
+    expensive step of the whole design as free.
+    """
+    service = await build()
+    workflow_id = await _to_synthesis(service, repo)
+
+    total, steps = await _spent(service, workflow_id)
+    assert steps["review"].total_tokens == 12
+    assert total.total_tokens == 12
+
+
+async def test_one_unpriced_step_makes_the_whole_cost_unknown(build, repo):
+    """A total built from an unpriced turn is a floor. A floor shown as a sum lies."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(FINDINGS, cost_usd=0.25),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(RESEARCH),
+        },
+        bindings={"research": {"agent": "flash"}},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
+    await host_step(
+        service, workflow_id, "implement", {"summary": "s", "files": [], "patch": PATCH}
+    )
+    await host_step(
+        service, workflow_id, "test",
+        {"command": "pytest", "workdir": str(repo), "exit_code": 0, "status": "passed"},
+    )
+    review_id, review_token = await step(service, workflow_id, "review")
+    assert (await service.run_step(workflow_id, review_id, review_token)).error is None
+
+    total, steps = await _spent(service, workflow_id)
+    assert steps["review"].cost_usd == pytest.approx(0.25)
+    assert steps["research"].cost_usd is None
+    # The tokens still add up; only the price is withheld.
+    assert total.total_tokens == 24
+    assert total.cost_usd is None
+
+
+async def test_every_turn_of_one_step_is_counted_once(build, repo):
+    """Rebuilt from the turn ledger, so a second turn adds and a re-read does not."""
+    service = await build(bindings={"research": {"agent": "codex-sol"}})
+    service.adapters["codex-sol"].answers = [RESEARCH]
+    workflow_id = await started(service, repo)
+    step_id, token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, step_id, token)).error is None
+    consultation_id = (await sql(service, "SELECT id FROM consultations")).fetchone()[0]
+    turn = (
+        "INSERT INTO consultation_turns (consultation_id, sequence_number, source_mode, "
+        "user_prompt, input_tokens, output_tokens, total_tokens, latency_ms, created_at) "
+        "VALUES (?, 2, 'model', 'again', 5, 1, 6, 1, '2024-01-01T00:00:00Z')"
+    )
+    await sql(service, turn, consultation_id)
+
+    total, steps = await _spent(service, workflow_id)
+    assert steps["research"].total_tokens == 18
+    assert (await _spent(service, workflow_id))[0].total_tokens == total.total_tokens == 18
+
+
+# --- the spend ceiling -------------------------------------------------------
+
+
+async def test_a_step_past_the_ceiling_is_refused_before_the_token_is_spent(build, repo):
+    """A refusal must cost nothing: neither the subprocess nor the one-time token.
+
+    Burning the token would mean raising the ceiling costs a whole re-plan, which
+    turns a bound into a punishment.
+    """
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(RESEARCH, cost_usd=2.0),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(PLAN),
+        },
+        bindings={"research": {"agent": "codex-sol"}, "plan": {"agent": "flash"}},
+        spend={"max_cost_usd_per_workflow": 1.0},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    plan_id, plan_token = await step(service, workflow_id, "plan")
+    sent = len(service.adapters["flash"].prompts)
+
+    response = await service.run_step(workflow_id, plan_id, plan_token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "$2.00 of its $1.00 ceiling" in response.error.message
+    assert len(service.adapters["flash"].prompts) == sent
+    # And the token still opens the step it approved, once the ceiling is raised.
+    service.config.spend.max_cost_usd_per_workflow = 10.0
+    assert (await service.run_step(workflow_id, plan_id, plan_token)).error is None
+
+
+async def test_a_reviewer_counts_towards_the_workflows_ceiling(build, repo):
+    """The workflow is what paid for the reviewer, whatever row the consultation
+    hangs off."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(FINDINGS, cost_usd=2.0),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(RESEARCH),
+        },
+        bindings={"fix": {"agent": "flash", "execution": "patch"}},
+        spend={"max_cost_usd_per_workflow": 1.0},
+    )
+    workflow_id = await _to_synthesis(service, repo)
+    ids = await finding_ids(service, workflow_id)
+    assert (await host_step(service, workflow_id, "synthesize",
+                            summary_with("open", ids))).status == "fixing"
+    step_id, token = await step(service, workflow_id, "fix")
+
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+
+
+async def test_a_workflow_with_no_ceiling_is_unchanged(build, repo):
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(RESEARCH, cost_usd=1000.0),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(PLAN),
+        },
+        bindings={"research": {"agent": "codex-sol"}, "plan": {"agent": "flash"}},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    plan_id, plan_token = await step(service, workflow_id, "plan")
+
+    assert (await service.run_step(workflow_id, plan_id, plan_token)).error is None
+
+
+async def test_a_free_reviewer_does_not_hide_what_the_paid_one_cost(build, repo):
+    """One unpriced turn must not erase the money that *was* counted.
+
+    The step's own `cost_usd` is `None`, because a total containing an unpriced turn
+    is a floor. The floor is still $2, and a $1 ceiling is still crossed -- reading
+    the unknown as zero would let one free-tier reviewer buy an unbounded workflow.
+    """
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(FINDINGS, cost_usd=2.0),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(FINDINGS),
+        },
+        bindings={
+            "review": {"agents": ["codex-sol", "flash"]},
+            "fix": {"agent": "flash", "execution": "patch"},
+        },
+        spend={"max_cost_usd_per_workflow": 1.0},
+    )
+    workflow_id = await _to_synthesis(service, repo)
+
+    _, steps = await _spent(service, workflow_id)
+    assert steps["review"].cost_usd is None, "a floor must not be shown as a sum"
+
+    ids = await finding_ids(service, workflow_id)
+    assert (await host_step(service, workflow_id, "synthesize",
+                            summary_with("open", ids))).status == "fixing"
+    step_id, token = await step(service, workflow_id, "fix")
+
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "$2.00" in response.error.message
+
+
+async def test_spend_that_names_no_step_still_counts_against_the_ceiling(build, repo):
+    """No path writes a workflow consultation without a step today, and the schema
+    does not forbid one. Money that arrives without a step is still money spent, so
+    it is bucketed rather than dropped -- the total and the ceiling both see it, and
+    no step view claims it."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(FINDINGS),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(RESEARCH, cost_usd=5.0),
+        },
+        bindings={"research": {"agent": "flash"}, "plan": {"agent": "flash"}},
+        spend={"max_cost_usd_per_workflow": 1.0},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    await sql(service, "UPDATE consultations SET step_id = NULL WHERE workflow_id = ?", workflow_id)
+
+    total, steps = await _spent(service, workflow_id)
+    assert steps["research"] is None, "no step owns it any more"
+    assert total is not None and total.cost_usd == pytest.approx(5.0)
+
+    plan_id, plan_token = await step(service, workflow_id, "plan")
+    response = await service.run_step(workflow_id, plan_id, plan_token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED

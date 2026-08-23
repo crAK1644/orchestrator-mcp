@@ -36,7 +36,7 @@ from .test_workflow_service import (  # noqa: F401 -- fixtures
 
 
 @pytest.fixture
-def workflow_config(config, repo, host_claude):  # noqa: F811 -- the imported fixtures
+def workflow_config(config, repo, host_claude):
     """The dashboard's config, with a workflow configured.
 
     `store_full_content` because `workflow:` refuses without it: a workflow *is* its
@@ -122,7 +122,7 @@ def old_database(path) -> None:
 # --- an un-migrated database ------------------------------------------------
 
 
-async def test_the_workflows_page_asks_for_a_restart_rather_than_raising(serve, workflow_config):  # noqa: F811
+async def test_the_workflows_page_asks_for_a_restart_rather_than_raising(serve, workflow_config):
     """The read-only connection cannot create the table, so the page has to say so."""
     consult_config = workflow_config()
     old_database(consult_config.database_path)
@@ -136,7 +136,7 @@ async def test_the_workflows_page_asks_for_a_restart_rather_than_raising(serve, 
 
 
 async def test_a_workflow_page_on_an_un_migrated_database_is_a_sentence_not_a_500(
-    serve, workflow_config  # noqa: F811
+    serve, workflow_config
 ):
     consult_config = workflow_config()
     old_database(consult_config.database_path)
@@ -149,7 +149,7 @@ async def test_a_workflow_page_on_an_un_migrated_database_is_a_sentence_not_a_50
 
 
 async def test_the_index_carries_the_notice_when_workflows_are_configured(
-    serve, workflow_config  # noqa: F811
+    serve, workflow_config
 ):
     consult_config = workflow_config()
     old_database(consult_config.database_path)
@@ -161,7 +161,7 @@ async def test_the_index_carries_the_notice_when_workflows_are_configured(
     assert "restart the MCP server" in body
 
 
-async def test_a_database_that_does_not_exist_yet_is_not_a_restart(serve, workflow_config):  # noqa: F811
+async def test_a_database_that_does_not_exist_yet_is_not_a_restart(serve, workflow_config):
     get, _ = serve(workflow_config())
 
     status, body = get("/workflows")
@@ -171,7 +171,7 @@ async def test_a_database_that_does_not_exist_yet_is_not_a_restart(serve, workfl
     assert "restart" not in body
 
 
-async def test_an_install_that_runs_no_workflows_gets_no_workflows_section(serve):  # noqa: F811
+async def test_an_install_that_runs_no_workflows_gets_no_workflows_section(serve):
     """No `workflow:` block and no history: the index does not advertise a feature
     nobody configured."""
     get, _ = serve()
@@ -185,7 +185,7 @@ async def test_an_install_that_runs_no_workflows_gets_no_workflows_section(serve
 # --- history and detail -----------------------------------------------------
 
 
-async def test_a_workflow_appears_on_the_index_with_its_state(serve, workflow_config, repo):  # noqa: F811
+async def test_a_workflow_appears_on_the_index_with_its_state(serve, workflow_config, repo):
     get, consult_config = serve(workflow_config())
     workflow_id = await make_workflow(consult_config, repo)
 
@@ -199,7 +199,7 @@ async def test_a_workflow_appears_on_the_index_with_its_state(serve, workflow_co
 
 
 async def test_the_monitor_strip_counts_the_workflows_that_have_not_finished(
-    serve, workflow_config, repo  # noqa: F811
+    serve, workflow_config, repo
 ):
     get, consult_config = serve(workflow_config())
     await make_workflow(consult_config, repo)
@@ -214,7 +214,7 @@ async def test_the_monitor_strip_counts_the_workflows_that_have_not_finished(
 
 
 async def test_the_detail_page_shows_the_steps_in_the_order_they_happened(
-    serve, workflow_config, repo  # noqa: F811
+    serve, workflow_config, repo
 ):
     """`round_index, attempt, sequence` is what those three columns were added for."""
     get, consult_config = serve(workflow_config())
@@ -231,7 +231,7 @@ async def test_the_detail_page_shows_the_steps_in_the_order_they_happened(
 
 
 async def test_the_detail_page_shows_the_frozen_bindings_and_the_fix_round_cap(
-    serve, workflow_config, repo  # noqa: F811
+    serve, workflow_config, repo
 ):
     """The snapshot, not `config.workflow` as it reads now -- storing it was the point."""
     get, consult_config = serve(workflow_config())
@@ -244,7 +244,7 @@ async def test_the_detail_page_shows_the_frozen_bindings_and_the_fix_round_cap(
     assert "fix rounds 0 of" in body
 
 
-async def test_a_step_links_to_its_consultation_and_its_review(serve, workflow_config, repo):  # noqa: F811
+async def test_a_step_links_to_its_consultation_and_its_review(serve, workflow_config, repo):
     """A workflow's consultations are unreachable from the consultation list, so
     without these links there is no way to read what a reviewer actually said."""
     get, consult_config = serve(workflow_config())
@@ -269,7 +269,7 @@ async def test_a_step_links_to_its_consultation_and_its_review(serve, workflow_c
     assert get(f"/reviews/{review_id}")[0] == 200
 
 
-async def test_a_workflow_consultation_links_back_to_its_workflow(serve, workflow_config, repo):  # noqa: F811
+async def test_a_workflow_consultation_links_back_to_its_workflow(serve, workflow_config, repo):
     get, consult_config = serve(workflow_config())
     workflow_id = await make_workflow(consult_config, repo)
     database = sqlite3.connect(consult_config.database_path)
@@ -286,7 +286,7 @@ async def test_a_workflow_consultation_links_back_to_its_workflow(serve, workflo
 
 
 async def test_a_standalone_consultation_says_nothing_about_workflows(
-    serve, workflow_config, repo  # noqa: F811
+    serve, workflow_config, repo
 ):
     """Most consultations are nobody's step, and an empty row would be noise."""
     get, consult_config = serve(workflow_config())
@@ -303,7 +303,7 @@ async def test_a_standalone_consultation_says_nothing_about_workflows(
     assert "<dt>Workflow</dt>" not in body
 
 
-async def test_a_workflow_that_is_not_there_is_a_404(serve, workflow_config, repo):  # noqa: F811
+async def test_a_workflow_that_is_not_there_is_a_404(serve, workflow_config, repo):
     get, consult_config = serve(workflow_config())
     await make_workflow(consult_config, repo)
 
@@ -317,7 +317,7 @@ async def test_a_workflow_that_is_not_there_is_a_404(serve, workflow_config, rep
 
 
 async def test_the_workflow_pages_offer_no_way_to_delete_anything(
-    serve, workflow_config, repo  # noqa: F811
+    serve, workflow_config, repo
 ):
     """Deletion stays on the MCP tools, where the confirmation token lives. A GET that
     could erase a workflow would also be a GET a stray link could fire."""
@@ -328,3 +328,49 @@ async def test_the_workflow_pages_offer_no_way_to_delete_anything(
         _, body = get(path)
         assert "<form" not in body
         assert "Delete" not in body
+
+
+# --- spend -------------------------------------------------------------------
+
+
+async def test_the_workflow_pages_report_what_was_spent(serve, workflow_config, repo):
+    """Both the delegated step and the reviewer, whose consultation hangs off the
+    review rather than off the workflow."""
+    consult_config = workflow_config()
+    workflow_id = await make_workflow(consult_config, repo)
+    get, _ = serve(consult_config)
+
+    _, listing = get("/workflows")
+    _, page = get(f"/workflows/{workflow_id}")
+
+    assert "<th>Spend" in listing and "<th>Spend" in page
+    # Two consulted steps at 12 tokens each, and the reviewer is one of them.
+    assert "24 tokens" in listing
+    assert page.count("12 tokens") == 2
+
+
+async def test_an_unpriced_workflow_says_unknown_rather_than_zero(
+    serve, workflow_config, repo
+):
+    """A free tier reports no price. `$0.0000` there would read as free."""
+    consult_config = workflow_config()
+    workflow_id = await make_workflow(consult_config, repo)
+    get, _ = serve(consult_config)
+
+    _, listing = get("/workflows")
+    _, page = get(f"/workflows/{workflow_id}")
+
+    assert "cost unknown" in listing and "cost unknown" in page
+    assert "$0.00" not in listing and "$0.00" not in page
+
+
+async def test_a_host_only_workflow_shows_no_spend_at_all(serve, workflow_config, repo):
+    """Nothing was consulted, so there is nothing to report -- not a row of zeroes."""
+    consult_config = workflow_config()
+    await make_workflow(consult_config, repo, finish=False)
+    get, _ = serve(consult_config)
+
+    _, listing = get("/workflows")
+
+    assert "tokens" not in listing
+    assert "cost unknown" not in listing

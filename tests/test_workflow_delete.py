@@ -15,16 +15,16 @@ import time
 
 import pytest
 
+from orchestrator_mcp.code.service import patch_path
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.store import StoreError
-from orchestrator_mcp.code.service import patch_path
 from orchestrator_mcp.workflow.store import _sha256
 
 from .test_workflow_service import (  # noqa: F401 -- fixtures
+    BRIEF,
     FINDINGS,
     PATCH,
     PLAN,
-    BRIEF,
     build,
     finding_ids,
     host_step,
@@ -72,7 +72,7 @@ async def count(service, table: str, where: str = "1", *params) -> int:
 # --- one workflow -----------------------------------------------------------
 
 
-async def test_deleting_a_workflow_takes_every_row_it_owns(build, repo):  # noqa: F811
+async def test_deleting_a_workflow_takes_every_row_it_owns(build, repo):
     """Seven tables, because half a workflow is worse than all of it."""
     service = await build()
     workflow_id = await finished(service, repo)
@@ -88,7 +88,7 @@ async def test_deleting_a_workflow_takes_every_row_it_owns(build, repo):  # noqa
         assert await count(service, table) == 0, table
 
 
-async def test_deleting_a_workflow_removes_its_raw_patch_files(build, repo):  # noqa: F811
+async def test_deleting_a_workflow_removes_its_raw_patch_files(build, repo):
     service = await build()
     workflow_id = await finished(service, repo)
     raw = patch_path(workflow_id, "old-round")
@@ -100,7 +100,7 @@ async def test_deleting_a_workflow_removes_its_raw_patch_files(build, repo):  # 
     assert not raw.exists()
 
 
-async def test_a_second_workflow_and_a_standalone_consultation_are_untouched(build, repo):  # noqa: F811
+async def test_a_second_workflow_and_a_standalone_consultation_are_untouched(build, repo):
     """The delete is scoped by id, not by table."""
     service = await build()
     kept = await finished(service, repo, goal="keep this one")
@@ -116,7 +116,7 @@ async def test_a_second_workflow_and_a_standalone_consultation_are_untouched(bui
     assert await count(service, "consultations", "id = ?", str(plain.consultation_id)) == 1
 
 
-async def test_deleting_a_workflow_that_is_not_there_is_not_an_error(build, repo):  # noqa: F811
+async def test_deleting_a_workflow_that_is_not_there_is_not_an_error(build, repo):
     """Nothing was removed and nothing was wrong; the count says which."""
     service = await build()
     assert await service.delete("2f0d5e10-0000-0000-0000-000000000000") == 0
@@ -125,7 +125,7 @@ async def test_deleting_a_workflow_that_is_not_there_is_not_an_error(build, repo
 # --- what is still moving ---------------------------------------------------
 
 
-async def test_an_open_workflow_is_refused_and_told_how_to_close_it(build, repo):  # noqa: F811
+async def test_an_open_workflow_is_refused_and_told_how_to_close_it(build, repo):
     service = await build()
     workflow_id = await started(service, repo)
 
@@ -138,7 +138,7 @@ async def test_an_open_workflow_is_refused_and_told_how_to_close_it(build, repo)
     assert await service.delete(workflow_id) == 1
 
 
-async def test_a_step_holding_a_live_lease_refuses_the_delete(build, repo):  # noqa: F811
+async def test_a_step_holding_a_live_lease_refuses_the_delete(build, repo):
     """A lease may belong to an agent process in another server.
 
     Deleting the rows now would leave that process writing into a workflow that is
@@ -163,7 +163,7 @@ async def test_a_step_holding_a_live_lease_refuses_the_delete(build, repo):  # n
     assert await count(service, "workflow_runs") == 1
 
 
-async def test_an_expired_lease_does_not_wedge_the_workflow_forever(build, repo):  # noqa: F811
+async def test_an_expired_lease_does_not_wedge_the_workflow_forever(build, repo):
     """The holder crashed. The row it left behind is `reap_abandoned`'s to resolve,
     and the delete only compares against it rather than rewriting it."""
     service = await build()
@@ -182,7 +182,7 @@ async def test_an_expired_lease_does_not_wedge_the_workflow_forever(build, repo)
 # --- delete-all -------------------------------------------------------------
 
 
-async def test_a_workflow_created_after_the_count_survives_the_confirmation(build, repo):  # noqa: F811
+async def test_a_workflow_created_after_the_count_survives_the_confirmation(build, repo):
     """An approval is for the workflows the user was shown."""
     service = await build()
     old = await finished(service, repo)
@@ -195,7 +195,7 @@ async def test_a_workflow_created_after_the_count_survives_the_confirmation(buil
     assert await count(service, "workflow_runs", "id = ?", new) == 1
 
 
-async def test_an_open_workflow_is_counted_and_then_refused(build, repo):  # noqa: F811
+async def test_an_open_workflow_is_counted_and_then_refused(build, repo):
     """Not quietly dropped from the snapshot.
 
     A review leaves `running` on its own, so filtering one out is temporary. A
@@ -212,7 +212,7 @@ async def test_an_open_workflow_is_counted_and_then_refused(build, repo):  # noq
     assert await count(service, "workflow_runs", "id = ?", open_workflow) == 1
 
 
-async def test_a_refused_delete_does_not_burn_the_confirmation(build, repo):  # noqa: F811
+async def test_a_refused_delete_does_not_burn_the_confirmation(build, repo):
     service = await build()
     workflow_id = await started(service, repo)
     token, _ = await service.request_delete_all()
@@ -223,7 +223,7 @@ async def test_a_refused_delete_does_not_burn_the_confirmation(build, repo):  # 
     assert await service.delete_all(token) == 1
 
 
-async def test_an_expired_confirmation_is_refused_rather_than_widened(build, repo):  # noqa: F811
+async def test_an_expired_confirmation_is_refused_rather_than_widened(build, repo):
     service = await build()
     await finished(service, repo)
     token, _ = await service.store.request_delete_all_workflows(ttl_s=-1)
@@ -233,7 +233,7 @@ async def test_an_expired_confirmation_is_refused_rather_than_widened(build, rep
     assert await count(service, "workflow_runs") == 1
 
 
-async def test_a_confirmation_is_spent_once(build, repo):  # noqa: F811
+async def test_a_confirmation_is_spent_once(build, repo):
     service = await build()
     await finished(service, repo)
     token, _ = await service.request_delete_all()
@@ -243,7 +243,7 @@ async def test_a_confirmation_is_spent_once(build, repo):  # noqa: F811
         await service.delete_all(token)
 
 
-async def test_the_confirmation_row_holds_only_the_hash(build, repo):  # noqa: F811
+async def test_the_confirmation_row_holds_only_the_hash(build, repo):
     service = await build()
     token, _ = await service.request_delete_all()
 
@@ -277,7 +277,7 @@ async def review_of(service, workflow_id: str) -> str:
     ).fetchone()[0]
 
 
-async def test_a_recheck_of_a_workflow_review_outlives_the_workflow(build, repo):  # noqa: F811
+async def test_a_recheck_of_a_workflow_review_outlives_the_workflow(build, repo):
     """Deleting a workflow must not take a review the workflow never owned.
 
     `parent_review_id` is a link, not ownership. Walking it downward would sweep up
@@ -312,7 +312,7 @@ async def test_a_recheck_of_a_workflow_review_outlives_the_workflow(build, repo)
         assert await count(service, "consultations", "id = ?", consultation_id) == 1
 
 
-async def test_a_recheck_made_after_the_count_survives_the_confirmation(build, repo):  # noqa: F811
+async def test_a_recheck_made_after_the_count_survives_the_confirmation(build, repo):
     """The approval names workflow ids, and the reviews are read from those ids.
 
     Expanding a review tree at confirmation time would reach rows that did not exist
@@ -333,7 +333,7 @@ async def test_a_recheck_made_after_the_count_survives_the_confirmation(build, r
 # --- the two columns that say who owns a review ------------------------------
 
 
-async def test_a_step_and_its_review_agree_on_which_workflow_owns_it(build, repo):  # noqa: F811
+async def test_a_step_and_its_review_agree_on_which_workflow_owns_it(build, repo):
     """`workflow_steps.review_id` and `reviews.workflow_id` name the same workflow.
 
     Both delete paths read ownership off `reviews.workflow_id`, while what they are
@@ -380,7 +380,7 @@ async def test_a_step_and_its_review_agree_on_which_workflow_owns_it(build, repo
 # --- the defect this update names -------------------------------------------
 
 
-async def test_a_fix_round_is_never_handed_an_empty_review(build, repo):  # noqa: F811
+async def test_a_fix_round_is_never_handed_an_empty_review(build, repo):
     """The regression the review guard exists to prevent.
 
     `ReviewService.get` answers a missing review with an error envelope rather than

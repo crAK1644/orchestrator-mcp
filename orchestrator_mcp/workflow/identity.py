@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from ..consult.adapters.base import _same_model, _tokens
 
-
 # The one reason that means "these are the same model" rather than "we cannot tell".
 # A named constant because `host_identity_conflict` words those two cases
 # differently and comparing against a literal twice is how they drift apart.

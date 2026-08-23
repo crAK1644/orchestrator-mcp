@@ -22,7 +22,10 @@ from orchestrator_mcp.code.registry import (
 from orchestrator_mcp.consult.config import ConsultConfig, StepBinding
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.workflow.contract import WorkflowError, repository_access_for
-from orchestrator_mcp.workflow.identity import host_identity_conflict, same_execution_identity
+from orchestrator_mcp.workflow.identity import (
+    host_identity_conflict,
+    same_execution_identity,
+)
 from orchestrator_mcp.workflow.routing import WorkflowRouter
 
 from .test_workflow_service import WORKFLOW_SCORES, workflow_agent

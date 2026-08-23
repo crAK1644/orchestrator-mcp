@@ -30,22 +30,25 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
-from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json, secret_lines
-from ..json_objects import fenced_json_objects, json_object_candidates
 from ..consult.config import ConsultConfig
 from ..consult.contract import (
+    MAX_CONTEXT_CHARS,
     ConsultAgentsResponse,
+    ConsultationContent,
     ConsultError,
     ConsultResponse,
     ConsultSource,
-    ConsultationContent,
     Runtime,
     SourceMode,
 )
 from ..consult.errors import ConsultErrorCode
 from ..consult.service import ConsultService
 from ..consult.store import ConsultStore, StoreError
-from ..consult.contract import MAX_CONTEXT_CHARS
+from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json, secret_lines
+from ..json_objects import fenced_json_objects, json_object_candidates
+from ..log import get_logger
+from ..progress import step as progress_step
+from ..spend import refusal as spend_refusal
 from ..workflow.identity import host_identity_conflict, same_execution_identity
 from .contract import (
     FIX_STEPS,
@@ -65,9 +68,9 @@ from .contract import (
     MaterialItem,
     Outcome,
     RawReviewMaterial,
-    ReviewListing,
     ReviewerResult,
     ReviewerSnapshot,
+    ReviewListing,
     ReviewMode,
     ReviewPlan,
     ReviewResponse,
@@ -77,6 +80,8 @@ from .contract import (
     missing_serious,
 )
 from .store import REVIEW_LEASE_SLACK_S, ReviewStore, _now, canonical, sha256
+
+log = get_logger(__name__)
 
 # Statuses a review may be retried from. `failed` is here on purpose: a review
 # where every reviewer was offline is exactly the one worth running again.
@@ -449,6 +454,8 @@ class ReviewService:
                 )
             goal, context = material.goal, material.context
 
+        await self._within_ceiling(review.id)
+
         results = await self._batch(
             review,
             [s.agent_id for s in approved],
@@ -511,6 +518,7 @@ class ReviewService:
                     "the exact original goal and context in `raw`"
                 )
             goal, context = material.goal, material.context
+        await self._within_ceiling(review.id)
         if not await self.store.transition(review.id, "running", RETRYABLE):
             raise ValueError(
                 f"review `{review.id}` is `{review.status}` and cannot be retried from there"
@@ -538,6 +546,10 @@ class ReviewService:
         """
         prompt = f"{goal}\n\n{REVIEWER_INSTRUCTIONS}"
         source_mode = SourceMode.WEB if review.web_requested else SourceMode.AUTO
+        # Counted here rather than from `done`, because the point of reporting it is to
+        # say so while the others are still running. Incremented with no await between
+        # the read and the write, so the tasks cannot interleave on it.
+        answered = 0
         ttl = self.config.timeout_s + REVIEW_LEASE_SLACK_S
 
         async def one(agent_id: str) -> ReviewerResult:
@@ -571,6 +583,13 @@ class ReviewService:
                 answer=result.answer,
                 error_code=result.error.code.value if result.error else None,
                 sources=[s.model_dump(mode="json") for s in result.sources] or None,
+            )
+            nonlocal answered
+            answered += 1
+            await progress_step(
+                f"{answered} of {len(agent_ids)} reviewers answered",
+                float(answered),
+                float(len(agent_ids)),
             )
             return result
 
@@ -617,6 +636,10 @@ class ReviewService:
                         raise ValueError(
                             f"review `{review.id}` was cancelled before its reviewers started"
                         )
+                    log.info("review %s: %d reviewers starting", review.id, len(agent_ids))
+                    await progress_step(
+                        f"asking {len(agent_ids)} reviewers", 0, float(len(agent_ids))
+                    )
                     tasks = [asyncio.create_task(one(agent_id)) for agent_id in agent_ids]
                     self._tasks[review_key] = tasks
                     try:
@@ -653,6 +676,12 @@ class ReviewService:
                         agent_id=agent_id,
                     ),
                 )
+        log.info(
+            "review %s: %d of %d reviewers answered",
+            review.id,
+            sum(1 for r in out.values() if r.ok),
+            len(agent_ids),
+        )
         return out
 
     async def _settle(
@@ -687,6 +716,23 @@ class ReviewService:
             usage=_total(results),
             latency_ms=_ms(started),
         ).check_invariants()
+
+    async def _within_ceiling(self, review_id: str) -> None:
+        """Refuse a round that would be paid for past `consult.spend`.
+
+        Checked before the token is spent and before any subprocess starts, so a
+        refusal costs nothing and leaves the plan runnable once the ceiling is
+        raised. A first run has spent nothing and is never refused here -- what this
+        stops is the *next* round, which is retries and the rounds a workflow drives.
+        """
+        message = spend_refusal(
+            await self.consult.store.review_usage(review_id),
+            self.consult.config.spend.max_cost_usd_per_review,
+            f"review `{review_id}`",
+        )
+        if message is not None:
+            log.warning("review %s refused: %s", review_id, message)
+            raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
 
     async def _results(
         self, review_id: str, fresh: dict[str, ReviewerResult] | None = None

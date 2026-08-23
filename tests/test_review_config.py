@@ -12,11 +12,14 @@ import pytest
 import yaml
 
 from orchestrator_mcp.consult.config import ConsultConfig, load_consult_config
-from orchestrator_mcp.consult.managed import read_managed, read_managed_document, write_managed
+from orchestrator_mcp.consult.managed import (
+    read_managed,
+    read_managed_document,
+    write_managed,
+)
 from orchestrator_mcp.contract import ConfigError
 
 from .conftest import agent, consult_block
-
 
 # --- the shape of the block -------------------------------------------------
 

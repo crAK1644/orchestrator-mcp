@@ -34,7 +34,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib.metadata import PackageNotFoundError, version as _distribution_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _distribution_version
 from pathlib import Path
 from typing import Any, get_args
 from urllib.parse import parse_qs, unquote, urlparse
@@ -967,6 +968,27 @@ class ConsultDashboard:
             (limit,),
         )
 
+    def _workflow_spend(self) -> dict[str, sqlite3.Row]:
+        """Spend per workflow, for every workflow at once.
+
+        One grouped query rather than a subquery per row: the list page shows 200.
+        """
+        rows = self._query(
+            f"SELECT COALESCE(c.workflow_id, r.workflow_id) AS workflow_id, {_SPEND_COLUMNS}"
+            f"{_SPEND_FROM} WHERE c.workflow_id IS NOT NULL OR r.workflow_id IS NOT NULL "
+            "GROUP BY 1"
+        )
+        return {row["workflow_id"]: row for row in rows}
+
+    def _step_spend(self, workflow_id: str) -> dict[str, sqlite3.Row]:
+        """Spend per step of one workflow, keyed by step id."""
+        rows = self._query(
+            f"SELECT COALESCE(c.step_id, r.step_id) AS step_id, {_SPEND_COLUMNS}"
+            f"{_SPEND_FROM} WHERE c.workflow_id = ? OR r.workflow_id = ? GROUP BY 1",
+            (workflow_id, workflow_id),
+        )
+        return {row["step_id"]: row for row in rows if row["step_id"] is not None}
+
     def _workflows_section(self) -> str:
         """The newest few on the index -- and nothing at all where workflows are unused."""
         missing = self._workflows_missing()
@@ -989,6 +1011,7 @@ class ConsultDashboard:
     def _workflows_table(self, rows: list[sqlite3.Row]) -> str:
         if not rows:
             return "<div class=empty-state>No workflows recorded yet.</div>"
+        spend = self._workflow_spend()
         body = "".join(
             "<tr>"
             f"<td class=primary-cell data-label=Workflow>"
@@ -1001,12 +1024,14 @@ class ConsultDashboard:
             f"<td data-label=Steps>{row['steps']} step{'s' if row['steps'] != 1 else ''}"
             f"<span class={'bad' if row['failures'] else 'meta'}> &middot; "
             f"{row['failures']} failed</span></td>"
+            f"<td data-label=Spend>{_spend(spend.get(row['id']))}</td>"
             f"<td class=meta data-label=Started>{_when(row['created_at'])}</td>"
             "</tr>"
             for row in rows
         )
         head = (
-            "<thead><tr><th>Workflow<th>State<th>Fix rounds<th>Steps<th>Started</tr></thead>"
+            "<thead><tr><th>Workflow<th>State<th>Fix rounds<th>Steps<th>Spend"
+            "<th>Started</tr></thead>"
         )
         return (
             "<div class='table-shell table-shell--cards'>"
@@ -1089,6 +1114,7 @@ class ConsultDashboard:
         )
         if not rows:
             return "<div class=empty-state>No steps planned yet.</div>"
+        spend = self._step_spend(workflow_id)
         body = ""
         for row in rows:
             links = []
@@ -1110,11 +1136,15 @@ class ConsultDashboard:
                 f"<span class=meta>{_e(mode)} &middot; {_e(row['repository_access'])}</span></td>"
                 f"<td data-label=Recorded>{_e(row['reported_by'] or '--')}"
                 f"<span class=meta>{_when(row['updated_at'])}</span></td>"
+                f"<td data-label=Spend>{_spend(spend.get(row['id']))}</td>"
                 f"<td data-label=Trace>"
                 f"{' &middot; '.join(links) or '<span class=meta>--</span>'}</td>"
                 "</tr>"
             )
-        head = "<thead><tr><th>Step<th>State<th>Ran as<th>Recorded<th>Trace</tr></thead>"
+        head = (
+            "<thead><tr><th>Step<th>State<th>Ran as<th>Recorded<th>Spend"
+            "<th>Trace</tr></thead>"
+        )
         return (
             "<div class='table-shell table-shell--cards'>"
             f"<table class=data-table>{head}<tbody>{body}</tbody></table></div>"
@@ -2057,6 +2087,38 @@ NOT_MIGRATED_WORKFLOWS = (
 # open here too rather than silently counted as finished. The dashboard imports the
 # contract, never a store: its connection is `mode=ro` and it does its own SQL.
 _TERMINAL_SQL = ", ".join(f"'{state}'" for state in sorted(TERMINAL_STATES))
+
+
+# Every turn charged to one workflow, from either end: what its delegated steps
+# spent directly, and what the reviewers its review steps own spent -- a reviewer's
+# consultation carries its review, not the workflow. The scalar subquery is
+# deliberate; joining `review_consultations` would multiply a turn by however many
+# rows point at its consultation, and this number is money.
+_SPEND_FROM = (
+    "FROM consultation_turns t JOIN consultations c ON c.id = t.consultation_id "
+    "LEFT JOIN reviews r ON r.id = (SELECT rc.review_id FROM review_consultations rc "
+    "WHERE rc.consultation_id = c.id LIMIT 1) "
+)
+_SPEND_COLUMNS = (
+    "COUNT(*) AS turns, COALESCE(SUM(t.total_tokens), 0) AS tokens, "
+    "COUNT(t.cost_usd) AS priced, SUM(t.cost_usd) AS cost_usd "
+)
+
+
+def _spend(row: sqlite3.Row | None) -> str:
+    """Tokens and price for one workflow or step, or "--" where nothing was spent.
+
+    An unpriced turn reads as **unknown**, never as `0.00`. A free tier reports no
+    price, and a zero there would say the work was free rather than unmeasured.
+    """
+    if row is None or not row["turns"]:
+        return "<span class=meta>--</span>"
+    cost = (
+        f"${row['cost_usd'] or 0:.4f}"
+        if row["priced"] == row["turns"]
+        else "cost unknown"
+    )
+    return f"{row['tokens']:,} tokens<span class=meta>{cost}</span>"
 
 
 def _cap(policy_json: object) -> str:

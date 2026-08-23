@@ -23,9 +23,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..contract import MAX_ERROR_CHARS
 from ..consult.contract import Capability, ConsultError, ExecutionMode, Runtime
 from ..consult.errors import ConsultErrorCode
+from ..contract import MAX_ERROR_CHARS, Usage
 
 
 class WorkflowError(Exception):
@@ -441,6 +441,11 @@ class StepView(BaseModel):
     reported_by: ReportedBy | None = None
     raw_patch_sha256: str | None = None
     output: dict | None = None
+    # What this step spent, rebuilt from its consultation's turn ledger at read
+    # time. `None` for a host step, which spends nothing here; a delegated step
+    # whose agent reports no price has a usage with `cost_usd` unset rather than a
+    # zero, because unmeasured is not free.
+    usage: Usage | None = None
 
 
 class StepPreview(BaseModel):
@@ -489,6 +494,10 @@ class WorkflowView(BaseModel):
     # Which steps may be planned from where the workflow is now. Derived from
     # `runs_from`, so it cannot disagree with what `plan_step` will accept.
     next_steps: list[Step] = Field(default_factory=list)
+    # The steps' spend added up, reviewers included. `cost_usd` is set only when
+    # every step that spent anything reported a price -- one unpriced agent makes
+    # the total a floor, and a floor presented as a sum is worse than no number.
+    usage: Usage | None = None
 
 
 class WorkflowResponse(BaseModel):

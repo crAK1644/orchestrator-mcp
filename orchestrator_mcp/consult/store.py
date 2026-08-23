@@ -38,9 +38,33 @@ from typing import Any, TypeVar
 from uuid import UUID
 
 from ..contract import Usage, scrub_json
+from ..log import get_logger
+from ..spend import Spend
 from .contract import ConsultRoute, SourceMode
 from .errors import ConsultErrorCode
 from .routing import RoutingDecision
+
+log = get_logger(__name__)
+
+# The key for spend that reached a workflow without naming a step. No step view can
+# show it, and the alternative -- dropping it -- would understate what was spent.
+_UNATTRIBUTED = "_unattributed"
+
+
+def _spend(row: sqlite3.Row) -> Spend:
+    """One grouped row of the turn ledger, read as both a display and a bound."""
+    known = row["cost_usd"] or 0.0
+    return Spend(
+        usage=Usage(
+            prompt_tokens=row["input_tokens"],
+            completion_tokens=row["output_tokens"],
+            total_tokens=row["total_tokens"],
+            # Every turn priced, or no price at all: a partial sum shown as a total
+            # reads as complete, and it is a floor.
+            cost_usd=known if row["priced_turns"] == row["turns"] else None,
+        ),
+        known_cost_usd=float(known),
+    )
 
 # Applied in order, by index. Append only -- an edit to a shipped migration is a
 # database that disagrees with itself depending on when it was created.
@@ -738,6 +762,91 @@ class ConsultStore:
 
         return await self._run(work)
 
+    async def review_usage(self, review_id: str) -> dict[str, Spend]:
+        """What each reviewer of one review spent, keyed by agent id.
+
+        Same ledger and same rule as `workflow_usage`: cumulative over the linked
+        consultation's turns, so a retried reviewer counts every attempt exactly once,
+        and `usage.cost_usd` is `None` unless every one of those turns was priced.
+        """
+
+        def work() -> dict[str, Spend]:
+            rows = self._db.execute(
+                "SELECT rc.agent_id AS agent_id, COUNT(*) AS turns, "
+                "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
+                "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
+                "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
+                "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd "
+                "FROM consultation_turns t "
+                "JOIN review_consultations rc ON rc.consultation_id = t.consultation_id "
+                "WHERE rc.review_id = ? GROUP BY 1",
+                (review_id,),
+            ).fetchall()
+            return {row["agent_id"]: _spend(row) for row in rows}
+
+        return await self._run(work)
+
+    async def workflow_usage(self, workflow_id: str) -> dict[str, Spend]:
+        """What each step of one workflow spent, keyed by step id.
+
+        Rebuilt from the turn ledger at read time rather than stored on the step, so
+        a retried step counts every attempt exactly once and nothing has to be kept
+        in sync -- the same property the reviewer rollup relies on.
+
+        Two links reach the same place. A delegated step owns its consultation
+        directly (`consultations.workflow_id`); a review step owns a review, and the
+        reviewers' consultations carry the review rather than the workflow. The join
+        covers both, so a workflow's total includes what its reviewers cost.
+
+        `usage.cost_usd` is `None` unless *every* turn behind that step was priced. A
+        free tier reports no price, and a zero there would read as free rather than as
+        unmeasured -- but `known_cost_usd` still carries whatever price the rest of
+        the group did report, because that money was spent either way.
+        """
+
+        def work() -> dict[str, Spend]:
+            rows = self._db.execute(
+                # The step is read from whichever relationship put this row in *this*
+                # workflow. `COALESCE(c.step_id, r.step_id)` would prefer a non-null
+                # direct step even on a row that only qualified through its review,
+                # keying another workflow's step into this one's rollup.
+                "SELECT CASE WHEN c.workflow_id = :workflow_id "
+                "THEN COALESCE(c.step_id, r.step_id) ELSE COALESCE(r.step_id, c.step_id) END "
+                "AS step_id, COUNT(*) AS turns, "
+                "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
+                "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
+                "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
+                "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd "
+                "FROM consultation_turns t JOIN consultations c ON c.id = t.consultation_id "
+                # A scalar subquery rather than a join to `review_consultations`: a
+                # join there would multiply one turn by however many rows point at
+                # its consultation, and this number is money. Narrowed to *this*
+                # workflow's reviews, because `review_consultations.consultation_id`
+                # carries no uniqueness constraint: an unconstrained `LIMIT 1` would
+                # pick some other workflow's review and drop the turn from both.
+                #
+                # `ORDER BY rc.rowid` for the residue that narrowing leaves. A
+                # consultation is created and linked to exactly one `(review_id,
+                # agent_id)` row, so two reviews in one workflow cannot claim it
+                # today -- but nothing in the schema says so, and if that ever
+                # changed an unordered `LIMIT 1` would move a step's spend between
+                # two refreshes of the same page. Deterministically wrong is a bug
+                # somebody can see; intermittently wrong is one nobody can.
+                "LEFT JOIN reviews r ON r.id = (SELECT rc.review_id FROM review_consultations rc "
+                "JOIN reviews r2 ON r2.id = rc.review_id "
+                "WHERE rc.consultation_id = c.id AND r2.workflow_id = :workflow_id "
+                "ORDER BY rc.rowid LIMIT 1) "
+                "WHERE c.workflow_id = :workflow_id OR r.workflow_id = :workflow_id "
+                "GROUP BY 1",
+                {"workflow_id": workflow_id},
+            ).fetchall()
+            # A turn that reached this workflow without naming a step is still money
+            # the workflow spent, so it is bucketed rather than dropped: no step view
+            # claims it, and the workflow total and its ceiling both still see it.
+            return {(row["step_id"] or _UNATTRIBUTED): _spend(row) for row in rows}
+
+        return await self._run(work)
+
     async def latest_response(self, consultation_id: UUID | str) -> dict[str, Any] | None:
         """The latest retained structured answer, for rebuilding a review result."""
 
@@ -984,6 +1093,7 @@ class ConsultStore:
         # release keyed on the process would delete a lease it does not own.
         token = f"pid-{os.getpid()}-{uuid.uuid4().hex[:12]}"
         await self._run(lambda: self._acquire(str(consultation_id), ttl_s, token))
+        log.debug("lease taken on %s ttl=%gs", consultation_id, ttl_s)
         async with _renewing_lease(
             self._run,
             lambda: self._renew(str(consultation_id), ttl_s, token),
@@ -1012,6 +1122,7 @@ class ConsultStore:
         db.execute("COMMIT")
 
         if not taken:
+            log.info("lease refused on %s: a turn is already in flight", consultation_id)
             raise StoreError(
                 ConsultErrorCode.SESSION_BUSY,
                 f"consultation `{consultation_id}` already has a turn in flight; "
@@ -1031,6 +1142,9 @@ class ConsultStore:
             (time.time() + ttl_s, consultation_id, token),
         )
         if cursor.rowcount != 1:
+            # The turn is about to be cancelled out from under itself, so this is the
+            # one lease event that is never routine.
+            log.warning("lease lost on %s while its turn was still running", consultation_id)
             raise StoreError(
                 ConsultErrorCode.SESSION_BUSY,
                 f"consultation `{consultation_id}` lost its execution lease while its turn "

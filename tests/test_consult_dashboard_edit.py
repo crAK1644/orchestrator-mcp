@@ -75,7 +75,7 @@ def written(path):
 # --- getting to the form ----------------------------------------------------
 
 
-async def test_the_editing_pages_do_not_exist_unless_editing_is_on(serve):  # noqa: F811
+async def test_the_editing_pages_do_not_exist_unless_editing_is_on(serve):
     get, _ = serve()
     for path in ("/agents", "/agents/new", "/agents/codex-sol"):
         status, body = get(path)
@@ -86,7 +86,7 @@ async def test_the_editing_pages_do_not_exist_unless_editing_is_on(serve):  # no
     assert "/agents" not in index, "no link to a page the config turned off"
 
 
-async def test_the_index_links_to_the_form_when_editing_is_on(serve, editable):  # noqa: F811
+async def test_the_index_links_to_the_form_when_editing_is_on(serve, editable):
     get, _ = serve(editable())
     _, body = get("/")
     assert "/agents" in body
@@ -96,7 +96,7 @@ async def test_the_index_links_to_the_form_when_editing_is_on(serve, editable): 
     assert "<form" in body and "name=command" in body
 
 
-async def test_the_form_offers_every_capability_and_every_reasoning_level(serve, editable):  # noqa: F811
+async def test_the_form_offers_every_capability_and_every_reasoning_level(serve, editable):
     get, _ = serve(editable())
     _, body = get("/agents/new")
     for capability in ("coding", "research", "writing", "reasoning", "review"):
@@ -105,7 +105,7 @@ async def test_the_form_offers_every_capability_and_every_reasoning_level(serve,
         assert f">{level}<" in body
 
 
-async def test_the_form_suggests_a_model_for_every_runtime_without_closing_the_field(  # noqa: F811
+async def test_the_form_suggests_a_model_for_every_runtime_without_closing_the_field(
     serve, editable
 ):
     """A `datalist`, not a `select`. Presets save the operator from remembering that the
@@ -124,7 +124,7 @@ async def test_the_form_suggests_a_model_for_every_runtime_without_closing_the_f
             assert f"value='{slug}' label='{runtime}'" in body
 
 
-async def test_an_agent_from_config_yaml_is_shown_but_not_editable(serve, editable):  # noqa: F811
+async def test_an_agent_from_config_yaml_is_shown_but_not_editable(serve, editable):
     get, _ = serve(editable())
     _, body = get("/agents")
     assert "config.yaml" in body and "codex-sol" in body
@@ -148,7 +148,7 @@ async def test_an_agent_from_config_yaml_is_shown_but_not_editable(serve, editab
     ],
 )
 async def test_a_write_that_is_not_ours_is_refused_and_changes_nothing(
-    serve, editable, mutate, header  # noqa: F811
+    serve, editable, mutate, header
 ):
     """The status code is the easy half. The file is the half that matters: a refusal
     that still wrote would be indistinguishable from a success on the next page load."""
@@ -160,7 +160,7 @@ async def test_a_write_that_is_not_ours_is_refused_and_changes_nothing(
     assert not editable.path.exists(), "nothing may reach disk before the token checks out"
 
 
-async def test_a_post_is_refused_outright_when_editing_is_off(serve, editable):  # noqa: F811
+async def test_a_post_is_refused_outright_when_editing_is_off(serve, editable):
     """The token is a real one -- the flag is what refuses, not a stale form."""
     get, _ = serve()
     status, body, _ = get.post("/agents", form() | {"_token": get.token})
@@ -169,7 +169,7 @@ async def test_a_post_is_refused_outright_when_editing_is_off(serve, editable): 
     assert not editable.path.exists()
 
 
-async def test_an_oversized_body_is_refused_before_it_is_read(serve, editable):  # noqa: F811
+async def test_an_oversized_body_is_refused_before_it_is_read(serve, editable):
     get, _ = serve(editable())
     status, _, _ = get.post(
         "/agents", form(model="m" * (64 * 1024), _token=get.token)
@@ -179,7 +179,7 @@ async def test_an_oversized_body_is_refused_before_it_is_read(serve, editable): 
 
 
 @pytest.mark.parametrize("length", ["banana", "-1"], ids=["not a number", "negative"])
-async def test_a_content_length_that_is_not_a_length_is_refused(serve, editable, length):  # noqa: F811
+async def test_a_content_length_that_is_not_a_length_is_refused(serve, editable, length):
     """`int()` used to run on it before anything had been checked, so the answer to a
     header like this was a traceback in a request thread rather than a page. `-1` is the
     other half: `rfile.read(-1)` reads until the client stops sending."""
@@ -198,7 +198,7 @@ async def test_a_content_length_that_is_not_a_length_is_refused(serve, editable,
     assert not editable.path.exists()
 
 
-async def test_an_unknown_post_path_is_a_404_and_not_a_write(serve, editable):  # noqa: F811
+async def test_an_unknown_post_path_is_a_404_and_not_a_write(serve, editable):
     get, _ = serve(editable())
     status, _, _ = get.post("/agents/anything", form(_token=get.token))
     assert status == 404
@@ -208,7 +208,7 @@ async def test_an_unknown_post_path_is_a_404_and_not_a_write(serve, editable):  
 # --- saving -----------------------------------------------------------------
 
 
-async def test_the_referrer_policy_leaves_the_origin_header_intact(serve, editable):  # noqa: F811
+async def test_the_referrer_policy_leaves_the_origin_header_intact(serve, editable):
     """`no-referrer` was the obvious choice and it broke saving: a browser serializes
     `Origin` as `null` under it, so every form post looked cross-site. Nothing on this
     page can reach another origin, so `same-origin` gives up nothing."""
@@ -223,7 +223,7 @@ async def test_the_referrer_policy_leaves_the_origin_header_intact(serve, editab
     connection.close()
 
 
-async def test_a_save_writes_the_agent_privately_and_redirects(serve, editable):  # noqa: F811
+async def test_a_save_writes_the_agent_privately_and_redirects(serve, editable):
     get, _ = serve(editable())
     status, _, location = get.post("/agents", form(_token=get.token))
 
@@ -243,7 +243,7 @@ async def test_a_save_writes_the_agent_privately_and_redirects(serve, editable):
     assert stat.S_IMODE(editable.path.parent.stat().st_mode) == 0o700
 
 
-async def test_a_saved_agent_is_on_the_page_the_save_redirects_to(serve, editable):  # noqa: F811
+async def test_a_saved_agent_is_on_the_page_the_save_redirects_to(serve, editable):
     """Found live: the table used to be built from the config this process loaded at
     boot, so a save landed on `Saved codex-luna` above `No agents configured here yet`,
     with no way to edit or delete it until the dashboard was restarted."""
@@ -259,7 +259,7 @@ async def test_a_saved_agent_is_on_the_page_the_save_redirects_to(serve, editabl
     assert status == 200, "which means the edit page has to serve it too"
 
 
-async def test_what_was_saved_is_what_the_server_loads_next_boot(serve, editable):  # noqa: F811
+async def test_what_was_saved_is_what_the_server_loads_next_boot(serve, editable):
     """The point of the whole feature: the round trip through the file has to produce
     a routable agent, not just a plausible-looking YAML document."""
     consult_config = editable()
@@ -276,7 +276,7 @@ async def test_what_was_saved_is_what_the_server_loads_next_boot(serve, editable
     assert saved.enabled is True and saved.managed is True
 
 
-async def test_an_unchecked_box_saves_as_off(serve, editable):  # noqa: F811
+async def test_an_unchecked_box_saves_as_off(serve, editable):
     """An unchecked checkbox is absent from the body rather than false, which is the
     classic way a form silently ignores being turned off."""
     get, _ = serve(editable())
@@ -287,13 +287,13 @@ async def test_an_unchecked_box_saves_as_off(serve, editable):  # noqa: F811
     assert written(editable.path)["codex-luna"]["enabled"] is False
 
 
-async def test_a_blank_score_is_omitted_rather_than_zero(serve, editable):  # noqa: F811
+async def test_a_blank_score_is_omitted_rather_than_zero(serve, editable):
     get, _ = serve(editable())
     get.post("/agents", form(_token=get.token, **{"score.coding": ""}))
     assert written(editable.path)["codex-luna"]["scores"] == {"review": 95}
 
 
-async def test_editing_an_agent_shows_what_is_stored_and_replaces_it(serve, editable):  # noqa: F811
+async def test_editing_an_agent_shows_what_is_stored_and_replaces_it(serve, editable):
     consult_config = editable()
     get, _ = serve(consult_config)
     get.post("/agents", form(_token=get.token))
@@ -309,7 +309,7 @@ async def test_editing_an_agent_shows_what_is_stored_and_replaces_it(serve, edit
     assert written(editable.path)["codex-luna"]["model"] == "gpt-5.6-sol"
 
 
-async def test_a_capability_is_a_tick_rather_than_a_number_to_choose(serve, editable):  # noqa: F811
+async def test_a_capability_is_a_tick_rather_than_a_number_to_choose(serve, editable):
     """Which work the agent is offered, not how good it is at it. The number the router
     ranks on still exists, but nobody is asked to invent one: ties go to `priority`."""
     get, _ = serve(editable())
@@ -324,7 +324,7 @@ async def test_a_capability_is_a_tick_rather_than_a_number_to_choose(serve, edit
     assert written(editable.path)["codex-luna"]["scores"] == {"coding": 100, "review": 95}
 
 
-async def test_a_hand_written_score_survives_a_save_that_was_not_about_it(  # noqa: F811
+async def test_a_hand_written_score_survives_a_save_that_was_not_about_it(
     serve, editable
 ):
     """The tick carries the stored number back out in the checkbox's own `value`, so
@@ -344,7 +344,7 @@ async def test_a_hand_written_score_survives_a_save_that_was_not_about_it(  # no
     assert stored["scores"] == {"review": 95} and stored["model"] == "gpt-5.6-sol"
 
 
-async def test_a_score_of_zero_on_disk_comes_back_unticked(serve, editable):  # noqa: F811
+async def test_a_score_of_zero_on_disk_comes_back_unticked(serve, editable):
     """`0` and absent mean the same thing to the router -- ineligible -- so they have to
     look the same on the form. A ticked box that submits `0` would read as offered and
     route nowhere."""
@@ -357,7 +357,7 @@ async def test_a_score_of_zero_on_disk_comes_back_unticked(serve, editable):  # 
     assert "name='score.review' value='100'> review" in body
 
 
-async def test_a_save_leaves_the_agents_it_did_not_touch_alone(serve, editable):  # noqa: F811
+async def test_a_save_leaves_the_agents_it_did_not_touch_alone(serve, editable):
     editable.path.parent.mkdir(parents=True)
     editable.path.write_text(yaml.safe_dump({"agents": {"other": agent("codex", "m")}}))
 
@@ -391,7 +391,7 @@ async def test_a_save_leaves_the_agents_it_did_not_touch_alone(serve, editable):
     ],
 )
 async def test_a_bad_save_re_renders_the_form_and_writes_nothing(
-    serve, editable, bad, expected  # noqa: F811
+    serve, editable, bad, expected
 ):
     get, _ = serve(editable())
     status, body, _ = get.post("/agents", form(_token=get.token, **bad))
@@ -402,7 +402,7 @@ async def test_a_bad_save_re_renders_the_form_and_writes_nothing(
     assert not editable.path.exists()
 
 
-async def test_a_command_that_does_not_resolve_is_refused_by_name(serve, editable):  # noqa: F811
+async def test_a_command_that_does_not_resolve_is_refused_by_name(serve, editable):
     """The mistake this catches is the real one: a CLI that is installed but not on
     PATH. Resolving is a lookup -- nothing is executed to find out."""
     get, _ = serve(editable())
@@ -415,7 +415,7 @@ async def test_a_command_that_does_not_resolve_is_refused_by_name(serve, editabl
     assert not editable.path.exists()
 
 
-async def test_a_failed_save_leaves_an_existing_file_byte_identical(serve, editable):  # noqa: F811
+async def test_a_failed_save_leaves_an_existing_file_byte_identical(serve, editable):
     get, _ = serve(editable())
     get.post("/agents", form(_token=get.token))
     before = editable.path.read_bytes()
@@ -424,7 +424,7 @@ async def test_a_failed_save_leaves_an_existing_file_byte_identical(serve, edita
     assert editable.path.read_bytes() == before
 
 
-async def test_a_failed_edit_comes_back_as_an_edit(serve, editable):  # noqa: F811
+async def test_a_failed_edit_comes_back_as_an_edit(serve, editable):
     """It used to come back as `New agent`, with the id no longer `readonly`. Correcting
     the field the error named and saving then filed a second agent under whatever the id
     box happened to say."""
@@ -440,7 +440,7 @@ async def test_a_failed_edit_comes_back_as_an_edit(serve, editable):  # noqa: F8
     assert "readonly" in body
 
 
-async def test_an_edit_cannot_be_turned_into_a_rename(serve, editable):  # noqa: F811
+async def test_an_edit_cannot_be_turned_into_a_rename(serve, editable):
     """`readonly` is the browser's half. This is the half that holds when the post did
     not come from the browser: renaming this way would leave the old agent in place."""
     get, _ = serve(editable())
@@ -456,7 +456,7 @@ async def test_an_edit_cannot_be_turned_into_a_rename(serve, editable):  # noqa:
 
 
 async def test_adding_an_agent_that_is_already_here_is_refused_rather_than_replacing_it(
-    serve, editable  # noqa: F811
+    serve, editable
 ):
     """Only `config.yaml` ids used to be checked, so `Add an agent` with an id already
     in this file overwrote it and reported a save."""
@@ -472,7 +472,7 @@ async def test_adding_an_agent_that_is_already_here_is_refused_rather_than_repla
     assert written(editable.path)["codex-luna"]["model"] == "gpt-5.6-luna"
 
 
-async def test_a_priority_field_left_empty_is_the_default_and_not_an_error(serve, editable):  # noqa: F811
+async def test_a_priority_field_left_empty_is_the_default_and_not_an_error(serve, editable):
     """A cleared number input is dropped from the body entirely, which is what tells
     the difference between "not set" and "set to nonsense"."""
     get, _ = serve(editable())
@@ -484,7 +484,7 @@ async def test_a_priority_field_left_empty_is_the_default_and_not_an_error(serve
     assert "priority" not in written(editable.path)["codex-luna"], "the default, unwritten"
 
 
-async def test_a_managed_file_that_cannot_be_read_refuses_the_write(serve, editable):  # noqa: F811
+async def test_a_managed_file_that_cannot_be_read_refuses_the_write(serve, editable):
     """The page falls back to the boot-time config so a broken file still renders. The
     write must not use that fallback: saving it back would overwrite whatever the
     operator broke, including the part they opened the file to fix.
@@ -510,7 +510,7 @@ async def test_a_managed_file_that_cannot_be_read_refuses_the_write(serve, edita
     assert editable.path.read_bytes() == before
 
 
-async def test_a_hand_edited_entry_the_form_cannot_fix_blocks_the_write(serve, editable):  # noqa: F811
+async def test_a_hand_edited_entry_the_form_cannot_fix_blocks_the_write(serve, editable):
     """A save rewrites the whole file, so it puts this process's name on every entry in
     it -- including one someone else broke. Writing that back means the next start
     refuses on a file the page reported as saved."""
@@ -528,7 +528,7 @@ async def test_a_hand_edited_entry_the_form_cannot_fix_blocks_the_write(serve, e
 
 
 async def test_a_file_with_two_kinds_of_key_refuses_the_write_rather_than_crashing(
-    serve, editable  # noqa: F811
+    serve, editable
 ):
     """`1:` is an int key and `alpha:` is a string one, and the two cannot be compared,
     so sorting them raised out of the request thread past every catch around it."""
@@ -548,7 +548,7 @@ async def test_a_file_with_two_kinds_of_key_refuses_the_write_rather_than_crashi
     assert status == 200, "and the page still renders"
 
 
-async def test_an_entry_that_spells_out_its_own_agent_id_is_not_refused(serve, editable):  # noqa: F811
+async def test_an_entry_that_spells_out_its_own_agent_id_is_not_refused(serve, editable):
     """A boot accepts `agent_id:` inside an entry and overwrites it from the key. This
     page has to accept it too, or it refuses a file the server starts on fine -- and
     refuses it while showing a table that looks perfectly normal."""
@@ -567,7 +567,7 @@ async def test_an_entry_that_spells_out_its_own_agent_id_is_not_refused(serve, e
     assert sorted(written(editable.path)) == ["alpha", "codex-luna"]
 
 
-async def test_an_agent_id_of_the_wrong_type_is_refused_rather_than_dropped(serve, editable):  # noqa: F811
+async def test_an_agent_id_of_the_wrong_type_is_refused_rather_than_dropped(serve, editable):
     """The entry's own `agent_id` is dropped before validating, because a boot accepts it
     and overwrites it from the key. A boot does not accept *any* type for it, so dropping
     it unexamined waved through the one file this check exists to catch."""
@@ -588,7 +588,7 @@ async def test_an_agent_id_of_the_wrong_type_is_refused_rather_than_dropped(serv
 
 
 async def test_an_id_in_both_files_blocks_the_write_before_the_next_boot_refuses_it(
-    serve, editable  # noqa: F811
+    serve, editable
 ):
     """Two files naming one agent is a startup error. Writing that file back would mean
     this page reporting a save on a config that will not start."""
@@ -611,7 +611,7 @@ def source_config(path, agents: dict) -> None:
 
 
 async def test_an_id_added_to_config_yaml_after_boot_still_blocks_the_write(
-    serve, editable, tmp_path  # noqa: F811
+    serve, editable, tmp_path
 ):
     """The case a boot snapshot cannot see. `codex-luna` is not in `config.yaml` when
     this dashboard starts, so nothing it loaded makes the save a duplicate -- the file
@@ -629,7 +629,7 @@ async def test_an_id_added_to_config_yaml_after_boot_still_blocks_the_write(
 
 
 async def test_an_id_deleted_from_config_yaml_after_boot_stops_blocking_the_write(
-    serve, editable, tmp_path  # noqa: F811
+    serve, editable, tmp_path
 ):
     """The other half of the same read. A snapshot refuses `codex-sol` for as long as
     the process lives; the file is what the next boot reads, and it no longer has it."""
@@ -645,7 +645,7 @@ async def test_an_id_deleted_from_config_yaml_after_boot_stops_blocking_the_writ
 
 
 async def test_a_config_yaml_that_cannot_be_read_falls_back_to_what_booted(
-    serve, editable, tmp_path  # noqa: F811
+    serve, editable, tmp_path
 ):
     """Moved, or half-written by an editor that truncates before it saves. Stale is a
     worse answer than fresh and a much better one than treating the file as empty,
@@ -671,7 +671,7 @@ async def test_a_config_yaml_that_cannot_be_read_falls_back_to_what_booted(
     ],
 )
 async def test_a_config_yaml_caught_mid_write_does_not_read_as_no_agents(
-    serve, editable, tmp_path, content  # noqa: F811
+    serve, editable, tmp_path, content
 ):
     """An editor that truncates before it writes leaves the file empty for a moment. Read
     as "config.yaml defines nobody", that window is when this check waves through the
@@ -689,7 +689,7 @@ async def test_a_config_yaml_caught_mid_write_does_not_read_as_no_agents(
 
 
 async def test_a_config_yaml_that_really_has_no_agents_is_taken_at_its_word(
-    serve, editable, tmp_path  # noqa: F811
+    serve, editable, tmp_path
 ):
     """The other side of that: every agent living in the managed file is a supported
     config, not a truncated read, so an empty `agents:` under a real `consult:` must not
@@ -703,7 +703,7 @@ async def test_a_config_yaml_that_really_has_no_agents_is_taken_at_its_word(
 
 
 async def test_an_id_in_both_files_still_leaves_the_row_that_can_delete_it(
-    serve, editable, tmp_path  # noqa: F811
+    serve, editable, tmp_path
 ):
     """The duplicate is only fixable from here by deleting the managed copy, so the page
     that reports it has to keep the row with that button on it. Dropping the whole
@@ -723,7 +723,7 @@ async def test_an_id_in_both_files_still_leaves_the_row_that_can_delete_it(
 
 
 async def test_an_agent_moved_out_of_config_yaml_is_not_listed_as_still_being_in_it(
-    serve, editable, tmp_path  # noqa: F811
+    serve, editable, tmp_path
 ):
     """Moving an agent between the files is the whole point of allowing the save. Listing
     it in both tables afterwards says the config is in the state the server refuses to
@@ -742,7 +742,7 @@ async def test_an_agent_moved_out_of_config_yaml_is_not_listed_as_still_being_in
     assert "codex-sol" not in read_only, "and does not still claim the agent that moved out"
 
 
-async def test_a_managed_file_that_is_not_text_refuses_the_write(serve, editable):  # noqa: F811
+async def test_a_managed_file_that_is_not_text_refuses_the_write(serve, editable):
     """Bytes that are not text read fine and fail at decoding, which is not an
     `OSError` and used to escape the only catch that was there."""
     get, _ = serve(editable())
@@ -757,7 +757,7 @@ async def test_a_managed_file_that_is_not_text_refuses_the_write(serve, editable
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can write a directory it has no bit for")
-async def test_a_managed_file_that_cannot_be_written_says_so(serve, editable):  # noqa: F811
+async def test_a_managed_file_that_cannot_be_written_says_so(serve, editable):
     """Readable and unwritable is a state the read guard says nothing about: the file
     parses, the entry validates, and the failure lands on `os.replace`."""
     get, _ = serve(editable())
@@ -775,7 +775,7 @@ async def test_a_managed_file_that_cannot_be_written_says_so(serve, editable):  
 
 
 async def test_an_agent_deleted_while_the_form_was_open_is_not_recreated_by_saving_it(
-    serve, editable  # noqa: F811
+    serve, editable
 ):
     """The duplicate and existence checks used to run against the page's reading of the
     file, which is a guess by the time the form comes back."""
@@ -789,7 +789,7 @@ async def test_an_agent_deleted_while_the_form_was_open_is_not_recreated_by_savi
     assert written(editable.path) == {}
 
 
-async def test_two_saves_at_once_both_survive(serve, editable, monkeypatch):  # noqa: F811
+async def test_two_saves_at_once_both_survive(serve, editable, monkeypatch):
     """Each request gets its own thread, and a save is a read, an edit and a write. Two
     of them interleaved used to end with whichever wrote second having dropped the
     other's agent -- both redirecting to `?saved=`, one of them a lie."""
@@ -823,7 +823,7 @@ async def test_two_saves_at_once_both_survive(serve, editable, monkeypatch):  # 
 
 
 async def test_an_agent_id_containing_markup_never_reaches_the_page_as_markup(
-    serve, editable  # noqa: F811
+    serve, editable
 ):
     get, _ = serve(editable())
     status, body, _ = get.post("/agents", form(_token=get.token, id="<script>x</script>"))
@@ -835,7 +835,7 @@ async def test_an_agent_id_containing_markup_never_reaches_the_page_as_markup(
 # --- deleting ---------------------------------------------------------------
 
 
-async def test_delete_removes_the_managed_agent_and_leaves_the_written_one(serve, editable):  # noqa: F811
+async def test_delete_removes_the_managed_agent_and_leaves_the_written_one(serve, editable):
     get, _ = serve(editable())
     get.post("/agents", form(_token=get.token))
 
@@ -847,14 +847,14 @@ async def test_delete_removes_the_managed_agent_and_leaves_the_written_one(serve
     assert "codex-sol" in consult_config.agents, "config.yaml is not this page's to edit"
 
 
-async def test_delete_cannot_reach_an_agent_defined_in_config_yaml(serve, editable):  # noqa: F811
+async def test_delete_cannot_reach_an_agent_defined_in_config_yaml(serve, editable):
     get, _ = serve(editable())
     status, _, _ = get.post("/agents/delete", {"_token": get.token, "id": "codex-sol"})
     assert status == 404
     assert not editable.path.exists()
 
 
-async def test_delete_without_the_token_changes_nothing(serve, editable):  # noqa: F811
+async def test_delete_without_the_token_changes_nothing(serve, editable):
     get, _ = serve(editable())
     get.post("/agents", form(_token=get.token))
     before = editable.path.read_bytes()
@@ -867,7 +867,7 @@ async def test_delete_without_the_token_changes_nothing(serve, editable):  # noq
 # --- telling the truth about restarts ---------------------------------------
 
 
-async def test_a_stale_config_hash_in_the_store_says_to_restart(serve, editable, tmp_path):  # noqa: F811
+async def test_a_stale_config_hash_in_the_store_says_to_restart(serve, editable, tmp_path):
     """The MCP server read its config at boot and this is a different process, so the
     only evidence available is what the last consultation recorded."""
     consult_config = editable()

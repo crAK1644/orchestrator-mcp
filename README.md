@@ -300,6 +300,7 @@ Agent configuration:
 | `scores` | none | 0–100 per capability; missing means ineligible. |
 | `web_search` | `false` | Permit `source_mode: web` for this agent. |
 | `reasoning_effort` | unset | `low`, `medium`, `high`, `xhigh`, or `max`; Codex only. |
+| `timeout_s` | unset | Limit for one turn with this agent, overriding `consult.timeout_s`. |
 
 </details>
 
@@ -645,7 +646,7 @@ useful than overclaiming.
 | `orchestrator_workflow_plan_step` | Preview one step and mint its one-time token, with the optional `context` the step is shown. A review step returns the review plan's own token rather than an unrelated second approval. |
 | `orchestrator_workflow_run_step` | Spend the token and run the step through its bound agent. |
 | `orchestrator_workflow_record_host_step` | Record work the host did itself. The token is consumed as the host's attestation. |
-| `orchestrator_workflow_status` | State, artifacts, selected agents, round count, and what may happen next. |
+| `orchestrator_workflow_status` | State, artifacts, selected agents, round count, spend, and what may happen next. |
 | `orchestrator_workflow_plan_replan` / `orchestrator_workflow_replan` | Change the binding snapshot under the same preview-and-approve handshake. |
 | `orchestrator_workflow_cancel` | Cancel pending work and terminate a child this process owns, with the same caveat `orchestrator_cancel_review` carries about another process's children. |
 | `orchestrator_delete_workflow` | Delete one workflow with its steps, consultations and reviews. Refused while the workflow is open or a step's lease is live. |
@@ -656,6 +657,15 @@ consultation delete path and `orchestrator_delete_review` refuses a review that 
 workflow step, because a step pointing at a row that is gone still reads as intact —
 and the next fix round would answer from the goal instead of from the review. So these
 three tools are the only way any of those rows leave the database.
+
+`orchestrator_workflow_status` reports what the workflow spent: per step, and totalled
+over the workflow with its reviewers included. The numbers are rebuilt from the
+consultations' turn ledgers at read time, so a step that took two turns counts both and
+a re-read counts neither twice. A host step reports no usage — nothing was spent on it
+here, which is not the same as it having cost zero. `cost_usd` is set only when every
+turn behind it was priced: an agent on a free tier reports no price, and one unpriced
+turn makes the total a floor rather than a sum, so it comes back unknown instead. The
+dashboard shows the same numbers on the workflow list and per step.
 
 A review step's reviewers come from its binding, so a workflow needs no `review:` block
 unless that binding is left to `auto` — then it falls back to the configured reviewers
@@ -789,12 +799,62 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 | `database_path` | `~/.orchestrator-mcp/consultations.sqlite3` | Consultation, review, and workflow history. |
 | `managed_agents_path` | `~/.orchestrator-mcp/agents.yaml` | Agents written by the dashboard. |
 | `timeout_s` | `180` | Limit for one consultation turn. |
+| `preflight_ttl_s` | `300` | How long a *ready* login check is reused before the CLI is probed again. Only a ready answer is cached; `0` probes once per turn. |
 | `web_turn_limit` | `8` | Assistant turns allowed in web mode. Enforced by the Claude runtime only. |
 | `store_full_content` | `true` | Set false to keep metadata and routing only — except a review's goal and context, which are stored either way. Reviews cannot be finalized under it — see below. |
 | `review` | absent | Configured reviewers; absent means no review tools. |
 | `workflow` | absent | The three-phase workflow; absent means no workflow tools. Requires `store_full_content: true`. |
 | `host` | runtime from the environment | Asserted host runtime, and the host model that makes same-runtime routing possible. |
+| `spend` | no ceiling | `max_cost_usd_per_review` and `max_cost_usd_per_workflow`. See below. |
 | `dashboard` | off | Loopback history UI and optional agent editor. |
+
+### Spending ceilings
+
+```yaml
+consult:
+  spend:
+    max_cost_usd_per_review: 5.0
+    max_cost_usd_per_workflow: 25.0
+```
+
+Both are optional and both are absent by default, which is no ceiling and no change
+in behavior. A review's ceiling is checked before each round of reviewers; a
+workflow's is checked before each step, reviewers included, since the workflow is
+what paid for them. The check happens before the one-time token is spent and before
+any subprocess starts, so a refusal costs nothing and the same token still works once
+the ceiling is raised.
+
+What this buys is bounded, and the bound is the point: a request cannot be priced
+before it is made, so the guarantee is that **the next request after the ceiling is
+crossed is refused**, not that spend never exceeds the ceiling. A fan-out of five
+reviewers is one request in that sense.
+
+An agent that reports no price contributes nothing to the total, which makes the
+total a floor. The refusal names those agents rather than presenting the floor as a
+sum. The error code is `spend_limit_reached`.
+
+### Watching a run
+
+`ORCHESTRATOR_LOG_LEVEL` turns on stderr logging: routing decisions, child
+processes started and exited, leases taken and lost, reviewer fan-out, and
+workflow step transitions. `WARNING` by default, so an ordinary server is quiet;
+`INFO` or `DEBUG` when you want to see what a slow run is doing.
+
+```bash
+ORCHESTRATOR_LOG_LEVEL=INFO
+```
+
+Records go to **stderr only**, never stdout — stdout is the MCP transport, and a
+log line there is a corrupt protocol frame. Credential-shaped text is masked in
+the rendered line before it is written, on the same best-effort basis as the
+database copy.
+
+The four tools that can run for minutes — `orchestrator_consult`,
+`orchestrator_review_run`, `orchestrator_retry_review` and
+`orchestrator_workflow_run_step` — also emit MCP progress notifications: a
+heartbeat every 15 seconds carrying elapsed time against the configured timeout,
+and reviewer counts as each one answers. Clients that ask for progress see them;
+clients that do not are unaffected.
 
 `consult` is the only top-level section. Configuration from releases before 0.4 containing `capabilities`, `model_list`, `router_settings`, or `limits` is rejected at startup because direct API routing was removed.
 

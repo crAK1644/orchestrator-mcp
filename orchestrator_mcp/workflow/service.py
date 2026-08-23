@@ -29,7 +29,7 @@ import asyncio
 import json
 import secrets as secrets_mod
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
@@ -45,14 +45,17 @@ from ..code.service import (
     sweep_recovery_artifacts,
     worktree_path,
 )
-from ..contract import MAX_ERROR_CHARS, scrub_json
 from ..consult.config import ConsultConfig, ReviewPolicy, StepBinding, WorkflowConfig
 from ..consult.contract import ConsultError, Runtime
 from ..consult.errors import ConsultErrorCode
 from ..consult.prompts import compile_execution_prompt
 from ..consult.store import ConsultStore, StoreError
+from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
+from ..log import get_logger
 from ..review.contract import SERIOUS, ReviewSummary, open_serious
 from ..review.service import ReviewService
+from ..spend import Spend
+from ..spend import refusal as spend_refusal
 from .contract import (
     ARTIFACT_MODELS,
     HOST_REVIEW_REFUSAL,
@@ -82,6 +85,8 @@ from .store import (
     canonical,
 )
 from .store import _sha256 as _text_sha256
+
+log = get_logger(__name__)
 
 
 # Recovery cleanup must never become request latency. The worktree count is bounded
@@ -435,6 +440,7 @@ class WorkflowService:
                     f"step `{step_id}` is the host's to do; record it with "
                     "`orchestrator_workflow_record_host_step`",
                 )
+            await self._within_ceiling(workflow_id)
             # A contained run gets the longer lease, because it gets the longer
             # timeout: a lease that expires while its process is still working would
             # let a second caller take the step the first one is running.
@@ -442,7 +448,22 @@ class WorkflowService:
             async with self.store.lease(workflow_id, step_id, ttl_s=self._lease_ttl(contained)):
                 await self.store.consume_step_token(step_id, workflow_id, confirm_token)
                 async with self._finished(step_id):
-                    return await self._run_step(started, workflow, row, confirm_token)
+                    log.info(
+                        "workflow %s: running step %s (%s, %s)",
+                        workflow_id,
+                        step_id,
+                        row.step,
+                        row.snapshot().execution_mode,
+                    )
+                    response = await self._run_step(started, workflow, row, confirm_token)
+                    log.info(
+                        "workflow %s: step %s finished as %s in %.1fs",
+                        workflow_id,
+                        step_id,
+                        response.status,
+                        time.perf_counter() - started,
+                    )
+                    return response
         except (WorkflowError, StoreError, CodeError) as exc:
             return _failed(workflow_id, await self._status(workflow_id), exc.code, str(exc), started)
         except Exception as exc:  # noqa: BLE001 -- the envelope is the contract
@@ -451,6 +472,23 @@ class WorkflowService:
                 f"the step failed unexpectedly: {type(exc).__name__}: {exc}"[:MAX_ERROR_CHARS],
                 started,
             )
+
+    async def _within_ceiling(self, workflow_id: str) -> None:
+        """Refuse a step that would be paid for past `consult.spend`.
+
+        Before the lease and before the token is spent: a refusal must not burn the
+        one-time token, or raising the ceiling would cost a whole re-plan. Reviewers
+        count towards the workflow's ceiling as well as their review's own, because
+        the workflow is what paid for them.
+        """
+        message = spend_refusal(
+            await self.consult.store.workflow_usage(workflow_id),
+            self.config.spend.max_cost_usd_per_workflow,
+            f"workflow `{workflow_id}`",
+        )
+        if message is not None:
+            log.warning("workflow %s refused: %s", workflow_id, message)
+            raise WorkflowError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
 
     async def _run_step(
         self, started: float, workflow: WorkflowRun, row: StepRow, token: str
@@ -1224,6 +1262,12 @@ class WorkflowService:
         workflow simply stayed where it was with nothing said about why.
         """
         if not await self.store.transition(workflow_id, to_status, allowed_from, **kwargs):
+            log.warning(
+                "workflow %s could not move to %s; it is no longer in %s",
+                workflow_id,
+                to_status,
+                _or_list(allowed_from),
+            )
             raise WorkflowError(
                 ConsultErrorCode.INVALID_REQUEST,
                 f"this workflow could not move to `{to_status}`: it is no longer in "
@@ -1231,6 +1275,7 @@ class WorkflowService:
                 "running -- read `orchestrator_workflow_status` before doing anything "
                 "else. The step's own result was recorded",
             )
+        log.debug("workflow %s moved to %s", workflow_id, to_status)
 
     async def _status(self, workflow_id: str) -> WorkflowState:
         """The workflow's state for an error envelope, or `failed` if it has none."""
@@ -1284,7 +1329,8 @@ class WorkflowService:
                             f"raw patch recovery for step `{source.id}` is unavailable; "
                             "it may have expired after the seven-day retention window"
                         )
-        views = [_step_view(row) for row in rows]
+        spend = await self.consult.store.workflow_usage(workflow_id)
+        views = [_step_view(row, s.usage if (s := spend.get(row.id)) else None) for row in rows]
         return WorkflowResponse(
             workflow_id=workflow_id,
             status=workflow.status,  # type: ignore[arg-type]
@@ -1300,6 +1346,7 @@ class WorkflowService:
                 reason=workflow.reason,
                 bindings=json.loads(workflow.bindings_json),
                 steps=views,
+                usage=_total(spend.values()),
                 next_steps=[
                     step for step, definition in STEPS.items()
                     if workflow.status in definition.runs_from
@@ -1380,7 +1427,26 @@ def _validated(model: type, payload: dict[str, Any], step: str):
         ) from exc
 
 
-def _step_view(row: StepRow) -> StepView:
+def _total(spent: Iterable[Spend]) -> Usage | None:
+    """The workflow's spend, or `None` when nothing has been spent on it yet.
+
+    Steps that spent nothing are absent rather than zero, so a host-only workflow
+    reports no usage instead of a row of zeroes. One unpriced step makes the whole
+    cost unknown, matching what the reviewer rollup does across reviewers.
+    """
+    used = [s.usage for s in spent]
+    if not used:
+        return None
+    priced = all(u.cost_usd is not None for u in used)
+    return Usage(
+        prompt_tokens=sum(u.prompt_tokens for u in used),
+        completion_tokens=sum(u.completion_tokens for u in used),
+        total_tokens=sum(u.total_tokens for u in used),
+        cost_usd=sum(u.cost_usd for u in used) if priced else None,  # type: ignore[misc]
+    )
+
+
+def _step_view(row: StepRow, usage: Usage | None = None) -> StepView:
     return StepView(
         step_id=row.id,
         step=row.step,  # type: ignore[arg-type]
@@ -1396,6 +1462,7 @@ def _step_view(row: StepRow) -> StepView:
         reported_by=row.reported_by,  # type: ignore[arg-type]
         raw_patch_sha256=row.raw_patch_sha256,
         output=row.output(),
+        usage=usage,
     )
 
 

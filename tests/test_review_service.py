@@ -15,15 +15,32 @@ import uuid
 
 import pytest
 
-from orchestrator_mcp.consult.adapters.base import AdapterError, AdapterResult, AgentStatus
+from orchestrator_mcp.consult.adapters.base import (
+    AdapterError,
+    AdapterResult,
+    AgentStatus,
+)
 from orchestrator_mcp.consult.config import ConsultConfig
-from orchestrator_mcp.consult.contract import ConsultationContent, ConsultSource, SourceMode
+from orchestrator_mcp.consult.contract import (
+    ConsultationContent,
+    ConsultSource,
+    SourceMode,
+)
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.store import ConsultStore
 from orchestrator_mcp.contract import Usage
-from orchestrator_mcp.review.contract import MAX_GOAL_CHARS, MAX_REVIEWERS, ReviewerResult
 from orchestrator_mcp.review import service as review_service
-from orchestrator_mcp.review.service import ReviewService, _candidates, _parse_findings, _total
+from orchestrator_mcp.review.contract import (
+    MAX_GOAL_CHARS,
+    MAX_REVIEWERS,
+    ReviewerResult,
+)
+from orchestrator_mcp.review.service import (
+    ReviewService,
+    _candidates,
+    _parse_findings,
+    _total,
+)
 
 from .conftest import agent
 
@@ -62,8 +79,12 @@ class StubAdapter:
         assumptions: list[str] | None = None,
         uncertainties: list[str] | None = None,
         follow_up_questions: list[str] | None = None,
+        cost_usd: float | None = None,
     ) -> None:
         self.answer = answer
+        # Unpriced by default: a free tier reports no price, and that is the harder
+        # case for anything adding these up.
+        self.cost_usd = cost_usd
         self._sources = sources or []
         self._error = error
         self._status = status
@@ -111,7 +132,9 @@ class StubAdapter:
             model_used="gpt-5.6-sol",
             model_verified=True,
             raw_output="{}",
-            usage=Usage(prompt_tokens=10, completion_tokens=2, total_tokens=12),
+            usage=Usage(
+                prompt_tokens=10, completion_tokens=2, total_tokens=12, cost_usd=self.cost_usd
+            ),
         )
 
 
@@ -1216,3 +1239,85 @@ async def test_the_review_and_its_consultations_share_one_connection(build, tmp_
     service = await build(store=store)
     assert service.consult.store is store
     assert service.store.store is store
+
+
+# --- the spend ceiling -------------------------------------------------------
+
+
+async def test_a_retry_past_the_ceiling_is_refused_before_anything_is_sent(build):
+    """Refused before the subprocess, not reported after it.
+
+    Asserted on the adapter rather than on the envelope: an envelope that says no
+    after the money is spent is not a ceiling.
+    """
+    working = StubAdapter(cost_usd=0.25)
+    broken = StubAdapter(error=AdapterError(ConsultErrorCode.TIMEOUT, "slow"))
+    service = await build(
+        {"codex-sol": working, "gemini-x": broken}, spend={"max_cost_usd_per_review": 0.10}
+    )
+    plan = await planned(service, mode="deep")
+    await service.run(plan.review_id, plan.plan.confirm_token, host_findings=["mine"])
+    sent = len(broken.prompts)
+
+    again = await service.retry(plan.review_id)
+
+    assert again.error is not None
+    assert again.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "$0.25 of its $0.10 ceiling" in again.error.message
+    assert len(broken.prompts) == sent
+
+
+async def test_the_ceiling_message_names_the_reviewers_it_could_not_price(build):
+    """The total is a floor when a reviewer reported no price. Saying so is the
+    difference between a number and a misleading number."""
+    agents = {**REVIEWERS, "flash": agent("opencode", "deepseek-v4-flash-free", 30)}
+    service = await build(
+        {
+            "codex-sol": StubAdapter(cost_usd=0.25),
+            "gemini-x": StubAdapter(),  # answers, reports no price
+            "flash": StubAdapter(error=AdapterError(ConsultErrorCode.TIMEOUT, "slow")),
+        },
+        agents=agents,
+        review={"reviewers": ["codex-sol"], "deep_reviewers": list(agents)},
+        spend={"max_cost_usd_per_review": 0.10},
+    )
+    plan = await planned(service, mode="deep")
+    await service.run(plan.review_id, plan.plan.confirm_token, host_findings=["mine"])
+
+    again = await service.retry(plan.review_id)
+
+    assert again.error is not None
+    # The failed reviewer counts too: it spent a turn, and that turn has no price
+    # either. What the message must not do is imply $0.25 is the whole story.
+    assert "2 more spent an unpriced amount beyond that (flash, gemini-x)" in again.error.message
+
+
+async def test_a_review_under_its_ceiling_runs(build):
+    working = StubAdapter(cost_usd=0.01)
+    broken = StubAdapter(error=AdapterError(ConsultErrorCode.TIMEOUT, "slow"))
+    service = await build(
+        {"codex-sol": working, "gemini-x": broken}, spend={"max_cost_usd_per_review": 5.0}
+    )
+    plan = await planned(service, mode="deep")
+    await service.run(plan.review_id, plan.plan.confirm_token, host_findings=["mine"])
+    broken._error = None
+
+    again = await service.retry(plan.review_id)
+
+    assert again.error is None
+    assert again.outcome == "all"
+
+
+async def test_no_spend_block_means_no_ceiling(build):
+    """An install that configured nothing here behaves exactly as it did before."""
+    working = StubAdapter(cost_usd=1000.0)
+    broken = StubAdapter(error=AdapterError(ConsultErrorCode.TIMEOUT, "slow"))
+    service = await build({"codex-sol": working, "gemini-x": broken})
+    plan = await planned(service, mode="deep")
+    await service.run(plan.review_id, plan.plan.confirm_token, host_findings=["mine"])
+    broken._error = None
+
+    again = await service.retry(plan.review_id)
+
+    assert again.error is None
+    assert again.usage.cost_usd is None  # the retried reviewer is still unpriced

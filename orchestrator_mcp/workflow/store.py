@@ -34,14 +34,19 @@ from uuid import UUID
 
 from ..code.service import remove_workflow_patches_now
 from ..consult.errors import ConsultErrorCode
-from ..consult.store import DELETE_CONFIRM_TTL_S, ConsultStore, StoreError, _renewing_lease
+from ..consult.store import (
+    DELETE_CONFIRM_TTL_S,
+    ConsultStore,
+    StoreError,
+    _renewing_lease,
+)
 from ..contract import scrub_json
 from ..review.store import delete_tree
 from .contract import (
     TERMINAL_STATES,
     Executor,
-    RepositoryAccess,
     ReportedBy,
+    RepositoryAccess,
     Step,
     StepSnapshot,
     StepStatus,

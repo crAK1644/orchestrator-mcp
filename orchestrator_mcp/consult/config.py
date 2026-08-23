@@ -12,7 +12,14 @@ import os
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from ..code.registry import runtime_capabilities, unsupported_reason
 from ..contract import MAX_REVIEWERS, ConfigError
@@ -42,6 +49,12 @@ class AgentConfig(BaseModel):
     # as spelling out `0`. Omission is the common way to say "not this one".
     scores: dict[Capability, Score] = Field(default_factory=dict)
     web_search: bool = False
+    # Overrides `consult.timeout_s` for this agent alone. One global limit has to be
+    # set for the slowest configured agent, which hands every other agent the same
+    # rope: a reasoning model at high effort needs half an hour, and a fast model
+    # that wedges should not get half an hour to do it in. `None` means the global
+    # value, so an existing config is unchanged.
+    timeout_s: int | None = Field(default=None, ge=1)
     # Codex only, and worth spelling out because the adapter passes
     # `--ignore-user-config`: whatever `~/.codex/config.toml` says about reasoning is
     # deliberately not inherited, so an unset field here is the model's own default,
@@ -193,6 +206,23 @@ class HostConfig(BaseModel):
     model: str | None = Field(default=None, min_length=1)
 
 
+class SpendPolicy(BaseModel):
+    """Ceilings on what one review or one workflow may cost.
+
+    Both absent by default, which is no ceiling and no behavior change.
+
+    What this buys is bounded, and the bound is the point: a request cannot be priced
+    before it is made, so the guarantee is **the next request after the ceiling is
+    crossed is refused**, not that spend never exceeds the ceiling. A fan-out of five
+    reviewers is one request in that sense; the ceiling stops the round after it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_cost_usd_per_review: float | None = Field(default=None, gt=0)
+    max_cost_usd_per_workflow: float | None = Field(default=None, gt=0)
+
+
 class ReviewPolicy(BaseModel):
     """Who may review a workflow's own work.
 
@@ -289,6 +319,11 @@ class ConsultConfig(BaseModel):
     # load; see `managed.py` for why they are not simply kept here.
     managed_agents_path: Path = DEFAULT_MANAGED_PATH
     timeout_s: int = Field(default=180, ge=1)
+    # How long a *ready* preflight answer is reused before the CLI is probed again.
+    # Every turn used to pay a subprocess to ask a question whose answer changes when
+    # a human runs a login command, which is not on the timescale of a conversation.
+    # `0` disables the cache and restores a probe per turn.
+    preflight_ttl_s: int = Field(default=300, ge=0)
     protocol_version: str = PROTOCOL_VERSION
     store_full_content: bool = True
     # Claude Code 2.1.220 has no `--max-turns`, so the bound on a web-mode
@@ -303,6 +338,9 @@ class ConsultConfig(BaseModel):
     host: HostConfig = Field(default_factory=HostConfig)
     # Absent means the workflow tools are not advertised, same as `review:`.
     workflow: WorkflowConfig | None = None
+    # Absent ceilings, unlike `review:` and `workflow:`, do not gate a tool -- they
+    # are a bound on tools that exist either way.
+    spend: SpendPolicy = Field(default_factory=SpendPolicy)
 
     @field_validator("database_path", "managed_agents_path")
     @classmethod

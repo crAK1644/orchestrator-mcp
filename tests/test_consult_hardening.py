@@ -10,6 +10,7 @@ connection without agreeing whose transaction was open.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -23,7 +24,11 @@ from orchestrator_mcp.consult.adapters.base import (
 from orchestrator_mcp.consult.adapters.claude_cli import ClaudeCliAdapter
 from orchestrator_mcp.consult.adapters.codex_cli import CodexCliAdapter
 from orchestrator_mcp.consult.config import AgentConfig, ConsultConfig
-from orchestrator_mcp.consult.contract import MAX_CONTEXT_CHARS, MAX_PROMPT_CHARS, SourceMode
+from orchestrator_mcp.consult.contract import (
+    MAX_CONTEXT_CHARS,
+    MAX_PROMPT_CHARS,
+    SourceMode,
+)
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.prompts import compile_prompt
 from orchestrator_mcp.consult.store import ConsultStore, StoreError
@@ -32,8 +37,6 @@ from .conftest import consult_block
 from .fixtures import agent_stub
 from .test_claude_adapter import CONTENT, envelope
 from .test_consult_service import StubAdapter, StubService
-
-import json
 
 
 def claude_agent(**overrides) -> AgentConfig:

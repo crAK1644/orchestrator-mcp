@@ -153,4 +153,4 @@ def test_expanding_the_path_happens_before_anything_opens_it(monkeypatch, tmp_pa
     monkeypatch.setenv("HOME", str(tmp_path))
     config = ConsultConfig(**consult_block(managed_agents_path="~/agents.yaml"))
     assert config.managed_agents_path == tmp_path / "agents.yaml"
-    assert not (os.getcwd() + "/~") in str(config.managed_agents_path)
+    assert (os.getcwd() + "/~") not in str(config.managed_agents_path)

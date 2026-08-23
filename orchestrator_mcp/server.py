@@ -22,9 +22,9 @@ from uuid import UUID
 
 import yaml
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 
 from .commands import add_commands
-from .contract import ConfigError
 from .consult.config import StepBinding, host_runtime, load_consult_config
 from .consult.contract import (
     ConsultAgentsResponse,
@@ -36,6 +36,9 @@ from .consult.contract import (
 from .consult.service import ConsultService
 from .consult.store import DELETE_CONFIRM_TTL_S as CONSULT_DELETE_CONFIRM_TTL_S
 from .consult.store import ConsultStore
+from .contract import ConfigError
+from .log import configure as configure_logging
+from .progress import reporting
 from .review.contract import (
     CombinedFinding,
     DeleteApproval,
@@ -46,7 +49,6 @@ from .review.contract import (
     ReviewListing,
     ReviewMode,
     ReviewResponse,
-    ReviewSummary,
 )
 from .review.service import ReviewService
 from .review.store import DELETE_CONFIRM_TTL_S
@@ -92,13 +94,20 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ConfigError("nothing is configured: give the server a `consult:` block")
 
 
-def _tool_signature(request_model: type, return_annotation: type) -> inspect.Signature:
+def _tool_signature(
+    request_model: type, return_annotation: type, context: bool = False
+) -> inspect.Signature:
     """Expose the request model's fields as flat keyword arguments.
 
     Nesting the model under one `request` parameter is what the SDK does by default;
     flat arguments give the calling agent the enum and the caps in the tool schema
     where it will actually read them. Derived from the model so there is one source
     of truth for the contract.
+
+    `context=True` appends a `ctx: Context` parameter. The SDK finds it by annotation
+    -- through `__annotations__`, which the caller sets from this signature -- and
+    both injects it at call time and leaves it out of the published schema, so a
+    hand-built signature gets the same treatment as an ordinary `def`.
     """
     parameters = [
         inspect.Parameter(
@@ -109,6 +118,19 @@ def _tool_signature(request_model: type, return_annotation: type) -> inspect.Sig
         )
         for name, field in request_model.model_fields.items()
     ]
+    if context:
+        parameters.append(
+            # Optional, matching the three hand-written tools: the SDK injects it,
+            # but a direct call or a test invoking the function must not fail on a
+            # missing keyword argument for something the body already treats as
+            # absent-able.
+            inspect.Parameter(
+                "ctx",
+                inspect.Parameter.KEYWORD_ONLY,
+                default=None,
+                annotation=Context | None,
+            )
+        )
     return inspect.Signature(parameters, return_annotation=return_annotation)
 
 
@@ -123,6 +145,9 @@ def _version() -> str:
 
 
 def build_server(config: dict[str, Any] | None = None) -> MCPServer:
+    # Before anything that can log. stdout is the MCP transport, so the handler this
+    # installs is pinned to stderr -- see `log.configure`.
+    configure_logging()
     config = config if config is not None else load_config()
     validate_config(config)
     server = MCPServer("orchestrator", version=_version())
@@ -179,10 +204,19 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         # `service.consult` opens the store itself, on first use rather than at boot:
         # a server whose consult path is configured but never called should not create
         # a database for it, and an open that fails is an envelope like any other.
-        return await service.consult(**kwargs)
+        ctx = kwargs.pop("ctx", None)
+        # No total. `consult.timeout_s` is the *default* deadline, and since agents
+        # may carry their own `timeout_s` the one this turn will actually be killed
+        # at is not known until routing has picked an agent, several frames below
+        # here. Elapsed with no total still separates "working" from "wedged"; a bar
+        # drawn against the wrong ceiling fills and then keeps going, which is worse.
+        async with reporting(ctx, "consulting"):
+            return await service.consult(**kwargs)
 
     consult.__name__ = "consult"
-    consult.__signature__ = _tool_signature(service.request_model, ConsultResponse)  # type: ignore[attr-defined]
+    consult.__signature__ = _tool_signature(  # type: ignore[attr-defined]
+        service.request_model, ConsultResponse, context=True
+    )
     consult.__annotations__ = {
         p.name: p.annotation for p in consult.__signature__.parameters.values()
     } | {"return": ConsultResponse}
@@ -332,6 +366,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         host_findings: list[str] | None = None,
         secrets: Literal["mask", "send_as_is"] = "mask",
         raw: RawReviewMaterial | None = None,
+        ctx: Context | None = None,
     ) -> ReviewResponse:
         """Send the approved material to every reviewer, in parallel. Call this only
         after the user has seen the plan and agreed.
@@ -355,19 +390,23 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         `orchestrator_finalize_review`. A reviewer that failed leaves the others' answers intact --
         `orchestrator_retry_review` re-runs only the failures.
         """
-        return await service.run(
-            review_id,
-            confirm_token,
-            host_findings=host_findings,
-            secrets=secrets,
-            raw=raw.model_dump(mode="json") if raw else None,
-        )
+        # No total: reviewers run in parallel and each may carry its own
+        # `timeout_s`, so there is no single deadline this fan-out runs under.
+        async with reporting(ctx, "review"):
+            return await service.run(
+                review_id,
+                confirm_token,
+                host_findings=host_findings,
+                secrets=secrets,
+                raw=raw.model_dump(mode="json") if raw else None,
+            )
 
     @server.tool(name="orchestrator_retry_review")
     async def retry_review(
         review_id: UUID,
         agent_ids: list[str] | None = None,
         raw: RawReviewMaterial | None = None,
+        ctx: Context | None = None,
     ) -> ReviewResponse:
         """Re-run the reviewers that failed. Reviewers that already answered are not
         asked again and their answers are kept.
@@ -376,9 +415,11 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         goal and context in `raw` again. Its hash is checked against the original
         plan so a retry cannot silently send the
         stored redacted copy as though it were the same payload."""
-        return await service.retry(
-            review_id, agent_ids, raw.model_dump(mode="json") if raw else None
-        )
+        # No total, for the same reason as `orchestrator_review_run`.
+        async with reporting(ctx, "retrying review"):
+            return await service.retry(
+                review_id, agent_ids, raw.model_dump(mode="json") if raw else None
+            )
 
     @server.tool(name="orchestrator_finalize_review")
     async def finalize_review(
@@ -595,7 +636,7 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
 
     @server.tool(name="orchestrator_workflow_run_step")
     async def workflow_run_step(
-        workflow_id: str, step_id: str, confirm_token: str
+        workflow_id: str, step_id: str, confirm_token: str, ctx: Context | None = None
     ) -> WorkflowResponse:
         """Spend the token and run a delegated step. Call this after the user has seen
         the preview.
@@ -614,7 +655,12 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
 
         A step whose executor is the host is refused here; record it instead.
         """
-        return await service.run_step(workflow_id, step_id, confirm_token)
+        # No total: which deadline this step runs under depends on its execution
+        # mode, and the tool layer has not read the step yet. Elapsed seconds with no
+        # total still separates "working" from "wedged", and a bar drawn against a
+        # guessed ceiling would be worse than no bar.
+        async with reporting(ctx, f"workflow step {step_id}"):
+            return await service.run_step(workflow_id, step_id, confirm_token)
 
     @server.tool(name="orchestrator_workflow_record_host_step")
     async def workflow_record_host_step(

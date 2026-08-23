@@ -11,14 +11,17 @@ envelope can come back malformed from a model that answered perfectly well.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from orchestrator_mcp.consult.adapters import opencode_cli
 from orchestrator_mcp.consult.adapters.base import AdapterError
-from orchestrator_mcp.consult.adapters.opencode_cli import OpenCodeCliAdapter, _add, _session_dir
+from orchestrator_mcp.consult.adapters.opencode_cli import (
+    OpenCodeCliAdapter,
+    _add,
+    _session_dir,
+)
 from orchestrator_mcp.consult.config import AgentConfig
 from orchestrator_mcp.consult.contract import SourceMode
 from orchestrator_mcp.consult.errors import ConsultErrorCode
