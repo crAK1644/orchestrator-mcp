@@ -1177,6 +1177,21 @@ async def test_get_returns_the_review_with_its_results_and_synthesis(build):
     assert stored.results[0].findings[0].agent_id == "codex-sol"
 
 
+async def test_prose_comes_back_once_and_get_review_brings_it_back(build):
+    service = await build()
+    plan = await planned(service)
+    run = await service.run(plan.review_id, plan.plan.confirm_token)
+    # The call that ran them carries their prose; the findings were parsed out of it.
+    assert all(r.answer for r in run.results)
+
+    done = await service.finalize(plan.review_id, _synthesis(run))
+    assert all(r.answer is None for r in done.results)
+    assert all(r.findings for r in done.results), "shape survives, only the prose goes"
+
+    stored = await service.get(plan.review_id)
+    assert [r.answer for r in stored.results] == [r.answer for r in run.results]
+
+
 async def test_get_on_an_unknown_review_is_an_envelope_not_an_exception(build):
     service = await build()
     response = await service.get(uuid.uuid4())

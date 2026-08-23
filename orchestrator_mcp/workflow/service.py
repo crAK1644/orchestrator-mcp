@@ -1138,7 +1138,7 @@ class WorkflowService:
             # Reaped on read, so a status call is enough to unwedge a workflow whose
             # runner died: the step becomes `abandoned` and can be planned again.
             await self.store.reap_abandoned(workflow_id)
-            return await self._view_response(workflow_id, started)
+            return await self._view_response(workflow_id, started, bodies=True)
         except StoreError as exc:
             return _failed(workflow_id, "failed", exc.code, str(exc), started)
 
@@ -1291,6 +1291,7 @@ class WorkflowService:
         step_id: str | None = None,
         patch: str = "",
         recovery_warning: str = "",
+        bodies: bool = False,
     ) -> WorkflowResponse:
         workflow = await self.store.get_workflow(workflow_id)
         rows = await self.store.steps(workflow_id)
@@ -1330,7 +1331,18 @@ class WorkflowService:
                             "it may have expired after the seven-day retention window"
                         )
         spend = await self.consult.store.workflow_usage(workflow_id)
-        views = [_step_view(row, s.usage if (s := spend.get(row.id)) else None) for row in rows]
+        # Only the step this call touched carries its output. The rest are shape:
+        # a plan, a patch and a test log do not change because a later step ran, and
+        # re-sending them on every advance is the same bytes in the caller's context
+        # over and over. `orchestrator_workflow_status` passes `bodies=True`.
+        views = [
+            _step_view(
+                row,
+                s.usage if (s := spend.get(row.id)) else None,
+                body=bodies or row.id == step_id,
+            )
+            for row in rows
+        ]
         return WorkflowResponse(
             workflow_id=workflow_id,
             status=workflow.status,  # type: ignore[arg-type]
@@ -1446,7 +1458,7 @@ def _total(spent: Iterable[Spend]) -> Usage | None:
     )
 
 
-def _step_view(row: StepRow, usage: Usage | None = None) -> StepView:
+def _step_view(row: StepRow, usage: Usage | None = None, body: bool = True) -> StepView:
     return StepView(
         step_id=row.id,
         step=row.step,  # type: ignore[arg-type]
@@ -1461,7 +1473,7 @@ def _step_view(row: StepRow, usage: Usage | None = None) -> StepView:
         review_id=row.review_id,
         reported_by=row.reported_by,  # type: ignore[arg-type]
         raw_patch_sha256=row.raw_patch_sha256,
-        output=row.output(),
+        output=row.output() if body else None,
         usage=usage,
     )
 

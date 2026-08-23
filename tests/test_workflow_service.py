@@ -1104,6 +1104,25 @@ async def _to_testing(service, repo) -> str:
     return workflow_id
 
 
+async def test_a_step_body_travels_with_the_call_that_touched_it(build, repo):
+    service = await build()
+    workflow_id = await started(service, repo)
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    response = await host_step(
+        service, workflow_id, "author_execution_prompt", json.loads(BRIEF)
+    )
+
+    views = {v.step: v for v in response.workflow.steps}
+    assert views["author_execution_prompt"].output is not None
+    assert response.step.output == views["author_execution_prompt"].output
+    # The plan did not change because a brief was written after it.
+    assert views["plan"].output is None
+    assert views["plan"].status == "done", "shape survives, only the body goes"
+
+    full = await service.status(workflow_id)
+    assert all(v.output is not None for v in full.workflow.steps if v.status == "done")
+
+
 def _ran(command: list[str], exit_code: int, output: str) -> str:
     return "".join(json.dumps(event) + "\n" for event in (
         {"type": "thread.started", "thread_id": "th-1", "model": "gpt-5.6-sol"},
