@@ -521,8 +521,13 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
     @server.tool(name="orchestrator_get_review")
     async def get_review(review_id: UUID) -> ReviewResponse:
         """Retrieve a review: its status, every reviewer's result, and the synthesis
-        if one was recorded. Answers are absent when the operator has turned off
-        `store_full_content`."""
+        if one was recorded.
+
+        The call that returns full reviewer prose. Every other review tool sends an
+        `answer` only for the reviewers that just ran under it, because the findings
+        it also returns were parsed out of that prose -- read it here when you want
+        a reviewer's reasoning again. Answers are absent either way when the operator
+        has turned off `store_full_content`."""
         return await service.get(review_id)
 
     @server.tool(name="orchestrator_list_reviews")
@@ -690,6 +695,10 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         """Where the workflow is: state, artifacts so far, the agents each step
         resolved to, fix rounds used against the cap, and `next_steps` -- the steps
         that can be planned from here.
+
+        The call that returns every step's `output`. The step-advancing tools return
+        the body of the step they touched and the shape of the rest, so ask here for
+        an earlier step's plan, patch or test log.
 
         Also reaps steps whose runner died: a `running` step whose lease expired
         becomes `abandoned` and can be planned again, so a crash cannot leave a

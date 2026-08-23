@@ -735,9 +735,19 @@ class ReviewService:
             raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
 
     async def _results(
-        self, review_id: str, fresh: dict[str, ReviewerResult] | None = None
+        self,
+        review_id: str,
+        fresh: dict[str, ReviewerResult] | None = None,
+        prose: bool = False,
     ) -> list[ReviewerResult]:
         """Every reviewer's latest outcome: this batch's, plus the persisted rest.
+
+        `prose` is off by default because a reviewer's `answer` is where its
+        `findings` were parsed from: carrying both means every later call in the
+        review re-sends content the caller already has. This batch's reviewers keep
+        their prose regardless -- they short-circuit through `fresh` below -- so the
+        answer travels with the call that produced it, and `orchestrator_get_review`
+        is the call that brings it back.
 
         The persisted half is reconstructed from the row, which under
         `store_full_content: false` has no answer and no findings -- the shape
@@ -794,7 +804,7 @@ class ReviewService:
                     sources=_sources(sources),
                     findings_parsed=findings_parsed,
                     findings_truncated=findings_truncated,
-                    answer=row.answer,
+                    answer=row.answer if prose else None,
                     assumptions=(content.assumptions[:MAX_LIST_ITEMS] if content else []),
                     uncertainties=(content.uncertainties[:MAX_LIST_ITEMS] if content else []),
                     follow_up_questions=(
@@ -1138,10 +1148,12 @@ class ReviewService:
 
     async def get(self, review_id: UUID | str) -> ReviewResponse:
         started = time.perf_counter()
-        return await self._guard(review_id, started, lambda review: self._get(started, review))
+        return await self._guard(
+            review_id, started, lambda review: self._get(started, review, prose=True)
+        )
 
-    async def _get(self, started: float, review) -> ReviewResponse:
-        results = await self._results(review.id)
+    async def _get(self, started: float, review, prose: bool = False) -> ReviewResponse:
+        results = await self._results(review.id, prose=prose)
         return ReviewResponse(
             review_id=UUID(review.id),
             mode=review.mode,

@@ -371,6 +371,8 @@ Finalization must preserve every machine-readable Critical finding, even when ot
 
 Reviews default to `web: false`. Reviewers cannot change files or run commands. `orchestrator_apply_fixes` is a plan for work the host agent performs; it never applies a patch itself.
 
+A reviewer's prose comes back once, with the call that ran it, and its `findings` -- parsed out of that prose -- come back every time. `orchestrator_get_review` is the call that returns the prose again. That keeps a review's later calls from re-sending the same reviewer answers into your agent's context, where they would be charged for on every turn that follows.
+
 Credential-shaped values are masked before storage. `secrets="send_as_is"` is an explicit escape hatch for a false positive: it requires the exact original goal and context again, sends those originals to the reviewers, and still stores only the redacted copy.
 
 `store_full_content: false` does not apply here in full. A review's goal and context are stored either way — the second half of the approval handshake reads them back to send what was approved — and reviewer answers and findings are not. That leaves nothing to prove every Critical survived synthesis, so `orchestrator_finalize_review` refuses, and the review stays at `awaiting_synthesis`. Finalization is refused on the same grounds when a reviewer answered only in unparseable prose, or when its findings were truncated.
@@ -657,6 +659,12 @@ consultation delete path and `orchestrator_delete_review` refuses a review that 
 workflow step, because a step pointing at a row that is gone still reads as intact —
 and the next fix round would answer from the goal instead of from the review. So these
 three tools are the only way any of those rows leave the database.
+
+`orchestrator_workflow_status` is also the call that returns every step's `output`.
+The tools that advance a workflow return the body of the step they touched and the
+shape of the rest -- a plan, a patch and a test log do not change because a later
+step ran, and re-sending them on every call is the same bytes accumulating in your
+agent's context. Ask status when you want an earlier step's body back.
 
 `orchestrator_workflow_status` reports what the workflow spent: per step, and totalled
 over the workflow with its reviewers included. The numbers are rebuilt from the
