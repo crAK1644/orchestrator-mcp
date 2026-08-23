@@ -2014,6 +2014,34 @@ async def test_a_step_past_the_ceiling_is_refused_before_the_token_is_spent(buil
     assert (await service.run_step(workflow_id, plan_id, plan_token)).error is None
 
 
+async def test_a_turn_ceiling_bounds_a_workflow_no_dollar_ceiling_can_price(build, repo):
+    """Same hole, same fix, one step further out: unpriced steps count as turns."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(RESEARCH),  # reports no price
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(PLAN),
+        },
+        bindings={"research": {"agent": "codex-sol"}, "plan": {"agent": "flash"}},
+        spend={"max_cost_usd_per_workflow": 0.01, "max_turns_per_workflow": 1},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    plan_id, plan_token = await step(service, workflow_id, "plan")
+    sent = len(service.adapters["flash"].prompts)
+
+    response = await service.run_step(workflow_id, plan_id, plan_token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "1 of its 1 turn ceiling" in response.error.message
+    assert len(service.adapters["flash"].prompts) == sent
+    # And the token still opens the step it approved, once the ceiling is raised.
+    service.config.spend.max_turns_per_workflow = 10
+    assert (await service.run_step(workflow_id, plan_id, plan_token)).error is None
+
+
 async def test_a_reviewer_counts_towards_the_workflows_ceiling(build, repo):
     """The workflow is what paid for the reviewer, whatever row the consultation
     hangs off."""

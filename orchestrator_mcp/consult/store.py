@@ -64,6 +64,7 @@ def _spend(row: sqlite3.Row) -> Spend:
             cost_usd=known if row["priced_turns"] == row["turns"] else None,
         ),
         known_cost_usd=float(known),
+        turns=row["turns"],
     )
 
 # Applied in order, by index. Append only -- an edit to a shipped migration is a

@@ -1307,6 +1307,37 @@ async def test_the_ceiling_message_names_the_reviewers_it_could_not_price(build)
     assert "2 more spent an unpriced amount beyond that (flash, gemini-x)" in again.error.message
 
 
+async def test_a_turn_ceiling_bounds_reviewers_no_dollar_ceiling_can_price(build):
+    """The hole a dollar ceiling leaves open.
+
+    An agent on a flat-rate plan reports no per-turn price, so `counted()` never
+    leaves $0.00 and a money ceiling over it can never fire, however low it is set.
+    Turns are counted whatever an agent charges.
+    """
+    broken = StubAdapter(error=AdapterError(ConsultErrorCode.TIMEOUT, "slow"))
+    service = await build(
+        # Neither reports a price, which is what codex and antigravity both do.
+        {"codex-sol": StubAdapter(), "gemini-x": broken},
+        spend={"max_cost_usd_per_review": 0.01},
+    )
+    plan = await planned(service, mode="deep")
+    await service.run(plan.review_id, plan.plan.confirm_token, host_findings=["mine"])
+    sent = len(broken.prompts)
+
+    # The dollar ceiling sees nothing to count, so it lets the retry through.
+    assert (await service.retry(plan.review_id)).error is None
+    assert len(broken.prompts) > sent
+
+    service.consult.config.spend.max_turns_per_review = 2
+    sent = len(broken.prompts)
+    again = await service.retry(plan.review_id)
+
+    assert again.error is not None
+    assert again.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "turn ceiling" in again.error.message
+    assert len(broken.prompts) == sent
+
+
 async def test_a_review_under_its_ceiling_runs(build):
     working = StubAdapter(cost_usd=0.01)
     broken = StubAdapter(error=AdapterError(ConsultErrorCode.TIMEOUT, "slow"))

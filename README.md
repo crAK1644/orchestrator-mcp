@@ -813,7 +813,7 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 | `review` | absent | Configured reviewers; absent means no review tools. |
 | `workflow` | absent | The three-phase workflow; absent means no workflow tools. Requires `store_full_content: true`. |
 | `host` | runtime from the environment | Asserted host runtime, and the host model that makes same-runtime routing possible. |
-| `spend` | no ceiling | `max_cost_usd_per_review` and `max_cost_usd_per_workflow`. See below. |
+| `spend` | no ceiling | Dollar and turn ceilings, per review and per workflow. See below. |
 | `dashboard` | off | Loopback history UI and optional agent editor. |
 
 ### Spending ceilings
@@ -823,9 +823,11 @@ consult:
   spend:
     max_cost_usd_per_review: 5.0
     max_cost_usd_per_workflow: 25.0
+    max_turns_per_review: 12
+    max_turns_per_workflow: 40
 ```
 
-Both are optional and both are absent by default, which is no ceiling and no change
+All four are optional and all are absent by default, which is no ceiling and no change
 in behavior. A review's ceiling is checked before each round of reviewers; a
 workflow's is checked before each step, reviewers included, since the workflow is
 what paid for them. The check happens before the one-time token is spent and before
@@ -840,6 +842,14 @@ reviewers is one request in that sense.
 An agent that reports no price contributes nothing to the total, which makes the
 total a floor. The refusal names those agents rather than presenting the floor as a
 sum. The error code is `spend_limit_reached`.
+
+**Set a turn ceiling too if anything in your routing is on a flat-rate plan.** Codex
+and Antigravity report no per-turn price, so a dollar ceiling over them counts nothing
+and never leaves `$0.00` -- it reads as a bound and is not one. Turns are counted for
+every agent whatever it charges, so `max_turns_per_review` and `max_turns_per_workflow`
+bound the work that money cannot see. They are checked at the same moments, refuse with
+the same error code, and count the same way spend does: rebuilt from the turn ledger, so
+a retried reviewer counts every attempt exactly once.
 
 ### Watching a run
 

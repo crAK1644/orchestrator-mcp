@@ -485,6 +485,7 @@ class WorkflowService:
             await self.consult.store.workflow_usage(workflow_id),
             self.config.spend.max_cost_usd_per_workflow,
             f"workflow `{workflow_id}`",
+            self.config.spend.max_turns_per_workflow,
         )
         if message is not None:
             log.warning("workflow %s refused: %s", workflow_id, message)

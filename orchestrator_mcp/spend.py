@@ -35,6 +35,9 @@ class Spend:
 
     usage: Usage
     known_cost_usd: float
+    # Always countable, unlike money. An agent that reports no price still reports a
+    # turn, which is what lets a turn ceiling bound work a dollar ceiling cannot see.
+    turns: int = 0
 
 
 def counted(spend: Mapping[str, Spend]) -> tuple[float, list[str]]:
@@ -43,28 +46,44 @@ def counted(spend: Mapping[str, Spend]) -> tuple[float, list[str]]:
     return float(total), sorted(k for k, s in spend.items() if s.usage.cost_usd is None)
 
 
-def refusal(spend: Mapping[str, Spend], ceiling: float | None, subject: str) -> str | None:
+def refusal(
+    spend: Mapping[str, Spend],
+    ceiling: float | None,
+    subject: str,
+    max_turns: int | None = None,
+) -> str | None:
     """Why this must not run, or `None` to go ahead.
 
     `subject` names what is being bounded ("review `abc`") and lands in the message,
     which is the only place the caller learns both numbers.
+
+    The money ceiling is checked first because its message is the more useful one
+    when there is a price to report. `max_turns` is the bound that still works when
+    there is not: an agent on a flat-rate plan reports no per-turn price, so a
+    dollar ceiling over one of those never reaches any number but zero, while the
+    turns behind it are counted the same as anyone else's.
     """
-    if ceiling is None:
-        return None
     total, unpriced = counted(spend)
-    if total < ceiling:
-        return None
-    # The unpriced part is named rather than dropped: a caller who reads "$5.10 of
-    # $5.00" without it will read the total as complete, and it is a floor. Those
-    # keys may also have contributed to the total already -- a group is listed here
-    # when *any* of its turns went unpriced, not when all of them did.
-    unknown = (
-        f", and {len(unpriced)} more spent an unpriced amount beyond that "
-        f"({', '.join(unpriced)})"
-        if unpriced
-        else ""
-    )
-    return (
-        f"{subject} has spent ${total:.2f} of its ${ceiling:.2f} ceiling{unknown}; "
-        "raise `consult.spend` or stop here"
-    )
+    if ceiling is not None and total >= ceiling:
+        # The unpriced part is named rather than dropped: a caller who reads "$5.10
+        # of $5.00" without it will read the total as complete, and it is a floor.
+        # Those keys may also have contributed to the total already -- a group is
+        # listed here when *any* of its turns went unpriced, not when all of them did.
+        unknown = (
+            f", and {len(unpriced)} more spent an unpriced amount beyond that "
+            f"({', '.join(unpriced)})"
+            if unpriced
+            else ""
+        )
+        return (
+            f"{subject} has spent ${total:.2f} of its ${ceiling:.2f} ceiling{unknown}; "
+            "raise `consult.spend` or stop here"
+        )
+    if max_turns is not None:
+        turns = sum(s.turns for s in spend.values())
+        if turns >= max_turns:
+            return (
+                f"{subject} has used {turns} of its {max_turns} turn ceiling; "
+                "raise `consult.spend` or stop here"
+            )
+    return None
