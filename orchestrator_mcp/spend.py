@@ -37,7 +37,10 @@ class Spend:
     known_cost_usd: float
     # Always countable, unlike money. An agent that reports no price still reports a
     # turn, which is what lets a turn ceiling bound work a dollar ceiling cannot see.
-    turns: int = 0
+    # Required rather than defaulted: a rollup built without its count would read as
+    # zero turns, and a ceiling that silently counts nothing is the bug this field
+    # exists to fix. A caller that has to pass it cannot forget it.
+    turns: int
 
 
 def counted(spend: Mapping[str, Spend]) -> tuple[float, list[str]]:
