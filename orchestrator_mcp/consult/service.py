@@ -619,7 +619,6 @@ class ConsultService:
             validated_response=self._scrub(result.content.model_dump()),
             input_tokens=result.usage.prompt_tokens,
             output_tokens=result.usage.completion_tokens,
-            total_tokens=result.usage.total_tokens,
             cost_usd=result.usage.cost_usd,
             # The durable half of the same fact `usage_semantics` records. Whoever
             # made this call gets the caveat on the response; whoever reopens the

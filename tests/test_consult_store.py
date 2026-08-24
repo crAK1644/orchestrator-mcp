@@ -145,7 +145,6 @@ async def test_usage_is_rebuilt_from_every_recorded_turn(store):
         "compiled",
         input_tokens=10,
         output_tokens=2,
-        total_tokens=12,
         cost_usd=0.2,
     )
     await store.record_turn(
@@ -157,7 +156,6 @@ async def test_usage_is_rebuilt_from_every_recorded_turn(store):
         "compiled",
         input_tokens=20,
         output_tokens=4,
-        total_tokens=24,
         cost_usd=0.3,
     )
 
@@ -448,7 +446,6 @@ async def test_a_new_turn_records_which_definition_its_tokens_were_counted_by(st
         compiled_prompt="SYSTEM...",
         input_tokens=1800,
         output_tokens=200,
-        total_tokens=2000,
     )
 
     assert usage_semantics_rows(tmp_path) == [USAGE_SEMANTICS]
@@ -491,7 +488,6 @@ async def test_a_rollup_that_adds_two_definitions_says_so(store, tmp_path):
         compiled_prompt="SYSTEM...",
         input_tokens=1800,
         output_tokens=200,
-        total_tokens=2000,
     )
 
     usage = await store.usage(consultation_id)
@@ -520,7 +516,29 @@ async def test_a_ledger_written_entirely_before_the_rule_still_contradicts_it(st
 
     usage = await store.usage(consultation_id)
     (note,) = usage.counts_incomplete
-    assert "these 2 turns total 3489616 where the prompt and completion columns add to 611452" in note
+    assert "2 of these 2 turns total something other than their own prompt and " in note
+
+
+async def test_two_turns_wrong_in_opposite_directions_do_not_make_a_right_one(
+    store, tmp_path
+):
+    """A residual carries a sign, and the caveat must not be read off the sums.
+
+    Both rows here contradict the definition -- one totals three over its own parts,
+    the other three under -- and the group's three columns add up perfectly, because
+    those two errors are what cancelled. Counting the turns is what survives that:
+    asked how many rows disagree with themselves, SQL answers two, and the arithmetic
+    that hid it never enters the question.
+    """
+    consultation_id = await new_consultation(store)
+    legacy_turn(tmp_path, consultation_id, sequence_number=1, tokens=(100, 100, 203))
+    legacy_turn(tmp_path, consultation_id, sequence_number=2, tokens=(100, 100, 197))
+
+    usage = await store.usage(consultation_id)
+    # The sums agree, which is the trap: 200 + 200 == 400 and every row is still wrong.
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    (note,) = usage.counts_incomplete
+    assert "2 of these 2 turns total something other than their own prompt and " in note
 
 
 async def test_a_rollup_counted_one_way_carries_no_caveat(store):
@@ -531,7 +549,7 @@ async def test_a_rollup_counted_one_way_carries_no_caveat(store):
         await store.record_turn(
             consultation_id, sequence, SourceMode.DOCUMENT,
             user_prompt="q", context=None, compiled_prompt="p",
-            input_tokens=1800, output_tokens=200, total_tokens=2000,
+            input_tokens=1800, output_tokens=200,
         )
 
     usage = await store.usage(consultation_id)
@@ -561,11 +579,13 @@ async def test_a_substituted_count_survives_the_restart_that_rebuilds_it(store):
     assert usage.counts_incomplete == [f"{note} (x2)"]
 
 
-def legacy_turn(tmp_path, consultation_id, sequence_number):
+def legacy_turn(tmp_path, consultation_id, sequence_number, tokens=(22, 305704, 1744808)):
     """One turn inserted the way the write path did before `usage_semantics` existed.
 
     The column list is the point: every row already on disk was written by a statement
-    that did not name it, which is what the `DEFAULT 0` is for.
+    that did not name it, which is what the `DEFAULT 0` is for. The default triple is a
+    real Claude turn off the measured ledger; a caller passes its own when the residual
+    itself is what the test is about.
     """
     scratch = sqlite3.connect(tmp_path / "nested" / "consultations.sqlite3")
     try:
@@ -574,7 +594,7 @@ def legacy_turn(tmp_path, consultation_id, sequence_number):
             "user_prompt, compiled_prompt, input_tokens, output_tokens, total_tokens, "
             "latency_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (str(consultation_id), sequence_number, SourceMode.DOCUMENT.value,
-             "q", "p", 22, 305704, 1744808, 0, "x"),
+             "q", "p", *tokens, 0, "x"),
         )
         scratch.commit()
     finally:

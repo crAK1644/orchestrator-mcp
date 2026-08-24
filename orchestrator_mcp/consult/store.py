@@ -88,22 +88,33 @@ def _rollup_caveats(row: sqlite3.Row) -> list[str]:
             f"{row['max_semantics']}), so the three totals add different units and "
             "cannot be compared against a group counted one way"
         )
-    parts = row["input_tokens"] + row["output_tokens"]
-    if parts != row["total_tokens"]:
+    # Counted a turn at a time in SQL, never by comparing the summed columns against
+    # each other: residuals carry a sign, and a group holding one turn 3 over its parts
+    # and another 3 under adds up to a clean sum. Every turn in it contradicts the
+    # definition, and the comparison that only sees the totals reports nothing at all.
+    if contradicting := row["contradicting_turns"]:
         # A group of one reaches here where the mixing test above cannot: a single row
         # is trivially counted one way, and can still be a row from before that way
-        # existed. Which is also why only this message needs both numbers.
-        group = "this turn totals" if row["turns"] == 1 else f"these {row['turns']} turns total"
-        # `Usage` says a total is its two parts added, and here it is not. Every turn
-        # written under the current rule derives its total from its parts, so a sum of
-        # them cannot drift -- reaching this means some row in the group predates that,
-        # back when the total was whatever its CLI totalled. A group entirely of those
-        # is *self*-consistent and so passes the semantics test above, while still
-        # returning three numbers that contradict the definition they arrive under.
+        # existed. Which is also why only that message can name both numbers -- across
+        # several turns the two sums are what cancelled, so quoting them would offer
+        # the reader the arithmetic that hid the problem.
+        # `Usage` says a total is its two parts added, and in these rows it is not.
+        # Every turn written under the current rule derives its total from its parts,
+        # so one of those cannot drift -- reaching this means a row in the group
+        # predates that, back when the total was whatever its CLI totalled. A group
+        # entirely of those is *self*-consistent and so passes the semantics test
+        # above, while still returning three numbers that contradict the definition
+        # they arrive under.
         notes.append(
-            f"{group} {row['total_tokens']} where the prompt and completion columns "
-            f"add to {parts}; a total meant something else when this was counted, so "
-            "the three numbers here are not one measurement"
+            f"this turn totals {row['total_tokens']} where the prompt and completion "
+            f"columns add to {row['input_tokens'] + row['output_tokens']}; a total "
+            "meant something else when this was counted, so the three numbers here "
+            "are not one measurement"
+            if row["turns"] == 1
+            else f"{contradicting} of these {row['turns']} turns total something other "
+            "than their own prompt and completion columns added; a total meant "
+            "something else when they were counted, so the three numbers here are not "
+            "one measurement"
         )
     return notes
 
@@ -791,7 +802,6 @@ class ConsultStore:
         validated_response: dict[str, Any] | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
-        total_tokens: int = 0,
         cost_usd: float | None = None,
         counts_incomplete: list[str] | None = None,
         latency_ms: int = 0,
@@ -819,7 +829,13 @@ class ConsultStore:
                     json.dumps(validated_response) if (keep and validated_response) else None,
                     input_tokens,
                     output_tokens,
-                    total_tokens,
+                    # Added here rather than accepted, so that a row written under the
+                    # current definition cannot disagree with it. `Usage` says a total
+                    # is its two parts added; a caller free to pass a third number is a
+                    # caller free to write the contradiction this row then blames on
+                    # the rule that came before it, stamped with `USAGE_SEMANTICS`
+                    # asserting it was counted the new way.
+                    input_tokens + output_tokens,
                     USAGE_SEMANTICS,
                     cost_usd,
                     # Kept even under `store_full_content: false`, unlike the bodies
@@ -860,6 +876,8 @@ class ConsultStore:
                 "SELECT COUNT(*) AS turns, COALESCE(SUM(input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(total_tokens), 0) AS total_tokens, "
+                "COALESCE(SUM(input_tokens + output_tokens != total_tokens), 0) "
+                "AS contradicting_turns, "
                 "COUNT(cost_usd) AS priced_turns, SUM(cost_usd) AS cost_usd, "
                 "MIN(usage_semantics) AS min_semantics, MAX(usage_semantics) AS max_semantics, "
                 "GROUP_CONCAT(counts_incomplete, char(31)) AS turn_caveats "
@@ -903,6 +921,8 @@ class ConsultStore:
                 "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
+                "COALESCE(SUM(t.input_tokens + t.output_tokens != t.total_tokens), 0) "
+                "AS contradicting_turns, "
                 "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd, "
                 "MIN(t.usage_semantics) AS min_semantics, MAX(t.usage_semantics) AS max_semantics, "
                 "GROUP_CONCAT(t.counts_incomplete, char(31)) AS turn_caveats "
@@ -945,6 +965,8 @@ class ConsultStore:
                 "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
+                "COALESCE(SUM(t.input_tokens + t.output_tokens != t.total_tokens), 0) "
+                "AS contradicting_turns, "
                 "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd, "
                 "MIN(t.usage_semantics) AS min_semantics, MAX(t.usage_semantics) AS max_semantics, "
                 "GROUP_CONCAT(t.counts_incomplete, char(31)) AS turn_caveats "
