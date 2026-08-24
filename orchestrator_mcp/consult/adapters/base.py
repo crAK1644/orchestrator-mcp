@@ -29,7 +29,7 @@ import signal
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 
@@ -141,6 +141,21 @@ class ConsultAdapter(Protocol):
         prompt: CompiledPrompt,
         source_mode: SourceMode,
     ) -> AdapterResult: ...
+
+
+def usage_count(value: Any) -> int:
+    """One token count off a runtime's usage envelope, or nothing.
+
+    Never an exception: usage is reporting, and a `"N/A"` where a number was expected
+    must not be what loses an answer that already arrived, validated, and was paid for.
+    Shared rather than per-adapter because `Usage` now derives its total from these,
+    so every field it counts is a field that can end a consultation if it is read
+    strictly -- and the runtimes disagree about which fields they even fill.
+    """
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def parse_content(text: str) -> ConsultationContent:

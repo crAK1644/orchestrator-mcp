@@ -34,14 +34,20 @@ consult:
                             # 0 probes once per turn, as before this setting existed.
   protocol_version: consult-v1
 
-  # Ceilings, both optional and both off by default. Checked before a request goes
+  # Ceilings, all optional and all off by default. Checked before a request goes
   # out, so what they buy is that the *next* request after the ceiling is crossed is
   # refused -- a request cannot be priced before it is made. An agent that reports no
   # price contributes nothing to the total, so the refusal names those agents rather
   # than pretending the number is complete.
+  #
+  # The turn ceilings are the ones that bind an agent on a flat-rate plan. Codex and
+  # Antigravity report no per-turn price, so a dollar ceiling over them never leaves
+  # $0.00 and can never fire; turns are counted whatever an agent charges.
   spend:
     max_cost_usd_per_review: 5.0
     max_cost_usd_per_workflow: 25.0
+    max_turns_per_review: 12
+    max_turns_per_workflow: 40
 
   agents:
     codex-sol:              # the id callers name in `target_agent`

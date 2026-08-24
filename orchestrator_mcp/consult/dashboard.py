@@ -2099,6 +2099,12 @@ _SPEND_FROM = (
     "LEFT JOIN reviews r ON r.id = (SELECT rc.review_id FROM review_consultations rc "
     "WHERE rc.consultation_id = c.id LIMIT 1) "
 )
+# `SUM(total_tokens)` spans the whole ledger, and turns written before `Usage` fixed
+# what these fields count carry the old per-runtime meanings -- a Claude row whose total
+# exceeds its parts, an Antigravity row whose total falls short of them. Rows written
+# since are the two parts added, whatever answered. Nothing to migrate: what a turn
+# reported is what was measured at the time, and rewriting it to look consistent would
+# be inventing numbers nobody counted.
 _SPEND_COLUMNS = (
     "COUNT(*) AS turns, COALESCE(SUM(t.total_tokens), 0) AS tokens, "
     "COUNT(t.cost_usd) AS priced, SUM(t.cost_usd) AS cost_usd "

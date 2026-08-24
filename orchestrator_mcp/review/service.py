@@ -729,6 +729,7 @@ class ReviewService:
             await self.consult.store.review_usage(review_id),
             self.consult.config.spend.max_cost_usd_per_review,
             f"review `{review_id}`",
+            self.consult.config.spend.max_turns_per_review,
         )
         if message is not None:
             log.warning("review %s refused: %s", review_id, message)

@@ -105,7 +105,32 @@ def scrub_json(value: Any) -> Any:
     return value
 
 
+# The rest of the definition, kept out of the docstring because a model docstring here
+# is advertised schema -- it is repeated in seventeen tool schemas, and this is a note
+# for whoever writes the next adapter, not for the agent reading the output.
+#
+# Every CLI reports these differently: Claude calls the uncached remainder the input,
+# Codex folds cache and reasoning into its two headline figures as breakdowns of them,
+# Antigravity and Opencode report theirs disjoint, and Antigravity's own total leaves
+# out the thinking it just reported. An adapter passing any of those straight through
+# produces a field that cannot be compared with the one beside it -- and they *are*
+# compared: the review and workflow rollups sum them across agents and the dashboard
+# prints the sum in one column. So each adapter converts, and `total_tokens` is derived
+# from the two parts rather than read from a CLI that counts a different set.
+#
+# No validator enforces the sum. Turns written before this definition existed carry the
+# old per-runtime meanings and still have to be readable: a stored turn is what was
+# measured at the time, and an old Claude row's total exceeds its parts where an old
+# Antigravity row's falls short. Reading them is fine. Comparing one against a row
+# written since is not.
 class Usage(BaseModel):
+    """What one turn cost in tokens, counted the same way whatever runtime answered.
+
+    `prompt_tokens` is every input token billed, cache reads and writes included -- a
+    cached prompt was still sent. `completion_tokens` is every token generated,
+    reasoning and thinking included. `total_tokens` is always the two added together.
+    """
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0

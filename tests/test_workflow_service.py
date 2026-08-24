@@ -56,9 +56,9 @@ PATCH = """--- a/src/a.py
 +new
 """
 FINDINGS = """```json
-{"findings": [{"severity": "important", "problem": "the scanner drops the last token",
-  "evidence": "src/a.py:12", "suggested_fix": "advance before returning",
-  "confidence": "high"}], "summary": "one real bug"}
+{"findings": [{"severity": "important", "why": "the scanner drops the last token",
+  "location": "src/a.py:12", "fix": "advance before returning"}],
+ "summary": "one real bug"}
 ```"""
 
 
@@ -1390,6 +1390,30 @@ def summary_with(disposition: str, ids: list[str], **extra) -> dict:
     }
 
 
+async def test_what_a_reviewer_wrote_is_still_there_when_the_review_is_read_back(
+    build, repo
+):
+    """A finding keeps its text, and not only the severity and the id it was filed under.
+
+    `Finding` defaults every text field to empty, so a finding written under key names
+    the parser does not read parses anyway -- into a severity with nothing attached.
+    The tests around this one resolve findings by id and assert on severity, which is
+    precisely the part that survives that, so the reviewer fixture could drift onto the
+    summary's key names without moving a single assertion. What it costs is not visible
+    here: a round handed those findings is handed no problem to work from.
+    """
+    service = await build()
+    workflow_id = await _to_synthesis(service, repo)
+    review_id = _review_id(await service.store.steps(workflow_id))
+
+    finding = (await service.reviews.get(review_id)).results[0].findings[0]
+
+    assert finding.severity == "important"
+    assert finding.why == "the scanner drops the last token"
+    assert finding.location == "src/a.py:12"
+    assert finding.fix == "advance before returning"
+
+
 async def test_an_open_important_finding_keeps_the_loop_going(build, repo):
     service = await build()
     workflow_id = await _to_synthesis(service, repo)
@@ -1399,6 +1423,39 @@ async def test_an_open_important_finding_keeps_the_loop_going(build, repo):
     record = [s for s in response.workflow.steps if s.step == "synthesize"][0]
     assert record.output["loop_done"] is False and record.output["open_serious"] == 1
     assert response.workflow.fix_rounds == 1
+
+
+async def test_a_synthesis_an_agent_wrote_is_recorded_the_same_as_one_the_host_did(
+    build, repo
+):
+    """A delegated synthesis lands as a step that is done, not one that was abandoned.
+
+    The delegated path recorded the step itself and then handed it to the synthesis,
+    which records it again -- and the second write found the row already resolved, so
+    a synthesis that had just succeeded was reported as a step cancelled while its
+    work was in flight. Nothing caught it because a synthesis normally arrives through
+    `record_host_step`, which has always let the synthesis do its own finishing.
+
+    Asserted on the stored row rather than the envelope, because the two writes
+    disagree about what a synthesize step holds: the first stores the summary the
+    agent sent, the second the outcome this server computed from it. Only the second
+    carries the review the outcome was checked against, which is what makes the record
+    worth keeping.
+    """
+    service = await build(bindings={"synthesize": {"agent": "flash"}})
+    workflow_id = await _to_synthesis(service, repo)
+    ids = await finding_ids(service, workflow_id)
+    service.adapters["flash"].answers = [json.dumps(summary_with("fixed", ids))]
+
+    step_id, token = await step(service, workflow_id, "synthesize")
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is None, response.error
+    assert response.status == "completed"
+    row = [s for s in await service.store.steps(workflow_id) if s.id == step_id][0]
+    assert row.status == "done"
+    assert row.review_id == _review_id(await service.store.steps(workflow_id))
+    assert json.loads(row.output_json)["loop_done"] is True
 
 
 async def test_a_fix_round_is_sent_the_findings_it_is_supposed_to_fix(build, repo):
@@ -2011,6 +2068,34 @@ async def test_a_step_past_the_ceiling_is_refused_before_the_token_is_spent(buil
     assert len(service.adapters["flash"].prompts) == sent
     # And the token still opens the step it approved, once the ceiling is raised.
     service.config.spend.max_cost_usd_per_workflow = 10.0
+    assert (await service.run_step(workflow_id, plan_id, plan_token)).error is None
+
+
+async def test_a_turn_ceiling_bounds_a_workflow_no_dollar_ceiling_can_price(build, repo):
+    """Same hole, same fix, one step further out: unpriced steps count as turns."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(RESEARCH),  # reports no price
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(PLAN),
+        },
+        bindings={"research": {"agent": "codex-sol"}, "plan": {"agent": "flash"}},
+        spend={"max_cost_usd_per_workflow": 0.01, "max_turns_per_workflow": 1},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    plan_id, plan_token = await step(service, workflow_id, "plan")
+    sent = len(service.adapters["flash"].prompts)
+
+    response = await service.run_step(workflow_id, plan_id, plan_token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "1 of its 1 turn ceiling" in response.error.message
+    assert len(service.adapters["flash"].prompts) == sent
+    # And the token still opens the step it approved, once the ceiling is raised.
+    service.config.spend.max_turns_per_workflow = 10
     assert (await service.run_step(workflow_id, plan_id, plan_token)).error is None
 
 

@@ -328,6 +328,7 @@
           "type": "string"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -1674,6 +1675,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -2685,6 +2687,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -3682,6 +3685,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -4790,6 +4794,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -5737,6 +5742,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -6700,6 +6706,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -7639,6 +7646,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -8725,6 +8733,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -9675,6 +9684,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -10404,6 +10414,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -11122,6 +11133,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -11846,6 +11858,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -12554,6 +12567,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -13339,6 +13353,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -14052,6 +14067,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -14760,6 +14776,7 @@
           "type": "object"
         },
         "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token billed, cache reads and writes included -- a\ncached prompt was still sent. `completion_tokens` is every token generated,\nreasoning and thinking included. `total_tokens` is always the two added together.",
           "properties": {
             "prompt_tokens": {
               "default": 0,

@@ -836,9 +836,13 @@ async def test_a_reasoning_part_is_neither_an_action_nor_the_answer(stub, adapte
 
 
 async def test_the_cost_reported_is_the_one_opencode_counted(stub, adapter):
-    """Not `input + output`: opencode's total counts reasoning and the cache read too,
-    and a cached prompt is mostly cache. Deriving it here under-reported by that whole
-    share -- 2231 against 439 on a turn measured against the binary."""
+    """Opencode reports four disjoint counts, and all four were billed.
+
+    `input + output` alone came to 439 on a turn measured against the binary; opencode
+    called the same turn 2231, the difference being the cache read. Sorted onto the
+    side each was billed on, the derived total is opencode's own number -- which is the
+    check that the parts are being read right, not just that they add up.
+    """
     stub(run=[{"stdout": jsonl(
         event("step_start", part("step-start")),
         event("text", part("text", text=json.dumps(CONTENT))),
@@ -850,8 +854,9 @@ async def test_the_cost_reported_is_the_one_opencode_counted(stub, adapter):
     result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
 
     assert result.usage.total_tokens == 2231
-    assert result.usage.prompt_tokens == 424
+    assert result.usage.prompt_tokens == 424 + 1792
     assert result.usage.completion_tokens == 15
+    assert result.usage.total_tokens == result.usage.prompt_tokens + result.usage.completion_tokens
 
 
 async def test_a_cost_of_true_is_not_a_dollar(stub, adapter):
