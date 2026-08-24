@@ -56,9 +56,9 @@ PATCH = """--- a/src/a.py
 +new
 """
 FINDINGS = """```json
-{"findings": [{"severity": "important", "problem": "the scanner drops the last token",
-  "evidence": "src/a.py:12", "suggested_fix": "advance before returning",
-  "confidence": "high"}], "summary": "one real bug"}
+{"findings": [{"severity": "important", "why": "the scanner drops the last token",
+  "location": "src/a.py:12", "fix": "advance before returning"}],
+ "summary": "one real bug"}
 ```"""
 
 
@@ -1388,6 +1388,30 @@ def summary_with(disposition: str, ids: list[str], **extra) -> dict:
         "checked": ["src/a.py"],
         "not_checked": [],
     }
+
+
+async def test_what_a_reviewer_wrote_is_still_there_when_the_review_is_read_back(
+    build, repo
+):
+    """A finding keeps its text, and not only the severity and the id it was filed under.
+
+    `Finding` defaults every text field to empty, so a finding written under key names
+    the parser does not read parses anyway -- into a severity with nothing attached.
+    The tests around this one resolve findings by id and assert on severity, which is
+    precisely the part that survives that, so the reviewer fixture could drift onto the
+    summary's key names without moving a single assertion. What it costs is not visible
+    here: a round handed those findings is handed no problem to work from.
+    """
+    service = await build()
+    workflow_id = await _to_synthesis(service, repo)
+    review_id = _review_id(await service.store.steps(workflow_id))
+
+    finding = (await service.reviews.get(review_id)).results[0].findings[0]
+
+    assert finding.severity == "important"
+    assert finding.why == "the scanner drops the last token"
+    assert finding.location == "src/a.py:12"
+    assert finding.fix == "advance before returning"
 
 
 async def test_an_open_important_finding_keeps_the_loop_going(build, repo):
