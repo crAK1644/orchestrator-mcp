@@ -54,7 +54,9 @@ from .base import (
     AdapterResult,
     AgentStatus,
     ProcessResult,
+    accounted,
     check_model,
+    check_reported_total,
     child_env,
     parse_content,
     resolve_command,
@@ -685,6 +687,7 @@ def _read_stream(result: ProcessResult, fallback_session: str | None) -> tuple[s
     return joined, native, usage
 
 
+@accounted
 def _usage(part: dict) -> Usage:
     tokens = part.get("tokens")
     tokens = tokens if isinstance(tokens, dict) else {}
@@ -701,6 +704,11 @@ def _usage(part: dict) -> Usage:
         + usage_count(cache.get("write"))
     )
     completion_tokens = usage_count(tokens.get("output")) + usage_count(tokens.get("reasoning"))
+    # This runtime's total covers all four of those disjoint figures, so unlike the
+    # others it should equal the canonical one exactly -- 2231 against 2231 on the turn
+    # measured against the binary. That agreement is the evidence the parts are sorted
+    # right, and checking it is how a fifth category would announce itself.
+    check_reported_total(tokens.get("total"), prompt_tokens + completion_tokens, "opencode")
     # `bool` excluded because it is a subclass of `int`, so a `"cost": true` passes the
     # isinstance check and `float(True)` bills the turn at one dollar. An unknown cost
     # has to stay unknown.

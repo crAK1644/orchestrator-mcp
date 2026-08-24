@@ -19,7 +19,12 @@ import pytest
 from orchestrator_mcp.consult.contract import ConsultRoute, SourceMode
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.routing import ExcludedCandidate, RoutingDecision
-from orchestrator_mcp.consult.store import MIGRATIONS, ConsultStore, StoreError
+from orchestrator_mcp.consult.store import (
+    MIGRATIONS,
+    USAGE_SEMANTICS,
+    ConsultStore,
+    StoreError,
+)
 from orchestrator_mcp.review.store import ReviewStore
 
 ROUTE = ConsultRoute(
@@ -74,6 +79,19 @@ async def test_an_existing_shared_database_directory_is_refused(tmp_path):
     assert not (shared / "consultations.sqlite3").exists()
 
 
+def test_a_migration_carries_no_sql_comment():
+    """Prose about a migration is a Python comment above the string, not a `--` comment
+    inside it, and the reason is that two things here read the statement text as SQL and
+    nothing else. The runner splits on `;`, so a semicolon written as ordinary
+    punctuation ends the statement early. The `ADD COLUMN` tolerance checks the text
+    *starts* with `ALTER TABLE`, so a statement wearing a comment stops being idempotent
+    and fails the next time a rewound ledger replays it. Both surface as a syntax error
+    or a duplicate column, and neither reads as a comment problem."""
+    for version, statements in enumerate(MIGRATIONS):
+        for line in statements.splitlines():
+            assert not line.strip().startswith("--"), f"migration {version}: {line.strip()}"
+
+
 async def test_opening_twice_is_not_a_second_migration(tmp_path):
     path = tmp_path / "db.sqlite3"
     first = await ConsultStore(path).open()
@@ -115,6 +133,9 @@ async def test_a_database_that_lost_its_profile_row_gets_it_back_on_open(tmp_pat
 
 async def test_usage_is_rebuilt_from_every_recorded_turn(store):
     consultation_id = await new_consultation(store)
+    # Totals that are their own parts. Every turn the service records derives it that
+    # way, and three numbers here that did not add up would describe a ledger this
+    # server cannot write -- which the rollup now says so about.
     await store.record_turn(
         consultation_id,
         1,
@@ -124,7 +145,6 @@ async def test_usage_is_rebuilt_from_every_recorded_turn(store):
         "compiled",
         input_tokens=10,
         output_tokens=2,
-        total_tokens=15,
         cost_usd=0.2,
     )
     await store.record_turn(
@@ -136,7 +156,6 @@ async def test_usage_is_rebuilt_from_every_recorded_turn(store):
         "compiled",
         input_tokens=20,
         output_tokens=4,
-        total_tokens=30,
         cost_usd=0.3,
     )
 
@@ -144,8 +163,11 @@ async def test_usage_is_rebuilt_from_every_recorded_turn(store):
     assert usage.model_dump() == {
         "prompt_tokens": 30,
         "completion_tokens": 6,
-        "total_tokens": 45,
+        "total_tokens": 36,
         "cost_usd": 0.5,
+        # Both turns counted under one rule, and their total is their parts: nothing
+        # about this sum needs saying.
+        "counts_incomplete": [],
     }
 
 
@@ -401,6 +423,199 @@ async def test_turns_are_stored_in_full_and_numbered(store):
     assert turn.raw_output == '{"answer": "blue"}'
     assert json.loads(turn.validated_response_json) == {"answer": "blue"}
     assert (turn.input_tokens, turn.output_tokens, turn.latency_ms) == (11, 3, 1234)
+
+
+
+async def test_a_new_turn_records_which_definition_its_tokens_were_counted_by(store, tmp_path):
+    """The three token columns changed meaning, and a row cannot say which one it used.
+
+    Every row written before `Usage` fixed its fields carries whatever its own CLI
+    reported: `input_tokens` is the uncached remainder on a Claude row and the whole
+    prompt on a Codex one, and `total_tokens` exceeds its parts on the first while
+    falling short on the second. Added beside a row written since, they produce a
+    number in no unit at all -- and the rollups do add them, across agents, into one
+    column of the dashboard.
+    """
+    consultation_id = await new_consultation(store)
+    await store.record_turn(
+        consultation_id,
+        1,
+        SourceMode.DOCUMENT,
+        user_prompt="what colour is the sky",
+        context=None,
+        compiled_prompt="SYSTEM...",
+        input_tokens=1800,
+        output_tokens=200,
+    )
+
+    assert usage_semantics_rows(tmp_path) == [USAGE_SEMANTICS]
+    # 0 is reserved for what came before, so the definition in force can never be it.
+    assert USAGE_SEMANTICS > 0
+
+
+async def test_a_turn_written_before_the_column_existed_reads_as_legacy(store, tmp_path):
+    """Not a backfill, which is the point of the default.
+
+    What a turn reported is what was measured at the time, and the fields needed to
+    restate an old row live in `raw_output` when they are anywhere at all -- absent
+    entirely under `store_full_content: false`. Recording which rule was in force costs
+    one column and cannot be recovered later; inventing the numbers would be a claim
+    about data nobody counted.
+    """
+    consultation_id = await new_consultation(store)
+    legacy_turn(tmp_path, consultation_id, sequence_number=1)
+
+    assert usage_semantics_rows(tmp_path) == [0]
+
+
+async def test_a_rollup_that_adds_two_definitions_says_so(store, tmp_path):
+    """What the marker was recorded for, and the only thing that reads it.
+
+    A turn from before the column and a turn from after are in different units, and
+    added they make a number in neither. There is no repair: the fields that would
+    restate the old row live in `raw_output` where they survive at all. So the sum is
+    returned and labelled -- suppressing it would decide for the caller that an
+    approximate figure is worse than none, which depends on what they are doing.
+    """
+    consultation_id = await new_consultation(store)
+    legacy_turn(tmp_path, consultation_id, sequence_number=1)
+    await store.record_turn(
+        consultation_id,
+        2,
+        SourceMode.DOCUMENT,
+        user_prompt="and now",
+        context=None,
+        compiled_prompt="SYSTEM...",
+        input_tokens=1800,
+        output_tokens=200,
+    )
+
+    usage = await store.usage(consultation_id)
+    assert usage.total_tokens == 1744808 + 2000
+    mixed, arithmetic = usage.counts_incomplete
+    assert "more than one definition" in mixed
+    assert "usage_semantics 0 through 1" in mixed
+    # And the same group fails the other test too, which is not redundant: one says
+    # the units differ, the other says the numbers returned contradict their own
+    # definition. A reader can act on the second without knowing what caused it.
+    assert "not one measurement" in arithmetic
+
+
+async def test_a_ledger_written_entirely_before_the_rule_still_contradicts_it(store, tmp_path):
+    """Why `MIN != MAX` was not the whole test.
+
+    An all-legacy group is internally consistent in the sense that matters to the
+    semantics check -- every row counted the same way -- and it still returns three
+    numbers whose total is nowhere near its parts, because that is what a total meant
+    before `Usage` said what it meant. Nothing is mixed and nothing here is a
+    measurement of what the fields now claim to be.
+    """
+    consultation_id = await new_consultation(store)
+    legacy_turn(tmp_path, consultation_id, sequence_number=1)
+    legacy_turn(tmp_path, consultation_id, sequence_number=2)
+
+    usage = await store.usage(consultation_id)
+    (note,) = usage.counts_incomplete
+    assert "2 of these 2 turns total something other than their own prompt and " in note
+
+
+async def test_two_turns_wrong_in_opposite_directions_do_not_make_a_right_one(
+    store, tmp_path
+):
+    """A residual carries a sign, and the caveat must not be read off the sums.
+
+    Both rows here contradict the definition -- one totals three over its own parts,
+    the other three under -- and the group's three columns add up perfectly, because
+    those two errors are what cancelled. Counting the turns is what survives that:
+    asked how many rows disagree with themselves, SQL answers two, and the arithmetic
+    that hid it never enters the question.
+    """
+    consultation_id = await new_consultation(store)
+    legacy_turn(tmp_path, consultation_id, sequence_number=1, tokens=(100, 100, 203))
+    legacy_turn(tmp_path, consultation_id, sequence_number=2, tokens=(100, 100, 197))
+
+    usage = await store.usage(consultation_id)
+    # The sums agree, which is the trap: 200 + 200 == 400 and every row is still wrong.
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    (note,) = usage.counts_incomplete
+    assert "2 of these 2 turns total something other than their own prompt and " in note
+
+
+async def test_a_rollup_counted_one_way_carries_no_caveat(store):
+    """The healthy ledger, which is every ledger written since. Each turn derives its
+    total from its parts, so a sum of them cannot drift, and nothing is said."""
+    consultation_id = await new_consultation(store)
+    for sequence in (1, 2):
+        await store.record_turn(
+            consultation_id, sequence, SourceMode.DOCUMENT,
+            user_prompt="q", context=None, compiled_prompt="p",
+            input_tokens=1800, output_tokens=200,
+        )
+
+    usage = await store.usage(consultation_id)
+    assert usage.counts_incomplete == []
+
+
+async def test_a_substituted_count_survives_the_restart_that_rebuilds_it(store):
+    """The half of the field that had to become durable.
+
+    A live parse tells whoever received the answer. A review reopened tomorrow is
+    rebuilt from these rows instead, and there an invented zero is indistinguishable
+    from a measured one -- the exact failure the caveat exists to stop, arriving by a
+    different door. So the reason is written beside the turn and gathered back up.
+    """
+    consultation_id = await new_consultation(store)
+    note = "'N/A' is not a token count; counting it as 0"
+    for sequence in (1, 2):
+        await store.record_turn(
+            consultation_id, sequence, SourceMode.DOCUMENT,
+            user_prompt="q", context=None, compiled_prompt="p",
+            counts_incomplete=[note],
+        )
+
+    usage = await store.usage(consultation_id)
+    # Counted, not merely collapsed: both turns hit it, and that is the difference
+    # between one runtime hiccup and a runtime that has stopped reporting.
+    assert usage.counts_incomplete == [f"{note} (x2)"]
+
+
+def legacy_turn(tmp_path, consultation_id, sequence_number, tokens=(22, 305704, 1744808)):
+    """One turn inserted the way the write path did before `usage_semantics` existed.
+
+    The column list is the point: every row already on disk was written by a statement
+    that did not name it, which is what the `DEFAULT 0` is for. The default triple is a
+    real Claude turn off the measured ledger; a caller passes its own when the residual
+    itself is what the test is about.
+    """
+    scratch = sqlite3.connect(tmp_path / "nested" / "consultations.sqlite3")
+    try:
+        scratch.execute(
+            "INSERT INTO consultation_turns (consultation_id, sequence_number, source_mode, "
+            "user_prompt, compiled_prompt, input_tokens, output_tokens, total_tokens, "
+            "latency_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (str(consultation_id), sequence_number, SourceMode.DOCUMENT.value,
+             "q", "p", *tokens, 0, "x"),
+        )
+        scratch.commit()
+    finally:
+        scratch.close()
+
+
+def usage_semantics_rows(tmp_path):
+    """The column for every stored turn, read past the store's own reader.
+
+    `turns()` does not select it: nothing in the server reads the marker yet, and a
+    field added to `Turn` for a test to assert on would be a consumer this change does
+    not have. The column has to be on disk from the first row regardless -- it is the
+    one thing about an old row that cannot be reconstructed after the fact.
+    """
+    scratch = sqlite3.connect(tmp_path / "nested" / "consultations.sqlite3")
+    try:
+        return [row[0] for row in scratch.execute(
+            "SELECT usage_semantics FROM consultation_turns ORDER BY sequence_number"
+        )]
+    finally:
+        scratch.close()
 
 
 async def test_a_failed_turn_keeps_its_code_and_no_answer(store):

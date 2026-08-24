@@ -28,13 +28,16 @@ import shutil
 import signal
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Protocol
 
 from pydantic import ValidationError
 
-from ...contract import Usage
+from ...contract import Usage, redact
 from ...log import get_logger
+from ...spend import tallied
 from ..config import AgentConfig
 from ..contract import ConsultationContent, RequiredAction, SourceMode
 from ..errors import ConsultErrorCode
@@ -143,19 +146,229 @@ class ConsultAdapter(Protocol):
     ) -> AdapterResult: ...
 
 
+# Why the parse currently running is not a straight measurement, or `None` outside one.
+# A contextvar rather than a parameter threaded through `usage_count`, because the
+# substitution happens several call frames below the only place that can put it on a
+# `Usage` -- every adapter reads its counts through nested field lookups, and passing a
+# collector to each would be a signature change at every one of them for a list that is
+# empty on every healthy turn. Per-context, so two consultations answering at once
+# cannot collect into each other.
+_caveats: ContextVar[list[str] | None] = ContextVar("usage_caveats", default=None)
+
+
+def _caveat(note: str) -> None:
+    """Record a reason these numbers are not straight measurements, and log it too.
+
+    Both kinds land here: a count this server invented because the runtime's was
+    unreadable, and a reported total that disagrees with the fields beside it. The
+    log line is for an operator, the collected note for whoever gets the answer.
+    """
+    log.warning("usage: %s", note)
+    notes = _caveats.get()
+    if notes is not None:
+        notes.append(note)
+
+
+def accounted(parse: Callable[..., Usage]) -> Callable[..., Usage]:
+    """Wrap a `_usage` parser so what it had to invent reaches whoever gets the answer.
+
+    A warning tells an operator, and only if `ORCHESTRATOR_LOG_LEVEL` is raised to let
+    it through -- the caller reading the response sees a plausible number and nothing
+    else. The answer is still returned, because losing a paid one over its receipt is
+    worse; `counts_incomplete` is how it stops arriving disguised as a measurement.
+    """
+
+    @wraps(parse)
+    def wrapper(*args: Any, **kwargs: Any) -> Usage:
+        token = _caveats.set([])
+        try:
+            usage = parse(*args, **kwargs)
+            notes = _caveats.get() or []
+            if not notes:
+                return usage
+            # Tallied here and not only at the rollups above, because one turn repeats
+            # itself too: a runtime that stopped reporting counts fails on the prompt
+            # field and the completion field with the identical wording, and that is
+            # one failure said twice rather than two things to look at.
+            return usage.model_copy(update={"counts_incomplete": tallied(notes)})
+        finally:
+            _caveats.reset(token)
+
+    return wrapper
+
+
+def _parse_count(value: Any) -> int | None:
+    """`value` as an exact token count, or `None` if it does not read as one.
+
+    An allowlist over what `json.loads` produces, rather than `int()` over whatever
+    turned up. `int()` is too generous in four ways, and each one turns a reporting
+    failure into a number that reads like a measurement. `bool` is a subclass of
+    `int`, so a `"cached": true` counts as one token -- the same trap the opencode
+    adapter already guards on the cost field, where `float(True)` bills a turn at a
+    dollar. A float is truncated, so 12.9 counts as 12 and nothing says a fraction was
+    dropped. An infinity raises `OverflowError` rather than the `ValueError` a string
+    raises, which is how a helper that promises never to raise loses an answer that
+    already arrived. And anything else carrying an `__int__` -- a fractional
+    `Decimal`, a `Fraction`, an object of its own -- is converted by a rule nobody
+    here chose and can raise something nobody here listed.
+
+    Naming the four types answers all of that at once, and needs no `except` at all on
+    the numeric paths. Numeric strings still read: a runtime that quotes its counts
+    has reported them. Anything outside the list is not something a usage envelope
+    parsed from JSON can contain, and a runtime that starts sending one has done
+    something worth hearing about rather than worth coercing.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        # False for both infinities and for NaN, so neither reaches a conversion that
+        # would raise on them -- the guard and the overflow are the same check here.
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
 def usage_count(value: Any) -> int:
     """One token count off a runtime's usage envelope, or nothing.
 
     Never an exception: usage is reporting, and a `"N/A"` where a number was expected
     must not be what loses an answer that already arrived, validated, and was paid for.
-    Shared rather than per-adapter because `Usage` now derives its total from these,
-    so every field it counts is a field that can end a consultation if it is read
+    Shared rather than per-adapter because `Usage` derives its total from these, so
+    every field it counts is a field that can end a consultation if it is read
     strictly -- and the runtimes disagree about which fields they even fill.
+
+    An absent field is nothing and says so quietly; a field that is *present* and
+    unreadable is a reporting failure, and the count returned for it is a guess that
+    reads exactly like a measurement. It still returns, because losing a paid answer
+    over its receipt is worse -- but it says so first, which is the whole difference
+    between an incomplete number and a wrong one nobody can find.
     """
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
+    if value is None:
         return 0
+    count = _parse_count(value)
+    if count is None:
+        # Redacted and bounded before it is quoted, because this string is durable.
+        # `counts_incomplete` is written to the turn row and kept even where the
+        # prompts are not, on the grounds that it describes the number in the column
+        # beside it rather than carrying content -- and a verbatim `repr` of whatever
+        # a runtime put in a usage field is content, of unknown length, from a payload
+        # nobody vetted. What makes the caveat worth keeping is the *shape*: that the
+        # field was there and unreadable. Sixty characters is more than any real token
+        # count needs and enough to recognize what arrived instead.
+        quoted = redact(repr(value))
+        if len(quoted) > 60:
+            quoted = f"{quoted[:60]}... ({len(quoted)} characters)"
+        _caveat(f"{quoted} is not a token count; counting it as 0")
+        return 0
+    if count < 0:
+        # Not clamped quietly. A negative token count is a runtime reporting a
+        # quantity that cannot exist, and the zero substituted for it is this
+        # function's invention, not that runtime's measurement.
+        _caveat(f"token count {count} is negative; counting it as 0")
+        return 0
+    return count
+
+
+def usage_any(*values: Any) -> int:
+    """The first of these that reads as a count, for a field spelled more than one way.
+
+    Not `usage_count(a or b)`: that resolves the alias by truthiness before anything
+    checks whether the winner is a number, so a present-but-malformed first spelling
+    takes the slot and the good second one is never reached.
+
+    Usable means readable *and* non-negative, both of which the first spelling can
+    fail. A runtime reporting -5 under one name has reported a quantity that cannot
+    exist, and the alias beside it is a better answer than the zero that clamping
+    would leave -- so it falls through rather than taking the slot.
+    """
+    for value in values:
+        count = _parse_count(value)
+        if count is not None and count >= 0:
+            return count
+        # Present and unusable, so it is still said aloud. What the alias behind it
+        # rescued is the count, not the reporting: a spelling that arrives malformed
+        # is a runtime doing something new, and the fallback is exactly what would
+        # hide it. `usage_count` is where both wordings live -- a value that does not
+        # read, and one that reads as impossible -- so the warning comes from there.
+        if value is not None:
+            usage_count(value)
+    return 0
+
+
+def check_reported_total(reported: Any, expected: int, runtime: str) -> None:
+    """Compare a runtime's own total against what that runtime's total should be.
+
+    `Usage.total_tokens` is derived from the two parts and never read from here --
+    each CLI totals a different set, which is why deriving it is the only way the
+    rollups can add them. But a reported total is still a checksum over the fields
+    beside it: it is how the parts were confirmed correct in the first place, and
+    discarding it means the day a runtime adds a sixth token category, the derived
+    total drifts and nothing anywhere notices.
+
+    `expected` is what *that runtime* documents its total to cover, not the canonical
+    one. Antigravity totals input and output alone; Opencode counts all four of its
+    disjoint figures. Comparing either against the wrong one would warn on every
+    healthy turn, which is the same as not warning at all.
+    """
+    count = _parse_count(reported)
+    if count is not None and count != expected:
+        _caveat(
+            f"{runtime} reported a total of {count} where its own fields make "
+            f"{expected}; the derived total is unaffected, but a token category "
+            "may be unread"
+        )
+
+
+def check_cache_is_a_breakdown(cached: Any, prompt_tokens: int) -> None:
+    """Test the containment that reading Codex's cache as a breakdown depends on.
+
+    The codex adapters read `cached_input_tokens` as a breakdown *of* `input_tokens`
+    rather than an addition to it. `check_reported_total` is what re-confirms that per
+    turn -- but only where a total is present, and the `exec` event those adapters read
+    carries none, so on the paid path it never runs at all.
+
+    This is the part of the claim that can be tested without one. A breakdown is
+    contained by the figure it breaks down, and across 21,164 measured envelopes the
+    cache never once exceeded the input -- it reaches exactly it and stops. Were a CLI
+    to move the cache out of the input, the two would be disjoint and the cache would
+    be free to exceed what remained, which on a warm session is the ordinary case
+    rather than the exotic one: 1,800 cached against a 200-token remainder.
+
+    So it is silent on every turn the current reading explains, including a fully
+    cached one, and speaks on a shape only the other reading permits. Not a complete
+    detector -- drift under a cache smaller than the remainder still passes -- and not
+    a version gate, which is what would settle it outright. The version is in the
+    rollout file rather than the event stream these parsers are handed, and reading a
+    file on the paid path is a poor price for a question this comparison mostly
+    answers. A caveat on every cached turn would have been the worse trade: a warning
+    that fires on all of them is one nobody can read.
+    """
+    count = _parse_count(cached)
+    # A prompt of 0 is not evidence and cannot be treated as any. `usage_any`
+    # substitutes a zero for an `input_tokens` it could not read, and by the time the
+    # number arrives here that substitution is indistinguishable from a measured zero
+    # -- so without this the unreadable field would be reported as proof the runtime
+    # had changed how it reports the cache, which is a confident claim about a number
+    # nobody managed to read. `usage_count` already caveats that field, truthfully.
+    #
+    # The measured zero is given up with it, and costs nothing: under the disjoint
+    # reading this is hunting for, `input_tokens` is the uncached remainder, and the
+    # user's new message is in every prompt and in no cache. A remainder of exactly
+    # zero is not the warm session that would expose the drift -- it is a shape
+    # neither reading produces.
+    if count is not None and prompt_tokens > 0 and count > prompt_tokens:
+        _caveat(
+            f"codex reported {count} cached input tokens against a prompt of "
+            f"{prompt_tokens}; the cache is counted as part of that prompt, so a "
+            "cache larger than it means the runtime no longer reports them nested "
+            "and every prompt here is short by the cached share"
+        )
 
 
 def parse_content(text: str) -> ConsultationContent:

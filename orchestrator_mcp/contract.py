@@ -118,21 +118,50 @@ def scrub_json(value: Any) -> Any:
 # prints the sum in one column. So each adapter converts, and `total_tokens` is derived
 # from the two parts rather than read from a CLI that counts a different set.
 #
+# The token fields are the answering model's alone, which is narrower than the money
+# beside them: Claude reports a whole-invocation `total_cost_usd` covering any internal
+# helper model it ran, while the counts it reports are the one that answered. Two
+# different questions -- what a consultation spent, and how large the answer was --
+# and the docstring says so rather than letting a reader assume one scope covers both.
+#
 # No validator enforces the sum. Turns written before this definition existed carry the
 # old per-runtime meanings and still have to be readable: a stored turn is what was
 # measured at the time, and an old Claude row's total exceeds its parts where an old
 # Antigravity row's falls short. Reading them is fine. Comparing one against a row
-# written since is not.
+# written since is not -- which is what `counts_incomplete` is for.
+#
+# A rollup is where that gets sharp. Summing a ledger that spans the change produces
+# three numbers whose total is not their sum, and the paragraph above promises it is.
+# The promise is kept per turn, as counted; a rollup that cannot keep it has to say so
+# rather than return a figure that contradicts its own definition. Suppressing the
+# fields instead would make all three nullable on the wire, for every consumer, to hide
+# a number that gates nothing -- `spend.refusal` bounds on money and on turns, never on
+# these -- so the number is returned and what is wrong with it is returned beside it.
 class Usage(BaseModel):
     """What one turn cost in tokens, counted the same way whatever runtime answered.
 
-    `prompt_tokens` is every input token billed, cache reads and writes included -- a
-    cached prompt was still sent. `completion_tokens` is every token generated,
-    reasoning and thinking included. `total_tokens` is always the two added together.
+    `prompt_tokens` is every input token the answering model was billed for, cache
+    reads and writes included -- a cached prompt was still sent. `completion_tokens`
+    is every token it generated, reasoning and thinking included. `total_tokens` is
+    the two added together for a turn as it was counted. `cost_usd`, where a runtime
+    reports one, may cover the whole invocation rather than the answering model alone.
+
+    `counts_incomplete` is empty when those three are a straight measurement, and
+    otherwise carries every reason they are not: a count the runtime reported
+    unreadably and this server substituted a zero for, a rollup that added turns
+    counted under two different definitions of these fields, a rollup whose total is
+    not its own parts because some turn in it predates that rule. A zero that was
+    invented reads exactly like a zero that was measured, so the difference has to be
+    said rather than inferred.
+
+    A list rather than one string, because these accumulate and then get added up. Two
+    reasons joined early are indistinguishable from one reason containing a semicolon,
+    which is what a rollup of rollups would then be de-duplicating against.
     """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
     cost_usd: float | None = None
+    counts_incomplete: list[str] = []
 

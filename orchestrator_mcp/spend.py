@@ -13,7 +13,9 @@ the ceiling refuses the next request rather than allowing one more.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from .contract import Usage
@@ -41,6 +43,53 @@ class Spend:
     # zero turns, and a ceiling that silently counts nothing is the bug this field
     # exists to fix. A caller that has to pass it cannot forget it.
     turns: int
+
+
+# The suffix `tallied` writes, read back so it can be folded rather than repeated.
+# Anchored at the end because that is the only place this function ever puts one.
+_TALLY = re.compile(r" \(x(\d+)\)$")
+
+
+def tallied(notes: Iterable[str]) -> list[str]:
+    """Each distinct reason once, in first-appearance order, with how many said it.
+
+    De-duplicated because five reviewers behind one CLI that stopped reporting its
+    counts are one problem, and printing it five times buries whatever else went
+    wrong. Counted because collapsing them to one line loses that it was all five,
+    which is the difference between a fluke and an outage.
+
+    Whole reasons, never fragments of one. That is what makes them worth carrying as a
+    list this far: two reasons joined into a string cannot be told apart from one
+    reason containing the separator, so a joined form de-duplicates against itself and
+    emits the shared half twice.
+
+    A count already on a reason is added into the new one rather than appended after
+    it, because this runs at three levels over the same reasons -- once across the
+    fields of a turn, once across the turns of a rollup, once across the agents of a
+    review -- and each level is handed what the level below it wrote. Appending gives
+    `(x2) (x2)`, which is four occurrences rendered as something that reads like a
+    formatting bug and cannot be added up by anyone reading it. One number that means
+    the whole depth is the only form worth carrying.
+    """
+    seen: Counter[str] = Counter()
+    for note in notes:
+        found = _TALLY.search(note)
+        # A reason of this server's own wording never ends in the suffix pattern, and
+        # a runtime value quoted inside one is quoted mid-sentence rather than last.
+        seen[note[: found.start()] if found else note] += int(found[1]) if found else 1
+    return [note if n == 1 else f"{note} (x{n})" for note, n in seen.items()]
+
+
+def caveats(used: Iterable[Usage]) -> list[str]:
+    """Every reason the parts of a rollup are not straight measurements.
+
+    Carried up rather than recomputed, because the sum is exactly where it stops
+    being visible: a reviewer whose counts were substituted contributes a number that
+    looks like all the others, and the total is the figure anyone reads. The same
+    argument as `cost_usd` one field over, with the difference that a token total is
+    worth showing anyway -- so it is labelled where money is withheld.
+    """
+    return tallied(note for usage in used for note in usage.counts_incomplete)
 
 
 def counted(spend: Mapping[str, Spend]) -> tuple[float, list[str]]:

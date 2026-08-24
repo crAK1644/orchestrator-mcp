@@ -47,7 +47,9 @@ from .base import (
     AdapterResult,
     AgentStatus,
     ProcessResult,
+    accounted,
     check_model,
+    check_reported_total,
     child_env,
     parse_content,
     resolve_command,
@@ -599,6 +601,7 @@ def _reported_model(events: list[dict]) -> str | None:
     return None
 
 
+@accounted
 def _usage(envelope: dict) -> Usage:
     raw: Any = envelope.get("usage")
     raw = raw if isinstance(raw, dict) else {}
@@ -609,12 +612,19 @@ def _usage(envelope: dict) -> Usage:
     # Thinking is generated and billed, so it belongs on the completion side rather
     # than in a field this envelope does not have.
     completion_tokens = usage_count(raw.get("output_tokens")) + usage_count(raw.get("thinking_tokens"))
+    check_reported_total(
+        raw.get("total_tokens"),
+        usage_count(raw.get("input_tokens")) + usage_count(raw.get("output_tokens")),
+        "antigravity",
+    )
     return Usage(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         # Not `raw["total_tokens"]`. This CLI totals input and output alone, so against
         # the two lines above -- which count the cache and the thinking it leaves out --
-        # its own total came out *smaller* than the parts beside it.
+        # its own total came out *smaller* than the parts beside it. Checked just above
+        # against the subtotal it does cover, which is the only comparison that can tell
+        # a missing category from the two this adapter already knows it omits.
         total_tokens=prompt_tokens + completion_tokens,
         # No cost anywhere in this runtime's output, and no quota surface either.
     )
