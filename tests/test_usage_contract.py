@@ -193,29 +193,47 @@ def test_a_count_that_does_not_read_says_so_before_it_returns_zero(warnings):
 
     lines = [record.getMessage() for record in warnings.records]
     assert len(lines) == 2
-    assert "'N/A' is not a token count" in lines[0]
+    assert "a str of length 3 is not a token count" in lines[0]
     assert "negative" in lines[1]
 
 
-def test_what_a_runtime_put_where_a_number_belonged_is_not_kept_verbatim(warnings):
+def test_what_a_runtime_put_where_a_number_belonged_is_never_quoted(warnings):
     """This caveat outlives the turn, so it is held to what a durable field may carry.
 
-    `counts_incomplete` is written to the row and kept even where the prompts are not,
-    because it describes the number in the column beside it rather than the content of
-    the conversation. A `repr` of an arbitrary payload field is content -- it is
-    whatever the runtime happened to put there, at whatever length. The fact worth
-    keeping is that the field was present and unreadable, and that survives both the
-    redaction and the bound.
+    `counts_incomplete` is written to the row and kept where the prompts, the context
+    and the raw output are all dropped, on the grounds that it describes the number in
+    the column beside it rather than the content of the conversation. Any excerpt of
+    an arbitrary payload field breaks that, and redacting one does not repair it --
+    a masker matches credential shapes and knows nothing of an address or a name. So
+    the value is described and never quoted, and what the caveat exists to say
+    survives: the field was there, and it was not a number.
     """
     assert usage_count({"api_key": "sk-ant-live-0123456789abcdef"}) == 0
-    assert usage_count("N/A" * 400) == 0
+    assert usage_count("patient jane.roe@example.com asked about a diagnosis") == 0
 
-    secret, long = [record.getMessage() for record in warnings.records]
-    assert "sk-ant" not in secret and "[redacted]" in secret
-    # Not merely shortened: the reader has to be told the value went on, or a quoted
-    # fragment reads as the whole of what arrived.
-    assert "characters)" in long and len(long) < 200
-    assert "is not a token count" in secret and "is not a token count" in long
+    credential, ordinary = [record.getMessage() for record in warnings.records]
+    assert "sk-ant" not in credential and "api_key" not in credential
+    assert credential.endswith("a dict of length 1 is not a token count; counting it as 0")
+    # The second case is the one redaction would have missed, and the reason nothing is
+    # quoted rather than merely masked: an address matches no credential pattern.
+    assert "jane.roe" not in ordinary and "example.com" not in ordinary
+    assert ordinary.endswith("a str of length 52 is not a token count; counting it as 0")
+
+
+def test_a_length_is_kept_because_a_type_alone_cannot_tell_the_two_apart(warnings):
+    """A quirk and an outage arrive in the same field and read alike without it.
+
+    `"N/A"` is a runtime with nothing to report. A page of XML in the same field is a
+    runtime that has stopped reporting usage at all, and an operator who can see only
+    that both were strings cannot tell which they have. The length is a measurement of
+    the value, not a copy of any part of it, which is what makes it keepable here.
+    """
+    assert usage_count("N/A") == 0
+    assert usage_count("<error>" * 500) == 0
+
+    short, long = [record.getMessage() for record in warnings.records]
+    assert "a str of length 3 is not a token count" in short
+    assert "a str of length 3500 is not a token count" in long
 
 
 def test_an_absent_count_is_nothing_and_says_nothing(warnings):
@@ -244,7 +262,7 @@ def test_a_malformed_first_spelling_does_not_take_the_slot(warnings):
     # still on the record, and the `None` that follows a bad one stays silent.
     lines = [record.getMessage() for record in warnings.records]
     assert len(lines) == 2
-    assert "'N/A' is not a token count" in lines[0]
+    assert "a str of length 3 is not a token count" in lines[0]
     assert "negative" in lines[1]
 
 
@@ -255,7 +273,7 @@ def test_every_alias_failing_is_zero_and_is_not_silent(warnings):
     assert usage_any("N/A", None) == 0
 
     (line,) = [record.getMessage() for record in warnings.records]
-    assert "'N/A' is not a token count" in line
+    assert "a str of length 3 is not a token count" in line
 
 
 def test_a_count_that_is_not_a_whole_number_is_not_a_count(warnings):
@@ -379,7 +397,7 @@ def test_a_caveat_survives_the_rollup_that_hides_it():
     a caveat stops being visible: one reviewer whose counts were substituted
     contributes a figure indistinguishable from the rest. Carrying it up is what
     keeps the field from being defeated one level above where it is set."""
-    note = "'N/A' is not a token count; counting it as 0"
+    note = "a str of length 3 is not a token count; counting it as 0"
     used = [
         Usage(prompt_tokens=2000, completion_tokens=500, total_tokens=2500),
         Usage(counts_incomplete=[note]),
@@ -396,7 +414,7 @@ def test_one_broken_runtime_behind_five_agents_is_one_caveat_and_a_count():
     Counted, though, rather than only collapsed. One reviewer reporting nothing is a
     fluke and every reviewer reporting nothing is an outage, and a bare de-duplication
     renders them identically."""
-    same = "'N/A' is not a token count; counting it as 0"
+    same = "a str of length 3 is not a token count; counting it as 0"
     other = "token count -5 is negative; counting it as 0"
     used = [Usage(counts_incomplete=[n]) for n in (same, other, same)]
 
@@ -412,7 +430,7 @@ def test_a_count_is_the_whole_depth_and_not_one_suffix_per_level():
     rather than folded turns four occurrences into "(x2) (x2)" -- a number no reader
     can add up, on a line that reads like a formatting fault rather than an outage.
     """
-    note = "'N/A' is not a token count; counting it as 0"
+    note = "a str of length 3 is not a token count; counting it as 0"
     # One turn that failed the same way on both of its count fields, twice over.
     turn = tallied([note, note])
     rollup = tallied(turn + turn)
@@ -432,7 +450,7 @@ def test_two_reasons_are_never_mistaken_for_one_reason_with_a_semicolon():
     strings then compares "A; B" against "A" as two unrelated notes and emits the
     shared half twice, which is exactly the noise the de-duplication was for.
     """
-    a = "'N/A' is not a token count; counting it as 0"
+    a = "a str of length 3 is not a token count; counting it as 0"
     b = "token count -5 is negative; counting it as 0"
     used = [Usage(counts_incomplete=[a, b]), Usage(counts_incomplete=[a])]
 

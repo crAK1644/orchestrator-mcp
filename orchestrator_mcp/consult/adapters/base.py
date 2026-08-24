@@ -35,7 +35,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
-from ...contract import Usage, redact
+from ...contract import Usage
 from ...log import get_logger
 from ...spend import tallied
 from ..config import AgentConfig
@@ -253,18 +253,15 @@ def usage_count(value: Any) -> int:
         return 0
     count = _parse_count(value)
     if count is None:
-        # Redacted and bounded before it is quoted, because this string is durable.
-        # `counts_incomplete` is written to the turn row and kept even where the
-        # prompts are not, on the grounds that it describes the number in the column
-        # beside it rather than carrying content -- and a verbatim `repr` of whatever
-        # a runtime put in a usage field is content, of unknown length, from a payload
-        # nobody vetted. What makes the caveat worth keeping is the *shape*: that the
-        # field was there and unreadable. Sixty characters is more than any real token
-        # count needs and enough to recognize what arrived instead.
-        quoted = redact(repr(value))
-        if len(quoted) > 60:
-            quoted = f"{quoted[:60]}... ({len(quoted)} characters)"
-        _caveat(f"{quoted} is not a token count; counting it as 0")
+        # The value is described and never quoted, not even in part, because this
+        # string is durable: `counts_incomplete` is written to the turn row and kept
+        # where the prompts, the context and the raw output are all dropped. That is
+        # only defensible while it holds no content, and an excerpt of whatever a
+        # runtime put in a usage field is content -- redaction does not make it
+        # otherwise, since it matches credential shapes and knows nothing of an
+        # address, a name, or a fragment of somebody's prompt. What the caveat is for
+        # survives the loss: the field was there, and it was not a number.
+        _caveat(f"a {_shape(value)} is not a token count; counting it as 0")
         return 0
     if count < 0:
         # Not clamped quietly. A negative token count is a runtime reporting a
@@ -273,6 +270,20 @@ def usage_count(value: Any) -> int:
         _caveat(f"token count {count} is negative; counting it as 0")
         return 0
     return count
+
+
+def _shape(value: Any) -> str:
+    """What arrived, said without saying what it held.
+
+    A length for the containers, because "a str" alone cannot tell a runtime writing
+    `"N/A"` from one dumping a page of XML into the field, and that is the difference
+    between a quirk and an outage. A count of items or characters is a measurement of
+    the value, not a copy of any part of it.
+    """
+    name = type(value).__name__
+    if isinstance(value, (str, bytes, list, dict, tuple)):
+        return f"{name} of length {len(value)}"
+    return name
 
 
 def usage_any(*values: Any) -> int:
