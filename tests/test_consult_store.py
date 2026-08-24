@@ -133,6 +133,9 @@ async def test_a_database_that_lost_its_profile_row_gets_it_back_on_open(tmp_pat
 
 async def test_usage_is_rebuilt_from_every_recorded_turn(store):
     consultation_id = await new_consultation(store)
+    # Totals that are their own parts. Every turn the service records derives it that
+    # way, and three numbers here that did not add up would describe a ledger this
+    # server cannot write -- which the rollup now says so about.
     await store.record_turn(
         consultation_id,
         1,
@@ -142,7 +145,7 @@ async def test_usage_is_rebuilt_from_every_recorded_turn(store):
         "compiled",
         input_tokens=10,
         output_tokens=2,
-        total_tokens=15,
+        total_tokens=12,
         cost_usd=0.2,
     )
     await store.record_turn(
@@ -154,7 +157,7 @@ async def test_usage_is_rebuilt_from_every_recorded_turn(store):
         "compiled",
         input_tokens=20,
         output_tokens=4,
-        total_tokens=30,
+        total_tokens=24,
         cost_usd=0.3,
     )
 
@@ -162,10 +165,11 @@ async def test_usage_is_rebuilt_from_every_recorded_turn(store):
     assert usage.model_dump() == {
         "prompt_tokens": 30,
         "completion_tokens": 6,
-        "total_tokens": 45,
+        "total_tokens": 36,
         "cost_usd": 0.5,
-        # Both turns written since `usage_semantics` existed, so the sum is one unit.
-        "counts_incomplete": None,
+        # Both turns counted under one rule, and their total is their parts: nothing
+        # about this sum needs saying.
+        "counts_incomplete": [],
     }
 
 
@@ -492,20 +496,69 @@ async def test_a_rollup_that_adds_two_definitions_says_so(store, tmp_path):
 
     usage = await store.usage(consultation_id)
     assert usage.total_tokens == 1744808 + 2000
-    assert "more than one definition" in usage.counts_incomplete
-    assert "usage_semantics 0 through 1" in usage.counts_incomplete
+    mixed, arithmetic = usage.counts_incomplete
+    assert "more than one definition" in mixed
+    assert "usage_semantics 0 through 1" in mixed
+    # And the same group fails the other test too, which is not redundant: one says
+    # the units differ, the other says the numbers returned contradict their own
+    # definition. A reader can act on the second without knowing what caused it.
+    assert "not one measurement" in arithmetic
 
 
-async def test_a_rollup_counted_one_way_carries_no_caveat(store, tmp_path):
-    """The other half of the rule, and the reason the check is `MIN != MAX` rather
-    than "any legacy row present": a ledger written entirely before the column is as
-    internally consistent as one written entirely after. Only the mixture is a lie."""
+async def test_a_ledger_written_entirely_before_the_rule_still_contradicts_it(store, tmp_path):
+    """Why `MIN != MAX` was not the whole test.
+
+    An all-legacy group is internally consistent in the sense that matters to the
+    semantics check -- every row counted the same way -- and it still returns three
+    numbers whose total is nowhere near its parts, because that is what a total meant
+    before `Usage` said what it meant. Nothing is mixed and nothing here is a
+    measurement of what the fields now claim to be.
+    """
     consultation_id = await new_consultation(store)
     legacy_turn(tmp_path, consultation_id, sequence_number=1)
     legacy_turn(tmp_path, consultation_id, sequence_number=2)
 
     usage = await store.usage(consultation_id)
-    assert usage.counts_incomplete is None
+    (note,) = usage.counts_incomplete
+    assert "these 2 turns total 3489616 where the prompt and completion columns add to 611452" in note
+
+
+async def test_a_rollup_counted_one_way_carries_no_caveat(store):
+    """The healthy ledger, which is every ledger written since. Each turn derives its
+    total from its parts, so a sum of them cannot drift, and nothing is said."""
+    consultation_id = await new_consultation(store)
+    for sequence in (1, 2):
+        await store.record_turn(
+            consultation_id, sequence, SourceMode.DOCUMENT,
+            user_prompt="q", context=None, compiled_prompt="p",
+            input_tokens=1800, output_tokens=200, total_tokens=2000,
+        )
+
+    usage = await store.usage(consultation_id)
+    assert usage.counts_incomplete == []
+
+
+async def test_a_substituted_count_survives_the_restart_that_rebuilds_it(store):
+    """The half of the field that had to become durable.
+
+    A live parse tells whoever received the answer. A review reopened tomorrow is
+    rebuilt from these rows instead, and there an invented zero is indistinguishable
+    from a measured one -- the exact failure the caveat exists to stop, arriving by a
+    different door. So the reason is written beside the turn and gathered back up.
+    """
+    consultation_id = await new_consultation(store)
+    note = "'N/A' is not a token count; counting it as 0"
+    for sequence in (1, 2):
+        await store.record_turn(
+            consultation_id, sequence, SourceMode.DOCUMENT,
+            user_prompt="q", context=None, compiled_prompt="p",
+            counts_incomplete=[note],
+        )
+
+    usage = await store.usage(consultation_id)
+    # Counted, not merely collapsed: both turns hit it, and that is the difference
+    # between one runtime hiccup and a runtime that has stopped reporting.
+    assert usage.counts_incomplete == [f"{note} (x2)"]
 
 
 def legacy_turn(tmp_path, consultation_id, sequence_number):

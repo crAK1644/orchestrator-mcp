@@ -39,7 +39,7 @@ from uuid import UUID
 
 from ..contract import Usage, scrub_json
 from ..log import get_logger
-from ..spend import Spend
+from ..spend import Spend, tallied
 from .contract import ConsultRoute, SourceMode
 from .errors import ConsultErrorCode
 from .routing import RoutingDecision
@@ -51,29 +51,61 @@ log = get_logger(__name__)
 _UNATTRIBUTED = "_unattributed"
 
 
-def _mixed_semantics(row: sqlite3.Row) -> str | None:
-    """Why this group's token columns are not one number, or `None` when they are.
+# How per-turn caveats leave SQLite: one JSON array per turn that had any, NULLs
+# dropped, joined on a unit separator. Safe as a separator precisely because
+# `json.dumps` escapes every control character, so a raw 0x1F cannot occur inside the
+# array text it produced. A comma could not have promised that.
+_CAVEAT_SEP = "\x1f"
 
-    The same shape as the `cost_usd` rule below and for the same reason: a sum over
-    parts that were not counted the same way reads as complete. Unlike money there is
-    no repair available -- a legacy row's `input_tokens` is the uncached remainder on
-    a Claude turn and the whole prompt on a Codex one, and the fields that would
-    restate it live in `raw_output` when they are anywhere at all. So the sum is
-    returned and labelled rather than suppressed: the caller is the only one who knows
-    whether an approximate figure is good enough for what they are doing with it.
 
-    A group mixes only where work was in flight across the upgrade that introduced
-    `usage_semantics` -- a consultation resumed, a review taking a later fix round.
-    Rare, which is exactly why nobody would think to check by hand.
+def _rollup_caveats(row: sqlite3.Row) -> list[str]:
+    """Every reason this group's three token columns are not one measurement.
+
+    Three sources, and they answer different questions. What the turns themselves
+    recorded is a fact about parsing them; the other two are facts about adding them
+    up, and only exist here.
+
+    Nothing is repaired, because nothing can be: a legacy row's `input_tokens` is the
+    uncached remainder on a Claude turn and the whole prompt on a Codex one, and the
+    fields that would restate it live in `raw_output` when they are anywhere at all.
+    So the sum is returned and labelled. Suppressing it would decide on the caller's
+    behalf that an approximate figure is worse than none, and these numbers gate
+    nothing -- `spend.refusal` bounds on money and on turns.
     """
-    if row["min_semantics"] == row["max_semantics"]:
-        return None
-    return (
-        f"these {row['turns']} turns were counted under more than one definition of "
-        f"the token fields (usage_semantics {row['min_semantics']} through "
-        f"{row['max_semantics']}), so the three totals add different units and cannot "
-        "be compared against a group counted one way"
+    notes = tallied(
+        note
+        for chunk in (row["turn_caveats"] or "").split(_CAVEAT_SEP)
+        if chunk
+        for note in json.loads(chunk)
     )
+    if row["min_semantics"] != row["max_semantics"]:
+        # Work in flight across the upgrade that introduced `usage_semantics`: a
+        # consultation resumed, a review taking a later fix round. Rare, which is
+        # exactly why nobody would think to check by hand.
+        notes.append(
+            f"these {row['turns']} turns were counted under more than one definition "
+            f"of the token fields (usage_semantics {row['min_semantics']} through "
+            f"{row['max_semantics']}), so the three totals add different units and "
+            "cannot be compared against a group counted one way"
+        )
+    parts = row["input_tokens"] + row["output_tokens"]
+    if parts != row["total_tokens"]:
+        # A group of one reaches here where the mixing test above cannot: a single row
+        # is trivially counted one way, and can still be a row from before that way
+        # existed. Which is also why only this message needs both numbers.
+        group = "this turn totals" if row["turns"] == 1 else f"these {row['turns']} turns total"
+        # `Usage` says a total is its two parts added, and here it is not. Every turn
+        # written under the current rule derives its total from its parts, so a sum of
+        # them cannot drift -- reaching this means some row in the group predates that,
+        # back when the total was whatever its CLI totalled. A group entirely of those
+        # is *self*-consistent and so passes the semantics test above, while still
+        # returning three numbers that contradict the definition they arrive under.
+        notes.append(
+            f"{group} {row['total_tokens']} where the prompt and completion columns "
+            f"add to {parts}; a total meant something else when this was counted, so "
+            "the three numbers here are not one measurement"
+        )
+    return notes
 
 
 def _spend(row: sqlite3.Row) -> Spend:
@@ -87,7 +119,7 @@ def _spend(row: sqlite3.Row) -> Spend:
             # Every turn priced, or no price at all: a partial sum shown as a total
             # reads as complete, and it is a floor.
             cost_usd=known if row["priced_turns"] == row["turns"] else None,
-            counts_incomplete=_mixed_semantics(row),
+            counts_incomplete=_rollup_caveats(row),
         ),
         known_cost_usd=float(known),
         turns=row["turns"],
@@ -327,6 +359,22 @@ MIGRATIONS: list[str] = [
     # numbers would be a claim about data nobody counted.
     """
     ALTER TABLE consultation_turns ADD COLUMN usage_semantics INTEGER NOT NULL DEFAULT 0;
+    """,
+    # Why this turn's token columns are not a straight measurement, as a JSON array of
+    # reasons, or NULL where they are.
+    #
+    # The live parse already tells whoever received the answer. This column is for
+    # everyone after them: a review reopened tomorrow is rebuilt from these rows, and a
+    # zero this server invented for an unreadable count is indistinguishable there from
+    # a zero the runtime measured. Keeping what was measured is the whole point of the
+    # ledger, and that is exactly the argument for recording that one of these numbers
+    # was not measured at all.
+    #
+    # JSON rather than one joined string, for the same reason `Usage` carries a list:
+    # these are added up across turns, agents and steps, and a de-duplication over
+    # joined text collapses the wrong things.
+    """
+    ALTER TABLE consultation_turns ADD COLUMN counts_incomplete TEXT;
     """,
 ]
 
@@ -745,6 +793,7 @@ class ConsultStore:
         output_tokens: int = 0,
         total_tokens: int = 0,
         cost_usd: float | None = None,
+        counts_incomplete: list[str] | None = None,
         latency_ms: int = 0,
         error_code: ConsultErrorCode | None = None,
     ) -> None:
@@ -757,8 +806,8 @@ class ConsultStore:
             self._db.execute(
                 "INSERT INTO consultation_turns (consultation_id, sequence_number, source_mode, "
                 "user_prompt, context, compiled_prompt, raw_output, validated_response_json, "
-                "input_tokens, output_tokens, total_tokens, usage_semantics, cost_usd, latency_ms, "
-                "error_code, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "input_tokens, output_tokens, total_tokens, usage_semantics, cost_usd, counts_incomplete, "
+                "latency_ms, error_code, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(consultation_id),
                     sequence_number,
@@ -773,6 +822,11 @@ class ConsultStore:
                     total_tokens,
                     USAGE_SEMANTICS,
                     cost_usd,
+                    # Kept even under `store_full_content: false`, unlike the bodies
+                    # above. It is not content -- it is the shape of the number in the
+                    # column beside it, and an operator who cannot keep prompts on disk
+                    # still needs to know which of their counts this server invented.
+                    json.dumps(counts_incomplete) if counts_incomplete else None,
                     latency_ms,
                     error_code.value if error_code else None,
                     _now(),
@@ -807,7 +861,8 @@ class ConsultStore:
                 "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(total_tokens), 0) AS total_tokens, "
                 "COUNT(cost_usd) AS priced_turns, SUM(cost_usd) AS cost_usd, "
-                "MIN(usage_semantics) AS min_semantics, MAX(usage_semantics) AS max_semantics "
+                "MIN(usage_semantics) AS min_semantics, MAX(usage_semantics) AS max_semantics, "
+                "GROUP_CONCAT(counts_incomplete, char(31)) AS turn_caveats "
                 "FROM consultation_turns WHERE consultation_id = ?",
                 (str(consultation_id),),
             ).fetchone()
@@ -818,7 +873,7 @@ class ConsultStore:
                 completion_tokens=row["output_tokens"],
                 total_tokens=row["total_tokens"],
                 cost_usd=row["cost_usd"] if row["priced_turns"] == row["turns"] else None,
-                counts_incomplete=_mixed_semantics(row),
+                counts_incomplete=_rollup_caveats(row),
             )
 
         return await self._run(work)
@@ -849,7 +904,8 @@ class ConsultStore:
                 "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
                 "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd, "
-                "MIN(t.usage_semantics) AS min_semantics, MAX(t.usage_semantics) AS max_semantics "
+                "MIN(t.usage_semantics) AS min_semantics, MAX(t.usage_semantics) AS max_semantics, "
+                "GROUP_CONCAT(t.counts_incomplete, char(31)) AS turn_caveats "
                 "FROM consultation_turns t "
                 "JOIN review_consultations rc ON rc.consultation_id = t.consultation_id "
                 "WHERE rc.review_id = ? GROUP BY 1",
@@ -890,7 +946,8 @@ class ConsultStore:
                 "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
                 "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd, "
-                "MIN(t.usage_semantics) AS min_semantics, MAX(t.usage_semantics) AS max_semantics "
+                "MIN(t.usage_semantics) AS min_semantics, MAX(t.usage_semantics) AS max_semantics, "
+                "GROUP_CONCAT(t.counts_incomplete, char(31)) AS turn_caveats "
                 "FROM consultation_turns t JOIN consultations c ON c.id = t.consultation_id "
                 # A scalar subquery rather than a join to `review_consultations`: a
                 # join there would multiply one turn by however many rows point at

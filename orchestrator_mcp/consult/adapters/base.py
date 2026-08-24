@@ -37,6 +37,7 @@ from pydantic import ValidationError
 
 from ...contract import Usage
 from ...log import get_logger
+from ...spend import tallied
 from ..config import AgentConfig
 from ..contract import ConsultationContent, RequiredAction, SourceMode
 from ..errors import ConsultErrorCode
@@ -185,7 +186,11 @@ def accounted(parse: Callable[..., Usage]) -> Callable[..., Usage]:
             notes = _caveats.get() or []
             if not notes:
                 return usage
-            return usage.model_copy(update={"counts_incomplete": "; ".join(notes)})
+            # Tallied here and not only at the rollups above, because one turn repeats
+            # itself too: a runtime that stopped reporting counts fails on the prompt
+            # field and the completion field with the identical wording, and that is
+            # one failure said twice rather than two things to look at.
+            return usage.model_copy(update={"counts_incomplete": tallied(notes)})
         finally:
             _caveats.reset(token)
 
@@ -195,26 +200,38 @@ def accounted(parse: Callable[..., Usage]) -> Callable[..., Usage]:
 def _parse_count(value: Any) -> int | None:
     """`value` as an exact token count, or `None` if it does not read as one.
 
-    `int()` alone is too generous in three ways, and each one turns a reporting
+    An allowlist over what `json.loads` produces, rather than `int()` over whatever
+    turned up. `int()` is too generous in four ways, and each one turns a reporting
     failure into a number that reads like a measurement. `bool` is a subclass of
     `int`, so a `"cached": true` counts as one token -- the same trap the opencode
     adapter already guards on the cost field, where `float(True)` bills a turn at a
-    dollar. A float is truncated, so 12.9 counts as 12 and nothing says a fraction
-    was dropped. And an infinity raises `OverflowError` rather than the `ValueError`
-    a string raises, which is how a helper that promises never to raise loses an
-    answer that already arrived -- `is_integer()` refuses it before `int()` sees it,
-    and the `except` covers the same from a `Decimal`.
+    dollar. A float is truncated, so 12.9 counts as 12 and nothing says a fraction was
+    dropped. An infinity raises `OverflowError` rather than the `ValueError` a string
+    raises, which is how a helper that promises never to raise loses an answer that
+    already arrived. And anything else carrying an `__int__` -- a fractional
+    `Decimal`, a `Fraction`, an object of its own -- is converted by a rule nobody
+    here chose and can raise something nobody here listed.
 
-    Numeric strings still read: a runtime that quotes its counts has reported them.
+    Naming the four types answers all of that at once, and needs no `except` at all on
+    the numeric paths. Numeric strings still read: a runtime that quotes its counts
+    has reported them. Anything outside the list is not something a usage envelope
+    parsed from JSON can contain, and a runtime that starts sending one has done
+    something worth hearing about rather than worth coercing.
     """
-    if value is None or isinstance(value, bool):
+    if isinstance(value, bool):
         return None
-    if isinstance(value, float) and not value.is_integer():
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        # False for both infinities and for NaN, so neither reaches a conversion that
+        # would raise on them -- the guard and the overflow are the same check here.
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
 
 
 def usage_count(value: Any) -> int:
@@ -294,6 +311,40 @@ def check_reported_total(reported: Any, expected: int, runtime: str) -> None:
             f"{runtime} reported a total of {count} where its own fields make "
             f"{expected}; the derived total is unaffected, but a token category "
             "may be unread"
+        )
+
+
+def check_cache_is_a_breakdown(cached: Any, prompt_tokens: int) -> None:
+    """Test the containment that reading Codex's cache as a breakdown depends on.
+
+    The codex adapters read `cached_input_tokens` as a breakdown *of* `input_tokens`
+    rather than an addition to it. `check_reported_total` is what re-confirms that per
+    turn -- but only where a total is present, and the `exec` event those adapters read
+    carries none, so on the paid path it never runs at all.
+
+    This is the part of the claim that can be tested without one. A breakdown is
+    contained by the figure it breaks down, and across 21,164 measured envelopes the
+    cache never once exceeded the input -- it reaches exactly it and stops. Were a CLI
+    to move the cache out of the input, the two would be disjoint and the cache would
+    be free to exceed what remained, which on a warm session is the ordinary case
+    rather than the exotic one: 1,800 cached against a 200-token remainder.
+
+    So it is silent on every turn the current reading explains, including a fully
+    cached one, and speaks on a shape only the other reading permits. Not a complete
+    detector -- drift under a cache smaller than the remainder still passes -- and not
+    a version gate, which is what would settle it outright. The version is in the
+    rollout file rather than the event stream these parsers are handed, and reading a
+    file on the paid path is a poor price for a question this comparison mostly
+    answers. A caveat on every cached turn would have been the worse trade: a warning
+    that fires on all of them is one nobody can read.
+    """
+    count = _parse_count(cached)
+    if count is not None and count > prompt_tokens:
+        _caveat(
+            f"codex reported {count} cached input tokens against a prompt of "
+            f"{prompt_tokens}; the cache is counted as part of that prompt, so a "
+            "cache larger than it means the runtime no longer reports them nested "
+            "and every prompt here is short by the cached share"
         )
 
 

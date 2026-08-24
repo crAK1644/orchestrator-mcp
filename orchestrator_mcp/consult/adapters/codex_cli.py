@@ -30,6 +30,7 @@ from .base import (
     AgentStatus,
     ProcessResult,
     accounted,
+    check_cache_is_a_breakdown,
     check_model,
     check_reported_total,
     child_env,
@@ -483,15 +484,15 @@ def _usage(events: list[dict]) -> Usage:
         prompt_tokens = usage_any(raw.get("input_tokens"), raw.get("prompt_tokens"))
         completion_tokens = usage_any(raw.get("output_tokens"), raw.get("completion_tokens"))
         # Checked rather than used: `input + output` is what those 21,164 samples say a
-        # Codex total covers. Conditional, though, and worth being plain about -- the
-        # `exec` event this adapter reads carries no total today, only the rollout
-        # envelopes do, so the check fires only if one appears. A future CLI that moved
-        # the cache out of the input while still reporting no total would undercount
-        # here in silence, and no amount of past evidence detects that. What the
-        # measurement settles is the versions installed on one machine when it was
-        # taken; what would settle a later one is a total on this event, or a version
-        # the envelope states outright.
+        # Codex total covers. Conditional, though -- the `exec` event this adapter reads
+        # carries no total today, only the rollout envelopes do, so this fires only if
+        # one appears. What the measurement settles is the versions installed on one
+        # machine when it was taken, and a later CLI that moved the cache out of the
+        # input while still reporting no total is exactly what it cannot speak to.
         check_reported_total(raw.get("total_tokens"), prompt_tokens + completion_tokens, "codex")
+        # The part of the same claim that holds without a total to check against,
+        # which on this event is every turn.
+        check_cache_is_a_breakdown(raw.get("cached_input_tokens"), prompt_tokens)
         return Usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,

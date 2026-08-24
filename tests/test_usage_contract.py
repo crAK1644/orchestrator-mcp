@@ -32,7 +32,7 @@ from orchestrator_mcp.consult.adapters.base import (
     usage_count,
 )
 from orchestrator_mcp.contract import Usage
-from orchestrator_mcp.spend import caveats
+from orchestrator_mcp.spend import caveats, tallied
 
 # A 2000-token prompt, 1800 of it served from cache, answered with 500 generated tokens
 # of which 400 were reasoning. Every runtime below is describing this turn.
@@ -143,7 +143,11 @@ def test_a_substituted_count_reaches_the_caller_and_not_only_the_log(runtime):
     parse, payload = GARBAGE[runtime]
     usage = parse(payload)
 
-    assert "is not a token count" in usage.counts_incomplete
+    notes = usage.counts_incomplete
+    assert notes and all("is not a token count" in note for note in notes)
+    # One reason per distinct failure, not one per field it broke on: a runtime
+    # failing the same way on two fields of one turn is one thing to go and look at.
+    assert len(notes) == len(set(notes))
 
 
 @pytest.mark.parametrize("runtime", sorted(TURN))
@@ -151,7 +155,7 @@ def test_a_turn_that_counted_cleanly_says_nothing(runtime):
     """The healthy path, which is every turn. A caveat on all of them is no caveat."""
     parse, payload = TURN[runtime]
 
-    assert parse(payload).counts_incomplete is None
+    assert parse(payload).counts_incomplete == []
 
 
 # --- what the helpers say when a count does not read -------------------------
@@ -354,21 +358,78 @@ def test_a_caveat_survives_the_rollup_that_hides_it():
     a caveat stops being visible: one reviewer whose counts were substituted
     contributes a figure indistinguishable from the rest. Carrying it up is what
     keeps the field from being defeated one level above where it is set."""
+    note = "'N/A' is not a token count; counting it as 0"
     used = [
         Usage(prompt_tokens=2000, completion_tokens=500, total_tokens=2500),
-        Usage(counts_incomplete="'N/A' is not a token count; counting it as 0"),
+        Usage(counts_incomplete=[note]),
     ]
 
-    assert caveats(used) == "'N/A' is not a token count; counting it as 0"
-    assert caveats(used[:1]) is None
+    assert caveats(used) == [note]
+    assert caveats(used[:1]) == []
 
 
-def test_one_broken_runtime_behind_five_agents_is_one_caveat():
-    """Deduplicated in order. Five reviewers on the same CLI that stopped reporting
-    its counts have one problem between them, and printing it five times buries
-    whatever else went wrong."""
+def test_one_broken_runtime_behind_five_agents_is_one_caveat_and_a_count():
+    """Five reviewers on the same CLI that stopped reporting its counts have one
+    problem between them, and printing it five times buries whatever else went wrong.
+
+    Counted, though, rather than only collapsed. One reviewer reporting nothing is a
+    fluke and every reviewer reporting nothing is an outage, and a bare de-duplication
+    renders them identically."""
     same = "'N/A' is not a token count; counting it as 0"
     other = "token count -5 is negative; counting it as 0"
-    used = [Usage(counts_incomplete=n) for n in (same, other, same)]
+    used = [Usage(counts_incomplete=[n]) for n in (same, other, same)]
 
-    assert caveats(used) == f"{same}; {other}"
+    assert caveats(used) == [f"{same} (x2)", other]
+
+
+def test_a_count_is_the_whole_depth_and_not_one_suffix_per_level():
+    """The same reason tallied three times over must not render three counts.
+
+    It is tallied three times because it passes three of them: across the fields of a
+    turn, across the turns a rollup adds, across the agents a review adds. Each level
+    is handed what the level below it already wrote, so a suffix that is appended
+    rather than folded turns four occurrences into "(x2) (x2)" -- a number no reader
+    can add up, on a line that reads like a formatting fault rather than an outage.
+    """
+    note = "'N/A' is not a token count; counting it as 0"
+    # One turn that failed the same way on both of its count fields, twice over.
+    turn = tallied([note, note])
+    rollup = tallied(turn + turn)
+
+    assert turn == [f"{note} (x2)"]
+    assert rollup == [f"{note} (x4)"]
+    assert caveats([Usage(counts_incomplete=rollup), Usage(counts_incomplete=[note])]) == [
+        f"{note} (x5)"
+    ]
+
+
+def test_two_reasons_are_never_mistaken_for_one_reason_with_a_semicolon():
+    """Why these travel as a list all the way to the display that joins them.
+
+    Every reason here already contains "; " in its own wording, so a joined form
+    cannot be split back into the reasons that made it. De-duplicating the joined
+    strings then compares "A; B" against "A" as two unrelated notes and emits the
+    shared half twice, which is exactly the noise the de-duplication was for.
+    """
+    a = "'N/A' is not a token count; counting it as 0"
+    b = "token count -5 is negative; counting it as 0"
+    used = [Usage(counts_incomplete=[a, b]), Usage(counts_incomplete=[a])]
+
+    assert caveats(used) == [f"{a} (x2)", b]
+
+
+def test_a_cache_bigger_than_the_prompt_holding_it_is_reported(warnings):
+    """The one shape that separates Codex's two possible cache readings without a
+    total to check against. A breakdown is contained by what it breaks down, and
+    across 21,164 measured envelopes the cache reached the input and stopped. A cache
+    that exceeds it is only possible if the two became disjoint -- at which point
+    every prompt this adapter reports is short by the cached share."""
+    from orchestrator_mcp.consult.adapters.base import check_cache_is_a_breakdown
+
+    # Fully cached, which is ordinary, and says nothing.
+    check_cache_is_a_breakdown(2000, 2000)
+    # The warm session under the other reading: 1800 cached, 200 left to send.
+    check_cache_is_a_breakdown(1800, 200)
+
+    (line,) = [record.getMessage() for record in warnings.records]
+    assert "1800 cached input tokens against a prompt of 200" in line
