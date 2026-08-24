@@ -325,7 +325,7 @@ def check_reported_total(reported: Any, expected: int, runtime: str) -> None:
         )
 
 
-def check_cache_is_a_breakdown(cached: Any, prompt_tokens: int) -> None:
+def check_cache_is_a_breakdown(cached: Any, *prompt_spellings: Any) -> None:
     """Test the containment that reading Codex's cache as a breakdown depends on.
 
     The codex adapters read `cached_input_tokens` as a breakdown *of* `input_tokens`
@@ -350,19 +350,37 @@ def check_cache_is_a_breakdown(cached: Any, prompt_tokens: int) -> None:
     that fires on all of them is one nobody can read.
     """
     count = _parse_count(cached)
-    # A prompt of 0 is not evidence and cannot be treated as any. `usage_any`
-    # substitutes a zero for an `input_tokens` it could not read, and by the time the
-    # number arrives here that substitution is indistinguishable from a measured zero
-    # -- so without this the unreadable field would be reported as proof the runtime
-    # had changed how it reports the cache, which is a confident claim about a number
-    # nobody managed to read. `usage_count` already caveats that field, truthfully.
-    #
-    # The measured zero is given up with it, and costs nothing: under the disjoint
-    # reading this is hunting for, `input_tokens` is the uncached remainder, and the
-    # user's new message is in every prompt and in no cache. A remainder of exactly
-    # zero is not the warm session that would expose the drift -- it is a shape
-    # neither reading produces.
-    if count is not None and prompt_tokens > 0 and count > prompt_tokens:
+    if count is None or count <= 0:
+        return
+    # The prompt is resolved here rather than taken as a number, because the caller's
+    # copy has already lost the one thing this comparison depends on: `usage_any`
+    # returns 0 for a field it could not read, and a substituted zero is a zero. Read
+    # through it, an unreadable `input_tokens` becomes proof that the runtime changed
+    # how it reports the cache -- a confident claim about a number nobody managed to
+    # read, printed beside the `usage_count` caveat that says so. Same alias order the
+    # caller uses; `_parse_count` says nothing, so nothing is warned about twice.
+    prompt_tokens = next(
+        (
+            parsed
+            for parsed in map(_parse_count, prompt_spellings)
+            if parsed is not None and parsed >= 0
+        ),
+        None,
+    )
+    if prompt_tokens is None:
+        return
+    if prompt_tokens == 0:
+        # Reported, but not as evidence of the drift above. A cache against a prompt
+        # of none is not the warm session that would expose a disjoint reading -- it
+        # is a shape neither reading produces, and naming a cause for it would be
+        # inventing one. The numbers are stated and left to whoever reads them.
+        _caveat(
+            f"codex reported {count} cached input tokens against a prompt of 0; a "
+            "cache is tokens that were sent, so neither reading of these fields "
+            "produces this and the prompt figure cannot be what it claims"
+        )
+        return
+    if count > prompt_tokens:
         _caveat(
             f"codex reported {count} cached input tokens against a prompt of "
             f"{prompt_tokens}; the cache is counted as part of that prompt, so a "

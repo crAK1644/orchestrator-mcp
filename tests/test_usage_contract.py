@@ -452,15 +452,61 @@ def test_a_cache_bigger_than_the_prompt_holding_it_is_reported(warnings):
     # The warm session under the other reading: 1800 cached, 200 left to send.
     check_cache_is_a_breakdown(1800, 200)
 
-    # The prompt this cache is measured against is the one field that may not have
-    # been read at all: `usage_any` returns 0 for an `input_tokens` it could not
-    # parse, and a substituted zero is a zero. Reporting against it would answer a
-    # question about the runtime's reporting with a number the runtime never
-    # reported -- and it would arrive beside the caveat that says so, contradicting it.
-    check_cache_is_a_breakdown(1800, usage_any("N/A"))
+    (line,) = [record.getMessage() for record in warnings.records]
+    assert "1800 cached input tokens against a prompt of 200" in line
 
-    lines = [record.getMessage() for record in warnings.records]
-    assert "1800 cached input tokens against a prompt of 200" in lines[0]
-    # The unreadable field is still on the record. What it is not is evidence of drift.
-    (unreadable,) = lines[1:]
-    assert unreadable.endswith("'N/A' is not a token count; counting it as 0")
+
+def test_a_prompt_nobody_could_read_is_not_evidence_of_anything(warnings):
+    """The prompt is resolved here rather than handed over as a number.
+
+    `usage_any` returns 0 for a field it could not parse, and downstream that zero is
+    indistinguishable from a measured one. Read through it, an unreadable
+    `input_tokens` becomes a confident claim that the runtime changed how it reports
+    the cache -- printed beside the caveat saying that same field could not be read.
+    Given the spellings instead, this can tell the two apart, and it says nothing
+    about a number that was never available to compare against.
+    """
+    from orchestrator_mcp.consult.adapters.base import check_cache_is_a_breakdown
+
+    check_cache_is_a_breakdown(1800, "N/A")
+    # Silent about the cache *and* silent about the prompt: `usage_count` is where the
+    # unreadable field is reported, once, from the parse that had to substitute for it.
+    # Saying it again from here would double every such turn.
+    assert warnings.records == []
+
+    # Both spellings, resolved in the caller's order, so a readable alias behind an
+    # unreadable one still gives the comparison something real to run against.
+    check_cache_is_a_breakdown(1800, "N/A", 200)
+    (line,) = [record.getMessage() for record in warnings.records]
+    assert "1800 cached input tokens against a prompt of 200" in line
+
+
+def test_a_cache_against_a_prompt_of_none_is_reported_without_a_cause(warnings):
+    """A measured zero is not the substituted one, and is not silence either.
+
+    A cache is tokens that were sent, so a prompt of zero carrying one is a shape
+    neither reading of these fields produces -- which makes it worth reporting and
+    makes the drift explanation the wrong thing to say about it. The numbers are
+    stated and the cause is left to whoever reads them.
+    """
+    from orchestrator_mcp.consult.adapters.base import check_cache_is_a_breakdown
+
+    check_cache_is_a_breakdown(1800, 0)
+
+    (line,) = [record.getMessage() for record in warnings.records]
+    assert "1800 cached input tokens against a prompt of 0" in line
+    # The claim the other branch makes, which this one has no grounds for.
+    assert "no longer reports them nested" not in line
+
+
+def test_a_cache_of_zero_says_nothing_whatever_the_prompt_did(warnings):
+    """Codex reports `cached_input_tokens: 0` on every cold turn, which is most of
+    them. A check that spoke there would put a line on the ordinary case, and the
+    comparison has nothing to test: no cache is contained by any prompt."""
+    from orchestrator_mcp.consult.adapters.base import check_cache_is_a_breakdown
+
+    check_cache_is_a_breakdown(0, 0)
+    check_cache_is_a_breakdown(0, "N/A")
+    check_cache_is_a_breakdown(None, 200)
+
+    assert warnings.records == []

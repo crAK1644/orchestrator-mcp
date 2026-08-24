@@ -492,7 +492,9 @@ def _usage(events: list[dict]) -> Usage:
         check_reported_total(raw.get("total_tokens"), prompt_tokens + completion_tokens, "codex")
         # The part of the same claim that holds without a total to check against,
         # which on this event is every turn.
-        check_cache_is_a_breakdown(raw.get("cached_input_tokens"), prompt_tokens)
+        check_cache_is_a_breakdown(
+            raw.get("cached_input_tokens"), raw.get("input_tokens"), raw.get("prompt_tokens")
+        )
         return Usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
