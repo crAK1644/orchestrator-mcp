@@ -54,7 +54,7 @@ from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
 from ..log import get_logger
 from ..review.contract import SERIOUS, ReviewSummary, open_serious
 from ..review.service import ReviewService
-from ..spend import Spend
+from ..spend import Spend, caveats
 from ..spend import refusal as spend_refusal
 from .contract import (
     ARTIFACT_MODELS,
@@ -1492,6 +1492,7 @@ def _total(spent: Iterable[Spend]) -> Usage | None:
         completion_tokens=sum(u.completion_tokens for u in used),
         total_tokens=sum(u.total_tokens for u in used),
         cost_usd=sum(u.cost_usd for u in used) if priced else None,  # type: ignore[misc]
+        counts_incomplete=caveats(used),
     )
 
 

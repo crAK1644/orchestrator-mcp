@@ -33,6 +33,7 @@ from typing import Any
 from ...consult.adapters.base import (
     AdapterError,
     ProcessResult,
+    accounted,
     check_model,
     check_reported_total,
     child_env,
@@ -259,6 +260,7 @@ def _claimed_paths(events: list[dict]) -> list[str]:
     return sorted(set(paths))
 
 
+@accounted
 def _usage(events: list[dict]) -> Usage:
     for event in reversed(events):
         raw: Any = event.get("usage")
@@ -279,9 +281,15 @@ def _usage(events: list[dict]) -> Usage:
         # never once exceeds `input_tokens` -- it reaches exactly it and stops.
         prompt_tokens = usage_any(raw.get("input_tokens"), raw.get("prompt_tokens"))
         completion_tokens = usage_any(raw.get("output_tokens"), raw.get("completion_tokens"))
-        # The event this adapter reads carries no total, but the rollout envelopes above
-        # do, so one may appear here. Checked rather than used: `input + output` is what
-        # those 21,164 samples say a Codex total covers.
+        # Checked rather than used: `input + output` is what those 21,164 samples say a
+        # Codex total covers. Conditional, though, and worth being plain about -- the
+        # `exec` event this adapter reads carries no total today, only the rollout
+        # envelopes do, so the check fires only if one appears. A future CLI that moved
+        # the cache out of the input while still reporting no total would undercount
+        # here in silence, and no amount of past evidence detects that. What the
+        # measurement settles is the versions installed on one machine when it was
+        # taken; what would settle a later one is a total on this event, or a version
+        # the envelope states outright.
         check_reported_total(raw.get("total_tokens"), prompt_tokens + completion_tokens, "codex")
         return Usage(
             prompt_tokens=prompt_tokens,

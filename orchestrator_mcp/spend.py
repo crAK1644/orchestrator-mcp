@@ -13,7 +13,7 @@ the ceiling refuses the next request rather than allowing one more.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from .contract import Usage
@@ -41,6 +41,21 @@ class Spend:
     # zero turns, and a ceiling that silently counts nothing is the bug this field
     # exists to fix. A caller that has to pass it cannot forget it.
     turns: int
+
+
+def caveats(used: Iterable[Usage]) -> str | None:
+    """Every reason the parts of a rollup are not straight measurements, or `None`.
+
+    Carried up rather than recomputed, because the sum is exactly where it stops
+    being visible: a reviewer whose counts were substituted contributes a number
+    that looks like all the others, and the total is the figure anyone reads. The
+    same argument as `cost_usd` one field over, with the difference that a token
+    total is worth showing anyway -- so it is labelled where money is withheld.
+
+    De-duplicated in order. Five reviewers behind one CLI that stopped reporting its
+    counts are one problem, and printing it five times buries the rest.
+    """
+    return "; ".join(dict.fromkeys(u.counts_incomplete for u in used if u.counts_incomplete)) or None
 
 
 def counted(spend: Mapping[str, Spend]) -> tuple[float, list[str]]:

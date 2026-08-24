@@ -27,6 +27,7 @@ from .base import (
     AdapterResult,
     AgentStatus,
     ProcessResult,
+    accounted,
     check_model,
     child_env,
     parse_content,
@@ -349,6 +350,7 @@ def _reported_model(envelope: dict) -> str | None:
     return model if isinstance(model, str) else None
 
 
+@accounted
 def _usage(envelope: dict) -> Usage:
     raw = envelope.get("usage")
     raw = raw if isinstance(raw, dict) else {}

@@ -128,7 +128,12 @@ def scrub_json(value: Any) -> Any:
 # old per-runtime meanings and still have to be readable: a stored turn is what was
 # measured at the time, and an old Claude row's total exceeds its parts where an old
 # Antigravity row's falls short. Reading them is fine. Comparing one against a row
-# written since is not.
+# written since is not -- which is what `counts_incomplete` is for.
+#
+# That field is live only. It reaches whoever received the answer, and it is not stored
+# beside the turn: a substituted count is a fact about one parse, and persisting it
+# would be a second column on a ledger whose whole point is to keep what was measured.
+# The rollups set it from `usage_semantics` instead, which is the durable half.
 class Usage(BaseModel):
     """What one turn cost in tokens, counted the same way whatever runtime answered.
 
@@ -137,10 +142,17 @@ class Usage(BaseModel):
     is every token it generated, reasoning and thinking included. `total_tokens` is
     always the two added together. `cost_usd`, where a runtime reports one, may cover
     the whole invocation rather than the answering model alone.
+
+    `counts_incomplete` is why the three token numbers are not a straight measurement,
+    or absent when they are: a count the runtime reported unreadably and this server
+    substituted a zero for, or a rollup that added turns counted under two different
+    definitions of these fields. A zero that was invented reads exactly like a zero
+    that was measured, so the difference has to be said rather than inferred.
     """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
     cost_usd: float | None = None
+    counts_incomplete: str | None = None
 

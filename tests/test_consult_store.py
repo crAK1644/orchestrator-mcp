@@ -164,6 +164,8 @@ async def test_usage_is_rebuilt_from_every_recorded_turn(store):
         "completion_tokens": 6,
         "total_tokens": 45,
         "cost_usd": 0.5,
+        # Both turns written since `usage_semantics` existed, so the sum is one unit.
+        "counts_incomplete": None,
     }
 
 
@@ -460,21 +462,70 @@ async def test_a_turn_written_before_the_column_existed_reads_as_legacy(store, t
     about data nobody counted.
     """
     consultation_id = await new_consultation(store)
+    legacy_turn(tmp_path, consultation_id, sequence_number=1)
+
+    assert usage_semantics_rows(tmp_path) == [0]
+
+
+async def test_a_rollup_that_adds_two_definitions_says_so(store, tmp_path):
+    """What the marker was recorded for, and the only thing that reads it.
+
+    A turn from before the column and a turn from after are in different units, and
+    added they make a number in neither. There is no repair: the fields that would
+    restate the old row live in `raw_output` where they survive at all. So the sum is
+    returned and labelled -- suppressing it would decide for the caller that an
+    approximate figure is worse than none, which depends on what they are doing.
+    """
+    consultation_id = await new_consultation(store)
+    legacy_turn(tmp_path, consultation_id, sequence_number=1)
+    await store.record_turn(
+        consultation_id,
+        2,
+        SourceMode.DOCUMENT,
+        user_prompt="and now",
+        context=None,
+        compiled_prompt="SYSTEM...",
+        input_tokens=1800,
+        output_tokens=200,
+        total_tokens=2000,
+    )
+
+    usage = await store.usage(consultation_id)
+    assert usage.total_tokens == 1744808 + 2000
+    assert "more than one definition" in usage.counts_incomplete
+    assert "usage_semantics 0 through 1" in usage.counts_incomplete
+
+
+async def test_a_rollup_counted_one_way_carries_no_caveat(store, tmp_path):
+    """The other half of the rule, and the reason the check is `MIN != MAX` rather
+    than "any legacy row present": a ledger written entirely before the column is as
+    internally consistent as one written entirely after. Only the mixture is a lie."""
+    consultation_id = await new_consultation(store)
+    legacy_turn(tmp_path, consultation_id, sequence_number=1)
+    legacy_turn(tmp_path, consultation_id, sequence_number=2)
+
+    usage = await store.usage(consultation_id)
+    assert usage.counts_incomplete is None
+
+
+def legacy_turn(tmp_path, consultation_id, sequence_number):
+    """One turn inserted the way the write path did before `usage_semantics` existed.
+
+    The column list is the point: every row already on disk was written by a statement
+    that did not name it, which is what the `DEFAULT 0` is for.
+    """
     scratch = sqlite3.connect(tmp_path / "nested" / "consultations.sqlite3")
     try:
-        # The column list as it stood before the migration: every row already on disk
-        # was inserted by a statement that did not name `usage_semantics`.
         scratch.execute(
             "INSERT INTO consultation_turns (consultation_id, sequence_number, source_mode, "
             "user_prompt, compiled_prompt, input_tokens, output_tokens, total_tokens, "
             "latency_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (str(consultation_id), 1, SourceMode.DOCUMENT.value, "q", "p", 22, 305704, 1744808, 0, "x"),
+            (str(consultation_id), sequence_number, SourceMode.DOCUMENT.value,
+             "q", "p", 22, 305704, 1744808, 0, "x"),
         )
         scratch.commit()
     finally:
         scratch.close()
-
-    assert usage_semantics_rows(tmp_path) == [0]
 
 
 def usage_semantics_rows(tmp_path):

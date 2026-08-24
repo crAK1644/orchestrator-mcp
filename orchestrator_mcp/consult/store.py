@@ -51,6 +51,31 @@ log = get_logger(__name__)
 _UNATTRIBUTED = "_unattributed"
 
 
+def _mixed_semantics(row: sqlite3.Row) -> str | None:
+    """Why this group's token columns are not one number, or `None` when they are.
+
+    The same shape as the `cost_usd` rule below and for the same reason: a sum over
+    parts that were not counted the same way reads as complete. Unlike money there is
+    no repair available -- a legacy row's `input_tokens` is the uncached remainder on
+    a Claude turn and the whole prompt on a Codex one, and the fields that would
+    restate it live in `raw_output` when they are anywhere at all. So the sum is
+    returned and labelled rather than suppressed: the caller is the only one who knows
+    whether an approximate figure is good enough for what they are doing with it.
+
+    A group mixes only where work was in flight across the upgrade that introduced
+    `usage_semantics` -- a consultation resumed, a review taking a later fix round.
+    Rare, which is exactly why nobody would think to check by hand.
+    """
+    if row["min_semantics"] == row["max_semantics"]:
+        return None
+    return (
+        f"these {row['turns']} turns were counted under more than one definition of "
+        f"the token fields (usage_semantics {row['min_semantics']} through "
+        f"{row['max_semantics']}), so the three totals add different units and cannot "
+        "be compared against a group counted one way"
+    )
+
+
 def _spend(row: sqlite3.Row) -> Spend:
     """One grouped row of the turn ledger, read as both a display and a bound."""
     known = row["cost_usd"] or 0.0
@@ -62,6 +87,7 @@ def _spend(row: sqlite3.Row) -> Spend:
             # Every turn priced, or no price at all: a partial sum shown as a total
             # reads as complete, and it is a floor.
             cost_usd=known if row["priced_turns"] == row["turns"] else None,
+            counts_incomplete=_mixed_semantics(row),
         ),
         known_cost_usd=float(known),
         turns=row["turns"],
@@ -780,7 +806,8 @@ class ConsultStore:
                 "SELECT COUNT(*) AS turns, COALESCE(SUM(input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(total_tokens), 0) AS total_tokens, "
-                "COUNT(cost_usd) AS priced_turns, SUM(cost_usd) AS cost_usd "
+                "COUNT(cost_usd) AS priced_turns, SUM(cost_usd) AS cost_usd, "
+                "MIN(usage_semantics) AS min_semantics, MAX(usage_semantics) AS max_semantics "
                 "FROM consultation_turns WHERE consultation_id = ?",
                 (str(consultation_id),),
             ).fetchone()
@@ -791,6 +818,7 @@ class ConsultStore:
                 completion_tokens=row["output_tokens"],
                 total_tokens=row["total_tokens"],
                 cost_usd=row["cost_usd"] if row["priced_turns"] == row["turns"] else None,
+                counts_incomplete=_mixed_semantics(row),
             )
 
         return await self._run(work)
@@ -820,7 +848,8 @@ class ConsultStore:
                 "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
-                "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd "
+                "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd, "
+                "MIN(t.usage_semantics) AS min_semantics, MAX(t.usage_semantics) AS max_semantics "
                 "FROM consultation_turns t "
                 "JOIN review_consultations rc ON rc.consultation_id = t.consultation_id "
                 "WHERE rc.review_id = ? GROUP BY 1",
@@ -860,7 +889,8 @@ class ConsultStore:
                 "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
-                "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd "
+                "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd, "
+                "MIN(t.usage_semantics) AS min_semantics, MAX(t.usage_semantics) AS max_semantics "
                 "FROM consultation_turns t JOIN consultations c ON c.id = t.consultation_id "
                 # A scalar subquery rather than a join to `review_consultations`: a
                 # join there would multiply one turn by however many rows point at

@@ -48,6 +48,7 @@ from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json, secret_lines
 from ..json_objects import fenced_json_objects, json_object_candidates
 from ..log import get_logger
 from ..progress import step as progress_step
+from ..spend import caveats
 from ..spend import refusal as spend_refusal
 from ..workflow.identity import host_identity_conflict, same_execution_identity
 from .contract import (
@@ -1549,6 +1550,7 @@ def _total(results: list[ReviewerResult]) -> Usage:
         completion_tokens=sum(u.completion_tokens for u in used),
         total_tokens=sum(u.total_tokens for u in used),
         cost_usd=sum(u.cost_usd for u in used) if cost_known else None,
+        counts_incomplete=caveats(used),
     )
 
 

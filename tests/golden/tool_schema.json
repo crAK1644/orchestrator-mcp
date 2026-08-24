@@ -328,7 +328,7 @@
           "type": "string"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -356,6 +356,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -1675,7 +1687,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -1703,6 +1715,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -2687,7 +2711,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -2715,6 +2739,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -3685,7 +3721,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -3713,6 +3749,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -4794,7 +4842,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -4822,6 +4870,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -5742,7 +5802,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -5770,6 +5830,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -6706,7 +6778,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -6734,6 +6806,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -7646,7 +7730,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -7674,6 +7758,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -8733,7 +8829,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -8761,6 +8857,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -9684,7 +9792,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -9712,6 +9820,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -10414,7 +10534,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -10442,6 +10562,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -11133,7 +11265,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -11161,6 +11293,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -11858,7 +12002,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -11886,6 +12030,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -12567,7 +12723,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -12595,6 +12751,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -13353,7 +13521,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -13381,6 +13549,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -14067,7 +14247,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -14095,6 +14275,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",
@@ -14776,7 +14968,7 @@
           "type": "object"
         },
         "Usage": {
-          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.",
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nalways the two added together. `cost_usd`, where a runtime reports one, may cover\nthe whole invocation rather than the answering model alone.\n\n`counts_incomplete` is why the three token numbers are not a straight measurement,\nor absent when they are: a count the runtime reported unreadably and this server\nsubstituted a zero for, or a rollup that added turns counted under two different\ndefinitions of these fields. A zero that was invented reads exactly like a zero\nthat was measured, so the difference has to be said rather than inferred.",
           "properties": {
             "prompt_tokens": {
               "default": 0,
@@ -14804,6 +14996,18 @@
               ],
               "default": null,
               "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Counts Incomplete"
             }
           },
           "title": "Usage",

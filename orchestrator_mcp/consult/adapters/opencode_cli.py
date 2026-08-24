@@ -54,6 +54,7 @@ from .base import (
     AdapterResult,
     AgentStatus,
     ProcessResult,
+    accounted,
     check_model,
     check_reported_total,
     child_env,
@@ -686,6 +687,7 @@ def _read_stream(result: ProcessResult, fallback_session: str | None) -> tuple[s
     return joined, native, usage
 
 
+@accounted
 def _usage(part: dict) -> Usage:
     tokens = part.get("tokens")
     tokens = tokens if isinstance(tokens, dict) else {}

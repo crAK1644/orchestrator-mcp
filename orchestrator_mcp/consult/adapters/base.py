@@ -28,7 +28,9 @@ import shutil
 import signal
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -143,13 +145,75 @@ class ConsultAdapter(Protocol):
     ) -> AdapterResult: ...
 
 
+# Why the parse currently running is not a straight measurement, or `None` outside one.
+# A contextvar rather than a parameter threaded through `usage_count`, because the
+# substitution happens several call frames below the only place that can put it on a
+# `Usage` -- every adapter reads its counts through nested field lookups, and passing a
+# collector to each would be a signature change at every one of them for a list that is
+# empty on every healthy turn. Per-context, so two consultations answering at once
+# cannot collect into each other.
+_caveats: ContextVar[list[str] | None] = ContextVar("usage_caveats", default=None)
+
+
+def _caveat(note: str) -> None:
+    """Record a reason these numbers are not straight measurements, and log it too.
+
+    Both kinds land here: a count this server invented because the runtime's was
+    unreadable, and a reported total that disagrees with the fields beside it. The
+    log line is for an operator, the collected note for whoever gets the answer.
+    """
+    log.warning("usage: %s", note)
+    notes = _caveats.get()
+    if notes is not None:
+        notes.append(note)
+
+
+def accounted(parse: Callable[..., Usage]) -> Callable[..., Usage]:
+    """Wrap a `_usage` parser so what it had to invent reaches whoever gets the answer.
+
+    A warning tells an operator, and only if `ORCHESTRATOR_LOG_LEVEL` is raised to let
+    it through -- the caller reading the response sees a plausible number and nothing
+    else. The answer is still returned, because losing a paid one over its receipt is
+    worse; `counts_incomplete` is how it stops arriving disguised as a measurement.
+    """
+
+    @wraps(parse)
+    def wrapper(*args: Any, **kwargs: Any) -> Usage:
+        token = _caveats.set([])
+        try:
+            usage = parse(*args, **kwargs)
+            notes = _caveats.get() or []
+            if not notes:
+                return usage
+            return usage.model_copy(update={"counts_incomplete": "; ".join(notes)})
+        finally:
+            _caveats.reset(token)
+
+    return wrapper
+
+
 def _parse_count(value: Any) -> int | None:
-    """`value` as a token count, or `None` if it does not read as one."""
-    if value is None:
+    """`value` as an exact token count, or `None` if it does not read as one.
+
+    `int()` alone is too generous in three ways, and each one turns a reporting
+    failure into a number that reads like a measurement. `bool` is a subclass of
+    `int`, so a `"cached": true` counts as one token -- the same trap the opencode
+    adapter already guards on the cost field, where `float(True)` bills a turn at a
+    dollar. A float is truncated, so 12.9 counts as 12 and nothing says a fraction
+    was dropped. And an infinity raises `OverflowError` rather than the `ValueError`
+    a string raises, which is how a helper that promises never to raise loses an
+    answer that already arrived -- `is_integer()` refuses it before `int()` sees it,
+    and the `except` covers the same from a `Decimal`.
+
+    Numeric strings still read: a runtime that quotes its counts has reported them.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, float) and not value.is_integer():
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -172,13 +236,13 @@ def usage_count(value: Any) -> int:
         return 0
     count = _parse_count(value)
     if count is None:
-        log.warning("usage: %r is not a token count; counting it as 0", value)
+        _caveat(f"{value!r} is not a token count; counting it as 0")
         return 0
     if count < 0:
         # Not clamped quietly. A negative token count is a runtime reporting a
         # quantity that cannot exist, and the zero substituted for it is this
         # function's invention, not that runtime's measurement.
-        log.warning("usage: token count %d is negative; counting it as 0", count)
+        _caveat(f"token count {count} is negative; counting it as 0")
         return 0
     return count
 
@@ -189,11 +253,24 @@ def usage_any(*values: Any) -> int:
     Not `usage_count(a or b)`: that resolves the alias by truthiness before anything
     checks whether the winner is a number, so a present-but-malformed first spelling
     takes the slot and the good second one is never reached.
+
+    Usable means readable *and* non-negative, both of which the first spelling can
+    fail. A runtime reporting -5 under one name has reported a quantity that cannot
+    exist, and the alias beside it is a better answer than the zero that clamping
+    would leave -- so it falls through rather than taking the slot.
     """
     for value in values:
-        if _parse_count(value) is not None:
-            return usage_count(value)
-    return usage_count(values[-1]) if values else 0
+        count = _parse_count(value)
+        if count is not None and count >= 0:
+            return count
+        # Present and unusable, so it is still said aloud. What the alias behind it
+        # rescued is the count, not the reporting: a spelling that arrives malformed
+        # is a runtime doing something new, and the fallback is exactly what would
+        # hide it. `usage_count` is where both wordings live -- a value that does not
+        # read, and one that reads as impossible -- so the warning comes from there.
+        if value is not None:
+            usage_count(value)
+    return 0
 
 
 def check_reported_total(reported: Any, expected: int, runtime: str) -> None:
@@ -213,12 +290,10 @@ def check_reported_total(reported: Any, expected: int, runtime: str) -> None:
     """
     count = _parse_count(reported)
     if count is not None and count != expected:
-        log.warning(
-            "usage: %s reported a total of %d where its own fields make %d; "
-            "the derived total is unaffected, but a token category may be unread",
-            runtime,
-            count,
-            expected,
+        _caveat(
+            f"{runtime} reported a total of {count} where its own fields make "
+            f"{expected}; the derived total is unaffected, but a token category "
+            "may be unread"
         )
 
 

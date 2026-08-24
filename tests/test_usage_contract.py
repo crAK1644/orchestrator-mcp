@@ -31,6 +31,8 @@ from orchestrator_mcp.consult.adapters.base import (
     usage_any,
     usage_count,
 )
+from orchestrator_mcp.contract import Usage
+from orchestrator_mcp.spend import caveats
 
 # A 2000-token prompt, 1800 of it served from cache, answered with 500 generated tokens
 # of which 400 were reasoning. Every runtime below is describing this turn.
@@ -128,6 +130,30 @@ def test_an_unreadable_count_is_not_what_loses_a_paid_answer(runtime):
     assert (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens) == (0, 0, 0)
 
 
+@pytest.mark.parametrize("runtime", sorted(GARBAGE))
+def test_a_substituted_count_reaches_the_caller_and_not_only_the_log(runtime):
+    """A warning tells an operator, and only where the log level lets it through.
+
+    The caller reading the response gets three integers, and an invented zero is
+    indistinguishable in them from a measured one -- a small turn is a perfectly
+    ordinary thing for a runtime to report. The answer is still returned, because
+    losing a paid one over its receipt is worse; this field is how it stops arriving
+    disguised as a measurement.
+    """
+    parse, payload = GARBAGE[runtime]
+    usage = parse(payload)
+
+    assert "is not a token count" in usage.counts_incomplete
+
+
+@pytest.mark.parametrize("runtime", sorted(TURN))
+def test_a_turn_that_counted_cleanly_says_nothing(runtime):
+    """The healthy path, which is every turn. A caveat on all of them is no caveat."""
+    parse, payload = TURN[runtime]
+
+    assert parse(payload).counts_incomplete is None
+
+
 # --- what the helpers say when a count does not read -------------------------
 
 
@@ -175,7 +201,7 @@ def test_an_absent_count_is_nothing_and_says_nothing(warnings):
     assert warnings.records == []
 
 
-def test_a_malformed_first_spelling_does_not_take_the_slot():
+def test_a_malformed_first_spelling_does_not_take_the_slot(warnings):
     """`usage_count(a or b)` resolves the alias by truthiness before anything checks
     the winner is a number, so a present-but-unreadable first spelling wins the `or`
     and the good second one is never reached."""
@@ -185,6 +211,47 @@ def test_a_malformed_first_spelling_does_not_take_the_slot():
     # Zero is a count a runtime reported, not an absence to fall through. A turn that
     # generated nothing has to stay zero rather than picking up the alias behind it.
     assert usage_any(0, 999) == 0
+    # A negative reads fine and still cannot be a count. Clamping it to 0 here would
+    # hand the slot to an impossible quantity while a usable spelling sat beside it.
+    assert usage_any(-5, 1200) == 1200
+
+    # The rescue is of the number, not of the reporting: both malformed spellings are
+    # still on the record, and the `None` that follows a bad one stays silent.
+    lines = [record.getMessage() for record in warnings.records]
+    assert len(lines) == 2
+    assert "'N/A' is not a token count" in lines[0]
+    assert "negative" in lines[1]
+
+
+def test_every_alias_failing_is_zero_and_is_not_silent(warnings):
+    """The fallback chain running out is the case the caller sees a 0 for, so it is
+    the one that most needs saying. Only the present value is reported: a runtime that
+    fills neither spelling has not failed at anything."""
+    assert usage_any("N/A", None) == 0
+
+    (line,) = [record.getMessage() for record in warnings.records]
+    assert "'N/A' is not a token count" in line
+
+
+def test_a_count_that_is_not_a_whole_number_is_not_a_count(warnings):
+    """`int()` is too generous in three ways that each end in a plausible number.
+
+    `bool` is a subclass of `int`, so a `"cached": true` bills as one token -- the
+    same trap [`opencode_cli._usage`] already guards on the cost field, where
+    `float(True)` charges a turn a dollar. A float truncates, so a fraction vanishes
+    without comment. And an infinity raises `OverflowError`, not the `ValueError` a
+    string raises, so it escapes a helper whose whole promise is that it never raises
+    and takes a paid answer with it.
+    """
+    assert usage_count(True) == 0
+    assert usage_count(12.9) == 0
+    assert usage_count(float("inf")) == 0
+    assert usage_count(float("nan")) == 0
+    # What stays readable: a whole float, and a runtime that quotes its numbers.
+    assert usage_count(12.0) == 12
+    assert usage_count("1200") == 1200
+
+    assert len([record.getMessage() for record in warnings.records]) == 4
 
 
 def test_a_reported_total_that_disagrees_is_a_category_nobody_read(warnings):
@@ -277,3 +344,31 @@ def test_a_codex_total_that_stops_agreeing_is_reported(warnings):
 
     (line,) = [record.getMessage() for record in warnings.records]
     assert "codex reported a total of 3000 where its own fields make 2500" in line
+
+
+# --- and through the sum, which is the number anyone reads --------------------
+
+
+def test_a_caveat_survives_the_rollup_that_hides_it():
+    """The review and workflow totals add these across agents, and that sum is where
+    a caveat stops being visible: one reviewer whose counts were substituted
+    contributes a figure indistinguishable from the rest. Carrying it up is what
+    keeps the field from being defeated one level above where it is set."""
+    used = [
+        Usage(prompt_tokens=2000, completion_tokens=500, total_tokens=2500),
+        Usage(counts_incomplete="'N/A' is not a token count; counting it as 0"),
+    ]
+
+    assert caveats(used) == "'N/A' is not a token count; counting it as 0"
+    assert caveats(used[:1]) is None
+
+
+def test_one_broken_runtime_behind_five_agents_is_one_caveat():
+    """Deduplicated in order. Five reviewers on the same CLI that stopped reporting
+    its counts have one problem between them, and printing it five times buries
+    whatever else went wrong."""
+    same = "'N/A' is not a token count; counting it as 0"
+    other = "token count -5 is negative; counting it as 0"
+    used = [Usage(counts_incomplete=n) for n in (same, other, same)]
+
+    assert caveats(used) == f"{same}; {other}"
