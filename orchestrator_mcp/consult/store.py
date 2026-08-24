@@ -93,28 +93,28 @@ def _rollup_caveats(row: sqlite3.Row) -> list[str]:
     # and another 3 under adds up to a clean sum. Every turn in it contradicts the
     # definition, and the comparison that only sees the totals reports nothing at all.
     if contradicting := row["contradicting_turns"]:
-        # A group of one reaches here where the mixing test above cannot: a single row
-        # is trivially counted one way, and can still be a row from before that way
-        # existed. Which is also why only that message can name both numbers -- across
-        # several turns the two sums are what cancelled, so quoting them would offer
-        # the reader the arithmetic that hid the problem.
-        # `Usage` says a total is its two parts added, and in these rows it is not.
-        # Every turn written under the current rule derives its total from its parts,
-        # so one of those cannot drift -- reaching this means a row in the group
-        # predates that, back when the total was whatever its CLI totalled. A group
-        # entirely of those is *self*-consistent and so passes the semantics test
-        # above, while still returning three numbers that contradict the definition
-        # they arrive under.
+        # What is said is what was counted, and no more. `Usage` says a total is its
+        # two parts added and in these rows it is not; the likeliest reason is a row
+        # written before that rule, back when a total was whatever its CLI totalled.
+        # But the query does not test `usage_semantics`, and the write path could
+        # produce a contradictory row under the current marker until it stopped
+        # accepting a total of its own -- so the cause is left to whoever looks. A
+        # group entirely of legacy rows is *self*-consistent and passes the semantics
+        # test above, which is why this is a separate note and not a detail of that
+        # one.
+        #
+        # A group of one names both numbers, where they are the row itself. Across
+        # several turns it names how many disagree: there the two sums are what
+        # cancelled, and quoting them would hand the reader the arithmetic that hid
+        # the problem.
         notes.append(
-            f"this turn totals {row['total_tokens']} where the prompt and completion "
-            f"columns add to {row['input_tokens'] + row['output_tokens']}; a total "
-            "meant something else when this was counted, so the three numbers here "
-            "are not one measurement"
+            f"this turn totals {row['total_tokens']} where its own prompt and "
+            f"completion columns add to {row['input_tokens'] + row['output_tokens']}, "
+            "so the three numbers here are not one measurement"
             if row["turns"] == 1
             else f"{contradicting} of these {row['turns']} turns total something other "
-            "than their own prompt and completion columns added; a total meant "
-            "something else when they were counted, so the three numbers here are not "
-            "one measurement"
+            "than their own prompt and completion columns added, so the three numbers "
+            "here are not one measurement"
         )
     return notes
 
