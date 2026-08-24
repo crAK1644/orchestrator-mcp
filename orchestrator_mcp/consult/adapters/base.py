@@ -35,7 +35,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
-from ...contract import Usage
+from ...contract import Usage, redact
 from ...log import get_logger
 from ...spend import tallied
 from ..config import AgentConfig
@@ -253,7 +253,18 @@ def usage_count(value: Any) -> int:
         return 0
     count = _parse_count(value)
     if count is None:
-        _caveat(f"{value!r} is not a token count; counting it as 0")
+        # Redacted and bounded before it is quoted, because this string is durable.
+        # `counts_incomplete` is written to the turn row and kept even where the
+        # prompts are not, on the grounds that it describes the number in the column
+        # beside it rather than carrying content -- and a verbatim `repr` of whatever
+        # a runtime put in a usage field is content, of unknown length, from a payload
+        # nobody vetted. What makes the caveat worth keeping is the *shape*: that the
+        # field was there and unreadable. Sixty characters is more than any real token
+        # count needs and enough to recognize what arrived instead.
+        quoted = redact(repr(value))
+        if len(quoted) > 60:
+            quoted = f"{quoted[:60]}... ({len(quoted)} characters)"
+        _caveat(f"{quoted} is not a token count; counting it as 0")
         return 0
     if count < 0:
         # Not clamped quietly. A negative token count is a runtime reporting a
@@ -339,7 +350,19 @@ def check_cache_is_a_breakdown(cached: Any, prompt_tokens: int) -> None:
     that fires on all of them is one nobody can read.
     """
     count = _parse_count(cached)
-    if count is not None and count > prompt_tokens:
+    # A prompt of 0 is not evidence and cannot be treated as any. `usage_any`
+    # substitutes a zero for an `input_tokens` it could not read, and by the time the
+    # number arrives here that substitution is indistinguishable from a measured zero
+    # -- so without this the unreadable field would be reported as proof the runtime
+    # had changed how it reports the cache, which is a confident claim about a number
+    # nobody managed to read. `usage_count` already caveats that field, truthfully.
+    #
+    # The measured zero is given up with it, and costs nothing: under the disjoint
+    # reading this is hunting for, `input_tokens` is the uncached remainder, and the
+    # user's new message is in every prompt and in no cache. A remainder of exactly
+    # zero is not the warm session that would expose the drift -- it is a shape
+    # neither reading produces.
+    if count is not None and prompt_tokens > 0 and count > prompt_tokens:
         _caveat(
             f"codex reported {count} cached input tokens against a prompt of "
             f"{prompt_tokens}; the cache is counted as part of that prompt, so a "

@@ -197,6 +197,27 @@ def test_a_count_that_does_not_read_says_so_before_it_returns_zero(warnings):
     assert "negative" in lines[1]
 
 
+def test_what_a_runtime_put_where_a_number_belonged_is_not_kept_verbatim(warnings):
+    """This caveat outlives the turn, so it is held to what a durable field may carry.
+
+    `counts_incomplete` is written to the row and kept even where the prompts are not,
+    because it describes the number in the column beside it rather than the content of
+    the conversation. A `repr` of an arbitrary payload field is content -- it is
+    whatever the runtime happened to put there, at whatever length. The fact worth
+    keeping is that the field was present and unreadable, and that survives both the
+    redaction and the bound.
+    """
+    assert usage_count({"api_key": "sk-ant-live-0123456789abcdef"}) == 0
+    assert usage_count("N/A" * 400) == 0
+
+    secret, long = [record.getMessage() for record in warnings.records]
+    assert "sk-ant" not in secret and "[redacted]" in secret
+    # Not merely shortened: the reader has to be told the value went on, or a quoted
+    # fragment reads as the whole of what arrived.
+    assert "characters)" in long and len(long) < 200
+    assert "is not a token count" in secret and "is not a token count" in long
+
+
 def test_an_absent_count_is_nothing_and_says_nothing(warnings):
     """A field a runtime does not fill is not a reporting failure. Antigravity reports
     no cache write and Codex no thinking figure; warning on either would put a line on
@@ -431,5 +452,15 @@ def test_a_cache_bigger_than_the_prompt_holding_it_is_reported(warnings):
     # The warm session under the other reading: 1800 cached, 200 left to send.
     check_cache_is_a_breakdown(1800, 200)
 
-    (line,) = [record.getMessage() for record in warnings.records]
-    assert "1800 cached input tokens against a prompt of 200" in line
+    # The prompt this cache is measured against is the one field that may not have
+    # been read at all: `usage_any` returns 0 for an `input_tokens` it could not
+    # parse, and a substituted zero is a zero. Reporting against it would answer a
+    # question about the runtime's reporting with a number the runtime never
+    # reported -- and it would arrive beside the caveat that says so, contradicting it.
+    check_cache_is_a_breakdown(1800, usage_any("N/A"))
+
+    lines = [record.getMessage() for record in warnings.records]
+    assert "1800 cached input tokens against a prompt of 200" in lines[0]
+    # The unreadable field is still on the record. What it is not is evidence of drift.
+    (unreadable,) = lines[1:]
+    assert unreadable.endswith("'N/A' is not a token count; counting it as 0")
