@@ -10,6 +10,7 @@ can hand back a non-answer that looks like a success.
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -794,19 +795,41 @@ async def test_a_non_json_line_is_not_a_failure(tmp_path, monkeypatch, adapter):
 
 
 async def test_a_hanging_run_times_out_and_the_schema_still_leaves(tmp_path, monkeypatch):
+    """A run killed on the deadline takes its scratch directory with it.
+
+    Asserted on what the adapter left behind rather than on what the child was told,
+    because reading the argv means the child has to have recorded itself first -- and
+    it is being killed two seconds in, on a machine that may be busy running the rest
+    of this suite. Whether a Python interpreter finishes starting inside that window is
+    a fact about the machine; whether the schema outlives the run is the fact under
+    test. Recording the scratch directories as they are handed out is what keeps the
+    claim about this run, and what keeps "none of them survived" from also being true
+    of a run that made none.
+    """
+    made: list[Path] = []
+    original = tempfile.mkdtemp
+
+    def recording(*args, **kwargs):
+        made.append(Path(directory := original(*args, **kwargs)))
+        return directory
+
+    monkeypatch.setattr(tempfile, "mkdtemp", recording)
+
     # Comfortably longer than a Python interpreter takes to start, and far shorter than
     # the stub's sleep: the timeout under test is the adapter's, not the fixture's.
     adapter = AntigravityCliAdapter(timeout_s=2.0)
-    record = agent_stub.install(
+    agent_stub.install(
         "agy", tmp_path, monkeypatch, runs=[{"stdout": transcript(), "sleep": 30}]
     )
     with pytest.raises(AdapterError) as exc:
         await adapter.start(agent(), prompt(), SourceMode.MODEL)
     assert exc.value.code is ConsultErrorCode.TIMEOUT
 
-    (call,) = agent_stub.calls(record)
-    argv = argv_of(call)
-    assert not Path(argv[argv.index("--json-schema") + 1]).exists()
+    scratches = [d for d in made if d.name.startswith("consult-agy-")]
+    # Both halves, because "nothing is left" is also what a run that never made one
+    # says, and that would be this test passing on the strength of a broken patch.
+    assert scratches
+    assert not [d for d in scratches if d.exists()]
 
 
 async def test_the_deadline_covers_the_whole_consultation_not_each_turn(
