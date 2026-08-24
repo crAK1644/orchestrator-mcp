@@ -554,6 +554,14 @@ class WorkflowService:
             await self.store.finish_step(row.id, "failed")
             raise WorkflowError(ConsultErrorCode.PROTOCOL_VALIDATION_FAILED, str(exc)) from exc
 
+        if step == "synthesize":
+            # `_synthesize` does the finishing here, the same way it does for a
+            # synthesis the host reported. What it records is the outcome this server
+            # computed and the pointer to the review that outcome was checked against;
+            # finishing first would store the agent's own summary in its place, and
+            # then lose the real record to the `running` guard, which reads a step
+            # finished twice as a step abandoned once.
+            return await self._synthesize(started, workflow, row, output)
         await self.store.finish_step(
             row.id,
             "done",
@@ -561,8 +569,6 @@ class WorkflowService:
             raw_patch_sha256=output.get("raw_patch_sha256") or None,
             recovery_written=recovery_written,
         )
-        if step == "synthesize":
-            return await self._synthesize(started, workflow, row, output)
         await self._advance(workflow, row, output)
         return await self._view_response(
             workflow.id,

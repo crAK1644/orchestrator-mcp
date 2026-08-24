@@ -1401,6 +1401,39 @@ async def test_an_open_important_finding_keeps_the_loop_going(build, repo):
     assert response.workflow.fix_rounds == 1
 
 
+async def test_a_synthesis_an_agent_wrote_is_recorded_the_same_as_one_the_host_did(
+    build, repo
+):
+    """A delegated synthesis lands as a step that is done, not one that was abandoned.
+
+    The delegated path recorded the step itself and then handed it to the synthesis,
+    which records it again -- and the second write found the row already resolved, so
+    a synthesis that had just succeeded was reported as a step cancelled while its
+    work was in flight. Nothing caught it because a synthesis normally arrives through
+    `record_host_step`, which has always let the synthesis do its own finishing.
+
+    Asserted on the stored row rather than the envelope, because the two writes
+    disagree about what a synthesize step holds: the first stores the summary the
+    agent sent, the second the outcome this server computed from it. Only the second
+    carries the review the outcome was checked against, which is what makes the record
+    worth keeping.
+    """
+    service = await build(bindings={"synthesize": {"agent": "flash"}})
+    workflow_id = await _to_synthesis(service, repo)
+    ids = await finding_ids(service, workflow_id)
+    service.adapters["flash"].answers = [json.dumps(summary_with("fixed", ids))]
+
+    step_id, token = await step(service, workflow_id, "synthesize")
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is None, response.error
+    assert response.status == "completed"
+    row = [s for s in await service.store.steps(workflow_id) if s.id == step_id][0]
+    assert row.status == "done"
+    assert row.review_id == _review_id(await service.store.steps(workflow_id))
+    assert json.loads(row.output_json)["loop_done"] is True
+
+
 async def test_a_fix_round_is_sent_the_findings_it_is_supposed_to_fix(build, repo):
     """The gap a live run found: `fix` was previewed and sent with an empty payload.
 
