@@ -540,6 +540,58 @@ async def test_two_turns_wrong_in_opposite_directions_do_not_make_a_right_one(
     (note,) = usage.counts_incomplete
     assert "2 of these 2 turns total something other than their own prompt and " in note
 
+async def test_the_review_rollup_counts_turns_the_same_way(store, tmp_path):
+    """The same cancelling pair, through the query that keys spend by reviewer.
+
+    Three queries carry this expression and the fixture above proves one of them. This
+    is where a reader compares one reviewer against another, so a revert here to
+    comparing the summed columns would print a pair of totals that agree, over two rows
+    that both disagree with themselves.
+    """
+    consultation_id = await new_consultation(store)
+    review_id = uuid4()
+    reviews = ReviewStore(store)
+    await reviews.create_review(
+        review_id=review_id,
+        mode="standard",
+        goal="g",
+        context=None,
+        material=[],
+        material_sha256="a" * 64,
+        raw_sha256="b" * 64,
+        reviewer_snapshot=[],
+        confirm_token="token",
+        secret_hits=[],
+        web_requested=False,
+    )
+    await reviews.record_reviewer_result(
+        review_id, "codex-sol", "ok", consultation_id=consultation_id
+    )
+    legacy_turn(tmp_path, consultation_id, sequence_number=1, tokens=(100, 100, 203))
+    legacy_turn(tmp_path, consultation_id, sequence_number=2, tokens=(100, 100, 197))
+
+    usage = (await store.review_usage(str(review_id)))["codex-sol"].usage
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    (note,) = usage.counts_incomplete
+    assert "2 of these 2 turns total something other than their own prompt and " in note
+
+
+async def test_the_workflow_rollup_counts_turns_the_same_way(store, tmp_path):
+    """And through the third, which keys the same ledger by step.
+
+    Reached by the direct link -- a delegated step owning its consultation -- because
+    the reviewer path into this query is the one the test above already covers, and
+    what is being pinned here is the expression, not which join found the row.
+    """
+    consultation_id = await new_consultation(store, workflow_id="wf-1", step_id="step-1")
+    legacy_turn(tmp_path, consultation_id, sequence_number=1, tokens=(100, 100, 203))
+    legacy_turn(tmp_path, consultation_id, sequence_number=2, tokens=(100, 100, 197))
+
+    usage = (await store.workflow_usage("wf-1"))["step-1"].usage
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    (note,) = usage.counts_incomplete
+    assert "2 of these 2 turns total something other than their own prompt and " in note
+
 
 async def test_a_rollup_counted_one_way_carries_no_caveat(store):
     """The healthy ledger, which is every ledger written since. Each turn derives its
