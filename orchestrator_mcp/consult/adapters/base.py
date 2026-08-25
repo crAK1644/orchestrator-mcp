@@ -212,21 +212,30 @@ def _parse_count(value: Any) -> int | None:
     `Decimal`, a `Fraction`, an object of its own -- is converted by a rule nobody
     here chose and can raise something nobody here listed.
 
-    Naming the four types answers all of that at once, and needs no `except` at all on
+    Naming the three types answers all of that at once, and needs no `except` at all on
     the numeric paths. Numeric strings still read: a runtime that quotes its counts
     has reported them. Anything outside the list is not something a usage envelope
     parsed from JSON can contain, and a runtime that starts sending one has done
     something worth hearing about rather than worth coercing.
+
+    Exact types rather than `isinstance`, for the reason `_shape` uses them and one
+    more. `_shape` is downstream of this: an object that gets past here never reaches
+    the guard that was supposed to refuse it, and every method it carries runs instead
+    -- `__lt__` from `usage_count`'s own negative check, `is_integer` from the branch
+    below, `__int__` from the `int()` on the string branch, which prefers it to
+    parsing. Each of the three raises out of a helper whose first promise is that it
+    does not. And an accepted subclass is *returned*, so what reaches `Usage` is that
+    object rather than an `int`. `bool` needs no line of its own now: it is rejected
+    by not being listed, which is the same reason as everything else.
     """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
+    kind = type(value)
+    if kind is int:
         return value
-    if isinstance(value, float):
+    if kind is float:
         # False for both infinities and for NaN, so neither reaches a conversion that
         # would raise on them -- the guard and the overflow are the same check here.
         return int(value) if value.is_integer() else None
-    if isinstance(value, str):
+    if kind is str:
         try:
             return int(value)
         except ValueError:
@@ -272,6 +281,12 @@ def usage_count(value: Any) -> int:
     return count
 
 
+# Everything a usage envelope parsed from JSON can hold, split by whether a length
+# means anything for it, and the only names `_shape` will ever say.
+_SIZED = frozenset({str, bytes, list, dict, tuple})
+_SCALAR = frozenset({int, float, bool, type(None)})
+
+
 def _shape(value: Any) -> str:
     """What arrived, said without saying what it held.
 
@@ -279,11 +294,21 @@ def _shape(value: Any) -> str:
     `"N/A"` from one dumping a page of XML into the field, and that is the difference
     between a quirk and an outage. A count of items or characters is a measurement of
     the value, not a copy of any part of it.
+
+    Exact types rather than `isinstance`, and a fixed phrase for anything not listed,
+    because what this returns is written to a durable column. A subclass carries a
+    name somebody else chose, and `type(value).__name__` would put that name where
+    nothing from outside is allowed to reach; its `__len__` would run here too, inside
+    a helper `usage_count` promises will return rather than raise. Nothing parsed out
+    of JSON is such an object, which is the argument for it being safe and exactly the
+    reason not to rest on the argument.
     """
-    name = type(value).__name__
-    if isinstance(value, (str, bytes, list, dict, tuple)):
-        return f"{name} of length {len(value)}"
-    return name
+    kind = type(value)
+    if kind in _SIZED:
+        return f"{kind.__name__} of length {len(value)}"
+    if kind in _SCALAR:
+        return kind.__name__
+    return "value of an unrecognized type"
 
 
 def usage_any(*values: Any) -> int:
@@ -381,22 +406,29 @@ def check_cache_is_a_breakdown(cached: Any, *prompt_spellings: Any) -> None:
     if prompt_tokens is None:
         return
     if prompt_tokens == 0:
-        # Reported, but not as evidence of the drift above. A cache against a prompt
-        # of none is not the warm session that would expose a disjoint reading -- it
-        # is a shape neither reading produces, and naming a cause for it would be
-        # inventing one. The numbers are stated and left to whoever reads them.
+        # Reported, but not as evidence of the drift below: a cache against a prompt
+        # of none is not the warm session that would expose a disjoint reading, it is
+        # a shape neither reading produces at all. Which is also as far as the numbers
+        # go. Either one of them could be the wrong one, and picking the prompt would
+        # be naming a culprit out of a pair the comparison cannot tell apart.
         _caveat(
             f"codex reported {count} cached input tokens against a prompt of 0; a "
-            "cache is tokens that were sent, so neither reading of these fields "
-            "produces this and the prompt figure cannot be what it claims"
+            "cache is tokens that were sent, so these two figures cannot both be "
+            "what they claim and neither can be relied on here"
         )
         return
     if count > prompt_tokens:
+        # Same restraint, for the same reason. A cache exceeding the prompt is what a
+        # runtime reporting the two disjointly looks like -- and it is also what a
+        # miscounted cache looks like against a prompt that was fine. The consequence
+        # holds either way and is what a reader needs: whatever produced these two
+        # numbers, the prompt beside them cannot be taken to already include the
+        # cache. Which of the two moved is not something this comparison establishes.
         _caveat(
             f"codex reported {count} cached input tokens against a prompt of "
-            f"{prompt_tokens}; the cache is counted as part of that prompt, so a "
-            "cache larger than it means the runtime no longer reports them nested "
-            "and every prompt here is short by the cached share"
+            f"{prompt_tokens}; the adapters read the cache as part of that prompt, "
+            "which these two numbers cannot both allow, so no prompt total here can "
+            "be trusted to include the cached share"
         )
 
 

@@ -492,31 +492,89 @@ async def test_a_rollup_that_adds_two_definitions_says_so(store, tmp_path):
 
     usage = await store.usage(consultation_id)
     assert usage.total_tokens == 1744808 + 2000
-    mixed, arithmetic = usage.counts_incomplete
+    legacy, mixed, arithmetic = usage.counts_incomplete
+    # Three notes over two rows, and each answers a question the others do not: one
+    # row understates its prompt, the two cannot be added, one contradicts itself.
+    assert legacy.startswith("at least one turn here was counted under the definition")
     assert "more than one definition" in mixed
     assert "usage_semantics 0 through 1" in mixed
     # And the same group fails the other test too, which is not redundant: one says
     # the units differ, the other says the numbers returned contradict their own
     # definition. A reader can act on the second without knowing what caused it.
-    assert "not one measurement" in arithmetic
+    # The whole note, so it says that and nothing after it: naming legacy rows as the
+    # cause would be reading the `usage_semantics` columns this note is not computed
+    # from, and banning that one phrase leaves every other wording of it. Pinning the
+    # count too is what proves it reads `contradicting_turns` rather than `turns` --
+    # one of these two rows contradicts itself and the other does not.
+    assert arithmetic == (
+        "1 of these 2 turns total something other than their own prompt and completion "
+        "columns added, so the three numbers here are not one measurement"
+    )
 
 
 async def test_a_ledger_written_entirely_before_the_rule_still_contradicts_it(store, tmp_path):
-    """Why `MIN != MAX` was not the whole test.
+    """Why the legacy note was not the whole test either.
 
-    An all-legacy group is internally consistent in the sense that matters to the
-    semantics check -- every row counted the same way -- and it still returns three
-    numbers whose total is nowhere near its parts, because that is what a total meant
-    before `Usage` said what it meant. Nothing is mixed and nothing here is a
-    measurement of what the fields now claim to be.
+    These rows are legacy *and* they disagree with their own columns, and the second
+    fact is not the first: a row written under the current marker can contradict
+    itself too, and a legacy row can be perfectly self-consistent -- the backfill made
+    most of them so. Two notes because a reader can act on the arithmetic one without
+    knowing what caused it.
     """
     consultation_id = await new_consultation(store)
     legacy_turn(tmp_path, consultation_id, sequence_number=1)
     legacy_turn(tmp_path, consultation_id, sequence_number=2)
 
     usage = await store.usage(consultation_id)
-    (note,) = usage.counts_incomplete
+    legacy, note = usage.counts_incomplete
+    assert legacy.startswith("every turn here was counted under the definition")
     assert "2 of these 2 turns total something other than their own prompt and " in note
+
+
+async def test_a_ledger_the_backfill_made_consistent_still_says_it_is_legacy(store, tmp_path):
+    """The rows both detectors used to miss, which is most of the rows on disk.
+
+    The migration that added `total_tokens` set it to the two columns added, so a row
+    written before that migration agrees with itself by construction and the
+    arithmetic note has nothing to say about it. Every row in a ledger like this one
+    is legacy, so `MIN == MAX` and the semantics note used to have nothing to say
+    either. What came back was a real Claude ledger reporting its prompts in the tens
+    of tokens where the prompts actually sent ran to hundreds of thousands, and an
+    empty caveat list beside it -- the failure the marker column was added to catch,
+    silent on exactly the rows a reader is likeliest to be looking at.
+    """
+    consultation_id = await new_consultation(store)
+    for sequence in (1, 2):
+        legacy_turn(tmp_path, consultation_id, sequence, tokens=(22, 305704, 22 + 305704))
+
+    usage = await store.usage(consultation_id)
+    # Nothing here looks wrong, which is the whole difficulty: the columns add, and 44
+    # prompt tokens reads as a number rather than as half a million gone missing.
+    assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
+    # The whole note, because a caveat that is wrong about its own subject is worse
+    # than none: an earlier wording said a cached turn counted only the missed share,
+    # which is claude's behaviour asserted over a group that may be entirely codex.
+    assert usage.counts_incomplete == [
+        "every turn here was counted under the definition that predates usage_semantics "
+        "1, where a prompt figure was whatever its runtime called input -- claude "
+        "counted only the share that missed cache, codex the whole prompt -- so these "
+        "totals are not comparable across runtimes and can sit far below what was sent "
+        "and paid for"
+    ]
+
+
+async def test_the_legacy_note_counts_no_turns_because_it_cannot(store, tmp_path):
+    """A group of one, which the mixed note can never be and this one often is.
+
+    Every other caveat here is free to say how many turns it covers. This one is not:
+    a mixed group needs two rows by definition, an all-legacy group needs one, and
+    "these 1 turns" is how a caveat stops being read.
+    """
+    consultation_id = await new_consultation(store)
+    legacy_turn(tmp_path, consultation_id, 1, tokens=(22, 305704, 22 + 305704))
+
+    (note,) = (await store.usage(consultation_id)).counts_incomplete
+    assert note.startswith("every turn here was counted under")
 
 
 async def test_two_turns_wrong_in_opposite_directions_do_not_make_a_right_one(
@@ -537,8 +595,33 @@ async def test_two_turns_wrong_in_opposite_directions_do_not_make_a_right_one(
     usage = await store.usage(consultation_id)
     # The sums agree, which is the trap: 200 + 200 == 400 and every row is still wrong.
     assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
-    (note,) = usage.counts_incomplete
-    assert "2 of these 2 turns total something other than their own prompt and " in note
+    _legacy, note = usage.counts_incomplete
+    assert note == (
+        "2 of these 2 turns total something other than their own prompt and completion "
+        "columns added, so the three numbers here are not one measurement"
+    )
+
+
+async def test_one_turn_that_contradicts_itself_names_both_of_its_numbers(store, tmp_path):
+    """The other branch of the same caveat, which a group of one takes.
+
+    Where several turns cancel, the two sums are the arithmetic that hid the problem
+    and quoting them would hand it to the reader as though it were evidence. A group
+    of one has no such sums: the figures are the row, so it says them.
+    """
+    consultation_id = await new_consultation(store)
+    legacy_turn(tmp_path, consultation_id, sequence_number=1, tokens=(100, 100, 203))
+
+    usage = await store.usage(consultation_id)
+    _legacy, note = usage.counts_incomplete
+    # Legacy is the likeliest reason and is still not what this note was computed
+    # from, so it is not what the note says -- and the whole note is asserted, because
+    # what it must not say has more spellings than any list of banned ones.
+    assert note == (
+        "this turn totals 203 where its own prompt and completion columns add to 200, "
+        "so the three numbers here are not one measurement"
+    )
+
 
 async def test_the_review_rollup_counts_turns_the_same_way(store, tmp_path):
     """The same cancelling pair, through the query that keys spend by reviewer.
@@ -572,7 +655,7 @@ async def test_the_review_rollup_counts_turns_the_same_way(store, tmp_path):
 
     usage = (await store.review_usage(str(review_id)))["codex-sol"].usage
     assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
-    (note,) = usage.counts_incomplete
+    _legacy, note = usage.counts_incomplete
     assert "2 of these 2 turns total something other than their own prompt and " in note
 
 
@@ -589,8 +672,134 @@ async def test_the_workflow_rollup_counts_turns_the_same_way(store, tmp_path):
 
     usage = (await store.workflow_usage("wf-1"))["step-1"].usage
     assert usage.prompt_tokens + usage.completion_tokens == usage.total_tokens
-    (note,) = usage.counts_incomplete
+    _legacy, note = usage.counts_incomplete
     assert "2 of these 2 turns total something other than their own prompt and " in note
+
+
+async def test_a_review_never_lends_this_workflow_another_ones_step(store):
+    """The step key is read from whichever link put the row in *this* workflow.
+
+    A consultation can reach a workflow two ways, and a workflow can borrow a
+    reviewer's consultation that belongs elsewhere. Here `c` is workflow A's, at step
+    `a-7`, and it lands in workflow B's rollup through a review that names no step of
+    its own. Falling back to `c.step_id` there charges half of A's step to B -- and
+    this number is money, so it is charged to nobody instead. A's own rollup is
+    unaffected: there the direct link is the qualifying one.
+    """
+    consultation_id = await new_consultation(store, workflow_id="wf-a", step_id="a-7")
+    review_id = uuid4()
+    reviews = ReviewStore(store)
+    await reviews.create_review(
+        review_id=review_id,
+        mode="standard",
+        goal="g",
+        context=None,
+        material=[],
+        material_sha256="a" * 64,
+        raw_sha256="b" * 64,
+        reviewer_snapshot=[],
+        confirm_token="token",
+        secret_hits=[],
+        web_requested=False,
+        workflow_id="wf-b",
+    )
+    await reviews.record_reviewer_result(
+        review_id, "codex-sol", "ok", consultation_id=consultation_id
+    )
+    await store.record_turn(
+        consultation_id, 1, SourceMode.DOCUMENT,
+        user_prompt="q", context=None, compiled_prompt="p",
+        input_tokens=1800, output_tokens=200,
+    )
+
+    # Kept, because B did spend it -- just not at a step B ever ran.
+    assert list(await store.workflow_usage("wf-b")) == ["_unattributed"]
+    assert (await store.workflow_usage("wf-b"))["_unattributed"].usage.total_tokens == 2000
+    assert list(await store.workflow_usage("wf-a")) == ["a-7"]
+
+
+async def test_the_ledger_refuses_a_count_it_would_have_to_invent(store):
+    """The one writer of the three token columns, so the only place to stop this.
+
+    The annotations enforce nothing. `"1"` and `"2"` derive `"12"` in Python, SQLite
+    coerces all three to integers, and what lands on disk is a row contradicting its
+    own columns under the marker asserting it was counted the current way -- which the
+    rollup can only report as the ledger's fault, sending whoever reads it to the
+    wrong place entirely. Refused rather than coerced: a repaired count is one nobody
+    measured, and this column is the record of what nobody measured.
+    """
+    consultation_id = await new_consultation(store)
+    body = dict(user_prompt="q", context=None, compiled_prompt="p")
+
+    with pytest.raises(TypeError):
+        await store.record_turn(
+            consultation_id, 1, SourceMode.DOCUMENT,
+            input_tokens="1", output_tokens="2", **body,
+        )
+    # `bool` is an `int` and `True + True` is a 2 that reads like a measurement, which
+    # is why the check is on the exact type rather than on `isinstance`.
+    with pytest.raises(TypeError):
+        await store.record_turn(
+            consultation_id, 1, SourceMode.DOCUMENT,
+            input_tokens=True, output_tokens=True, **body,
+        )
+    with pytest.raises(ValueError):
+        await store.record_turn(
+            consultation_id, 1, SourceMode.DOCUMENT,
+            input_tokens=-1, output_tokens=0, **body,
+        )
+
+    # Nothing partial written by any of the three: `usage` is None at zero turns.
+    assert await store.usage(consultation_id) is None
+
+
+async def test_the_unattributed_bucket_holds_a_null_step_and_nothing_else(store):
+    """Two rows, two keys, because they are two different answers.
+
+    A falsy test folds together everything SQLite can return that is not a step: NULL,
+    which is a row that named none, and an empty string, which is a row that named one
+    badly. Under one dictionary key the second `Spend` replaces the first and that
+    money leaves the page. Unreachable while every step id is a server-generated UUID
+    -- and the line still has to ask the question it means, which is whether the
+    database returned NULL.
+    """
+    blank = await new_consultation(store, workflow_id="wf", step_id="")
+    stepless = await new_consultation(store, workflow_id="wf")
+    for consultation_id, tokens in ((blank, 1000), (stepless, 2000)):
+        await store.record_turn(
+            consultation_id, 1, SourceMode.DOCUMENT,
+            user_prompt="q", context=None, compiled_prompt="p",
+            input_tokens=tokens, output_tokens=0,
+        )
+
+    spend = await store.workflow_usage("wf")
+    assert spend[""].usage.total_tokens == 1000
+    assert spend["_unattributed"].usage.total_tokens == 2000
+
+
+async def test_the_caveat_list_does_not_depend_on_what_order_sqlite_felt_like(store):
+    """`GROUP_CONCAT` has no defined input order and `tallied` keeps the order it gets.
+
+    Between those two, the same unchanged rows can return the same caveats in a
+    different order on two reads -- the kind of wrong that looks like a page glitch and
+    gets refreshed away rather than reported. Sorted where the concatenation is
+    consumed, so there is one order and it is a property of the notes rather than of
+    the scan. First-appearance order across turns was never meaningful; the rows are
+    inserted here in the order that makes the two disagree.
+    """
+    consultation_id = await new_consultation(store)
+    for sequence, note in ((1, "zebra is not a token count; counting it as 0"),
+                           (2, "alpha is not a token count; counting it as 0")):
+        await store.record_turn(
+            consultation_id, sequence, SourceMode.DOCUMENT,
+            user_prompt="q", context=None, compiled_prompt="p",
+            counts_incomplete=[note],
+        )
+
+    assert (await store.usage(consultation_id)).counts_incomplete == [
+        "alpha is not a token count; counting it as 0",
+        "zebra is not a token count; counting it as 0",
+    ]
 
 
 async def test_a_rollup_counted_one_way_carries_no_caveat(store):

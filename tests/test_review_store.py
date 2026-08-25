@@ -213,6 +213,52 @@ async def test_a_retry_updates_the_reviewer_in_place(store):
     assert rows[0].status == "ok" and rows[0].consultation_id == first
 
 
+async def test_a_failure_carrying_no_id_cannot_unlink_the_consultation_it_paid_for(store):
+    """Once written, the link is not withdrawn by a later result carrying nothing.
+
+    Not a hypothetical `None`: a reviewer whose turn raises inside the orchestrator
+    is reported through `_failed(requested_id, ...)`, and on a first attempt the
+    requested id is nothing -- so the failure arrives here carrying no consultation
+    while `create_consultation` has already written and linked one. Overwriting with
+    that NULL cost more than the spend it hid: the row is the only pointer deletion
+    follows, and without it the consultation survived the review, holding the prompt
+    and the answer of something the user asked to erase.
+    """
+    review_id = await plan(store)
+    await store.reserve_reviewers(review_id, ["rev"])
+    consultation_id = uuid.uuid4()
+    await store.store.create_consultation(
+        consultation_id=consultation_id,
+        origin_runtime="claude",
+        route=ConsultRoute(
+            agent_id="rev", runtime="codex", model="m", capability_score=90,
+            priority=10, explicitly_selected=True,
+        ),
+        capability="review",
+        protocol_version="consult-v1",
+        config_hash="deadbeef",
+        conversation_label=None,
+        review_id=review_id,
+        review_agent_id="rev",
+    )
+    await store.store.record_turn(
+        consultation_id, 1, SourceMode.DOCUMENT, user_prompt="q", context=None,
+        compiled_prompt="q", input_tokens=1000, output_tokens=200,
+    )
+
+    await store.record_reviewer_result(
+        review_id, "rev", status="failed", consultation_id=None, error_code="transport_error"
+    )
+
+    assert (await store.reviewer_rows(review_id))[0].consultation_id == str(consultation_id)
+    # The two things the pointer is for, checked rather than assumed from the column.
+    spend = await store.store.review_usage(review_id)
+    assert spend["rev"].usage.total_tokens == 1200
+    await store.delete_review(review_id)
+    with pytest.raises(StoreError):
+        await store.store.get_consultation(consultation_id)
+
+
 async def test_parser_metadata_survives_the_round_trip(store):
     review_id = await plan(store)
     await store.record_reviewer_result(

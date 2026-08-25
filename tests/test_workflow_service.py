@@ -16,7 +16,11 @@ import pytest
 
 from orchestrator_mcp.code.registry import CodeError
 from orchestrator_mcp.code.service import patch_path
-from orchestrator_mcp.consult.adapters.base import AdapterResult, AgentStatus
+from orchestrator_mcp.consult.adapters.base import (
+    AdapterError,
+    AdapterResult,
+    AgentStatus,
+)
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import ConsultationContent, Usage
 from orchestrator_mcp.consult.errors import ConsultErrorCode
@@ -2204,3 +2208,198 @@ async def test_spend_that_names_no_step_still_counts_against_the_ceiling(build, 
 
     assert response.error is not None
     assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+
+
+async def test_the_ceiling_is_read_under_the_lease_it_is_deciding_with(build, repo, monkeypatch):
+    """A total read outside the lease is a total something else is still adding to.
+
+    Not the scenario a lease normally prevents -- two steps of one workflow never run
+    together, because the second caller is turned away with `SESSION_BUSY` rather than
+    queued. The window is narrower than that and still real: between reading the
+    ledger and taking the lease, the step that was mid-way through paying finishes,
+    and the caller is admitted on a number that was already stale when it read it.
+    Being unable to price a request before making it is the bound this is allowed to
+    have. Deciding on a total another writer is inside of is not, and costs nothing to
+    avoid.
+    """
+    service = await build(bindings={"research": {"agent": "codex-sol"}})
+    service.adapters["codex-sol"].answers = [RESEARCH]
+    workflow_id = await started(service, repo)
+    step_id, token = await step(service, workflow_id, "research")
+    leased: list[int] = []
+    real = service.consult.store.workflow_usage
+
+    async def watching(wid):
+        # A read, not a second lease: acquiring one here would overwrite the holder of
+        # the lease under test, which is the thing `_acquire` refuses to do for exactly
+        # this reason.
+        held = await sql(
+            service,
+            "SELECT COUNT(*) FROM workflow_steps WHERE workflow_id = ? AND lease_holder IS NOT NULL",
+            wid,
+        )
+        leased.append(held.fetchone()[0])
+        return await real(wid)
+
+    monkeypatch.setattr(service.consult.store, "workflow_usage", watching)
+
+    assert (await service.run_step(workflow_id, step_id, token)).error is None
+
+    assert leased and leased[0] == 1, "the ceiling was priced before the lease was held"
+
+
+async def test_a_review_step_refused_by_its_reviews_ceiling_keeps_its_token(build, repo):
+    """A review step's one-time token *is* the review's, so the review's ceiling has
+    to be asked before it is spent.
+
+    Asked afterwards -- which is where `ReviewService.run` asks it, correctly, for
+    every other caller -- the workflow has already burned the token on a send that
+    never happened. Raising the ceiling then costs a whole re-plan and a second
+    approval of a step nobody changed, which is the one thing the workflow's own
+    ceiling check exists to promise it will not do.
+    """
+    service = await build()
+    workflow_id = await started(service, repo)
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
+    await host_step(
+        service, workflow_id, "implement", {"summary": "s", "files": [], "patch": PATCH}
+    )
+    await host_step(
+        service, workflow_id, "test",
+        {"command": "pytest", "workdir": str(repo), "exit_code": 0, "status": "passed"},
+    )
+    service.adapters["codex-sol"].answers = [FINDINGS]
+    step_id, token = await step(service, workflow_id, "review")
+    # The review's ceiling, refusing. Held at the seam rather than staged through the
+    # ledger: a fresh review has spent nothing, so the reachable version of this is a
+    # review that already ran once, and what is under test is the order of two calls.
+    refuse = True
+    real = service.reviews.within_ceiling
+
+    async def bounded(review_id):
+        if refuse:
+            raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, "review ceiling reached")
+        return await real(review_id)
+
+    service.reviews.within_ceiling = bounded
+    sent = len(service.adapters["codex-sol"].prompts)
+
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert len(service.adapters["codex-sol"].prompts) == sent
+    # And the token still opens the step it approved, once the ceiling is raised.
+    refuse = False
+    assert (await service.run_step(workflow_id, step_id, token)).error is None
+
+
+class _Broken(StubAdapter):
+    """Answers by failing, so its review has something left to retry."""
+
+    async def _answer(self, agent, prompt, source_mode):
+        self.prompts.append(prompt.full_text)
+        raise AdapterError(ConsultErrorCode.TIMEOUT, "slow")
+
+
+async def test_a_workflow_owned_review_cannot_be_retried_past_the_workflows_ceiling(build, repo):
+    """`retry` is the way into a review that does not pass through `run_step`.
+
+    The review's own ceiling is checked there; the workflow's was not, and a reviewer
+    bought that way is spend the workflow is charged for -- `workflow_usage` counts it
+    -- and never had the chance to refuse. One tool call outside the bound is enough
+    to make the bound advisory.
+    """
+    broken = _Broken()
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(FINDINGS, cost_usd=2.0),
+            "opus-agent": StubAdapter(),
+            "flash": broken,
+        },
+        bindings={"review": {"agents": ["codex-sol", "flash"]}},
+        spend={"max_cost_usd_per_workflow": 1.0},
+    )
+    workflow_id = await _to_synthesis(service, repo)
+    review_id = _review_id(await service.store.steps(workflow_id))
+    sent = len(broken.prompts)
+
+    again = await service.reviews.retry(review_id)
+
+    assert again.error is not None
+    assert again.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "$2.00 of its $1.00 ceiling" in again.error.message
+    assert len(broken.prompts) == sent
+
+
+async def test_spend_that_names_no_step_says_so_in_the_total(build, repo):
+    """The bucket is counted, and a total larger than its own steps says why.
+
+    `workflow_usage` keeps a turn that named no step rather than dropping it, so the
+    money is in this sum -- and no step view carries it. Without the caveat the steps
+    and the total disagree by an amount a reader can only find by subtracting.
+    """
+    service = await build(bindings={"research": {"agent": "codex-sol"}})
+    service.adapters["codex-sol"].answers = [RESEARCH]
+    workflow_id = await started(service, repo)
+    step_id, token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, step_id, token)).error is None
+    await sql(service, "UPDATE consultations SET step_id = NULL WHERE workflow_id = ?", workflow_id)
+
+    total, steps = await _spent(service, workflow_id)
+
+    assert steps["research"] is None
+    assert total is not None and total.total_tokens == 12
+    assert total.counts_incomplete == [
+        "some turns of this workflow name no step: counted here, in no step"
+    ]
+
+
+async def test_a_workflow_owned_review_cannot_be_run_directly_past_the_workflows_ceiling(
+    build, repo
+):
+    """The other door into a workflow's review, and the same hole behind it as `retry`.
+
+    A review step's one-time token *is* the review's own, so a host holding it can
+    spend it at `ReviewService.run` instead of `run_step`. That route checks the
+    review's ceiling and, until the fix, not the workflow's -- buying reviewer turns
+    `workflow_usage` charges to the workflow that never got to refuse them. Nothing
+    exotic about reaching it: the token comes back from `plan_step` and the review id
+    is on the step view.
+    """
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(FINDINGS),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(RESEARCH, cost_usd=2.0),
+        },
+        bindings={"research": {"agent": "flash"}},
+        spend={"max_cost_usd_per_workflow": 1.0},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
+    await host_step(
+        service, workflow_id, "implement", {"summary": "s", "files": [], "patch": PATCH}
+    )
+    await host_step(
+        service, workflow_id, "test",
+        {"command": "pytest", "workdir": str(repo), "exit_code": 0, "status": "passed"},
+    )
+    step_id, token = await step(service, workflow_id, "review")
+    review_id = _review_id(await service.store.steps(workflow_id))
+    sent = len(service.adapters["codex-sol"].prompts)
+
+    direct = await service.reviews.run(review_id, token)
+
+    assert direct.error is not None
+    assert direct.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "$2.00 of its $1.00 ceiling" in direct.error.message
+    assert len(service.adapters["codex-sol"].prompts) == sent
+    # And the step is untouched: nothing was spent, so nothing was approved away.
+    assert (await service.run_step(workflow_id, step_id, token)).error.code is (
+        ConsultErrorCode.SPEND_LIMIT_REACHED
+    )

@@ -236,6 +236,62 @@ def test_a_length_is_kept_because_a_type_alone_cannot_tell_the_two_apart(warning
     assert "a str of length 3500 is not a token count" in long
 
 
+def test_a_type_nobody_listed_is_described_without_being_asked_anything(warnings):
+    """The durable column takes no name this module did not choose, and runs no code.
+
+    Nothing `json.loads` produces is an object of its own class, so the adapters as
+    they stand cannot reach this. It is pinned anyway, because the guarantee is what
+    the column rests on rather than a fact about today's callers: an arbitrary
+    object's type name is a string somebody else wrote, and taking its length runs a
+    `__len__` of their choosing inside a helper documented to return rather than raise.
+    """
+
+    class PatientRecordJaneRoe(list):
+        def __len__(self):
+            raise RuntimeError("which would have escaped usage_count entirely")
+
+    assert usage_count(PatientRecordJaneRoe()) == 0
+
+    (line,) = [record.getMessage() for record in warnings.records]
+    assert line.endswith(
+        "a value of an unrecognized type is not a token count; counting it as 0"
+    )
+    assert "PatientRecord" not in line and "JaneRoe" not in line
+
+
+def test_a_subclass_of_a_listed_type_runs_none_of_its_own_code(warnings):
+    """`_shape` guards nothing if the parse in front of it hands the object through.
+
+    Each of these is a subclass of a type `_parse_count` accepts, and each raises from
+    a method that ran only because `isinstance` said yes: the comparison in
+    `usage_count`'s own negative check, `is_integer` on the float branch, and `__int__`
+    on the string branch, which `int()` prefers to parsing the characters. Three
+    routes out of a helper whose first promise is that it never raises -- and past a
+    caveat that describes rather than quotes, since none of them reach it.
+    """
+
+    class Ledger(int):
+        def __lt__(self, other):
+            raise RuntimeError("escaped from usage_count's own check")
+
+    class Reading(float):
+        def is_integer(self):
+            raise RuntimeError("escaped from inside _parse_count")
+
+    class Quoted(str):
+        def __int__(self):
+            raise RuntimeError("escaped past the except ValueError")
+
+    assert [usage_count(Ledger(5)), usage_count(Reading(1.0)), usage_count(Quoted("7"))] == [0, 0, 0]
+
+    # The list, not a loop over it: `for line in []` asserts nothing, and this test
+    # would pass in the exact case it exists to catch -- two of the three going quiet
+    # while still returning 0.
+    assert [record.getMessage() for record in warnings.records] == [
+        "usage: a value of an unrecognized type is not a token count; counting it as 0"
+    ] * 3
+
+
 def test_an_absent_count_is_nothing_and_says_nothing(warnings):
     """A field a runtime does not fill is not a reporting failure. Antigravity reports
     no cache write and Codex no thinking figure; warning on either would put a line on
@@ -471,7 +527,16 @@ def test_a_cache_bigger_than_the_prompt_holding_it_is_reported(warnings):
     check_cache_is_a_breakdown(1800, 200)
 
     (line,) = [record.getMessage() for record in warnings.records]
-    assert "1800 cached input tokens against a prompt of 200" in line
+    # The whole message, because what it must not say is open-ended: banning the
+    # phrases it used to use leaves every other way of naming a culprit, and a
+    # sentence appended after them would pass. Equality rather than a tail, since a
+    # tail admits anything in front of it -- including the payload text this caveat
+    # exists to keep out of a durable column.
+    assert line == (
+        "usage: codex reported 1800 cached input tokens against a prompt of 200; the adapters "
+        "read the cache as part of that prompt, which these two numbers cannot both "
+        "allow, so no prompt total here can be trusted to include the cached share"
+    )
 
 
 def test_a_prompt_nobody_could_read_is_not_evidence_of_anything(warnings):
@@ -504,17 +569,26 @@ def test_a_cache_against_a_prompt_of_none_is_reported_without_a_cause(warnings):
 
     A cache is tokens that were sent, so a prompt of zero carrying one is a shape
     neither reading of these fields produces -- which makes it worth reporting and
-    makes the drift explanation the wrong thing to say about it. The numbers are
-    stated and the cause is left to whoever reads them.
+    makes the drift explanation the wrong thing to say about it. What is left is the
+    pair of numbers and what they cannot both be. Saying the prompt is the false one
+    would be picking a culprit the comparison cannot distinguish from a cache count
+    that is simply wrong.
     """
     from orchestrator_mcp.consult.adapters.base import check_cache_is_a_breakdown
 
     check_cache_is_a_breakdown(1800, 0)
 
     (line,) = [record.getMessage() for record in warnings.records]
-    assert "1800 cached input tokens against a prompt of 0" in line
-    # The claim the other branch makes, which this one has no grounds for.
-    assert "no longer reports them nested" not in line
+    # Neither figure is named as the wrong one, and the whole message is pinned rather
+    # than the absence of the phrase that used to name one: a cache of 1800 against a
+    # prompt of none is equally a miscounted cache and a prompt that lost its cached
+    # share, and the comparison sees the same pair either way. The prefix is asserted
+    # too -- a tail would let arbitrary text stand in front of the caveat.
+    assert line == (
+        "usage: codex reported 1800 cached input tokens against a prompt of 0; a cache is "
+        "tokens that were sent, so these two figures cannot both be what they claim "
+        "and neither can be relied on here"
+    )
 
 
 def test_a_cache_of_zero_says_nothing_whatever_the_prompt_did(warnings):
