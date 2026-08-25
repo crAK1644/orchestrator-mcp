@@ -819,18 +819,48 @@ async def _terminate(process: asyncio.subprocess.Process) -> None:
 
     Term first so a CLI can close its session files; kill after, because "asked
     politely" is not a guarantee and a leaked child holds the account busy.
+
+    In a `finally`, because the child that dies on SIGTERM is the common way out of
+    here and leaves the same pipes behind as the one that had to be killed.
     """
     _signal_group(process, signal.SIGTERM)
-    with contextlib.suppress(TimeoutError):
-        async with asyncio.timeout(GRACE_S):
+    try:
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(GRACE_S):
+                await process.wait()
+                return
+        # Worth a line at WARNING: a group that outlived SIGTERM had helpers of its
+        # own, and that is the case where something is left holding the account.
+        log.warning(
+            "pid=%d did not exit within %gs of SIGTERM; killing group", process.pid, GRACE_S
+        )
+        _signal_group(process, signal.SIGKILL)
+        with contextlib.suppress(Exception):
             await process.wait()
-            return
-    # Worth a line at WARNING: a group that outlived SIGTERM had helpers of its own,
-    # and that is the case where something is left holding the account.
-    log.warning("pid=%d did not exit within %gs of SIGTERM; killing group", process.pid, GRACE_S)
-    _signal_group(process, signal.SIGKILL)
-    with contextlib.suppress(Exception):
-        await process.wait()
+    finally:
+        _release_pipes(process)
+
+
+def _release_pipes(process: asyncio.subprocess.Process) -> None:
+    """Hand the child's pipes back to the loop while there is still a loop.
+
+    A subprocess transport closes itself once the child has exited *and* every pipe
+    has reached EOF, and the paths that come through `_terminate` are the paths where
+    no one is reading to EOF any more: the readers were cancelled, or a `StreamReader`
+    already over its limit paused the transport, which is exactly the oversized-output
+    case. The transport is then left to the garbage collector, and if the loop has
+    closed by the time it runs -- the end of a test, or of a short-lived process --
+    its `__del__` raises `RuntimeError: Event loop is closed` where nothing can catch
+    it. Closing it here is that same close, done while the loop is still open.
+
+    `_transport` is private, and read defensively for it. The public alternative is to
+    keep draining a child we have just killed until its pipes run dry, which is more
+    reading of exactly the output that got it killed.
+    """
+    transport = getattr(process, "_transport", None)
+    if transport is not None:
+        with contextlib.suppress(Exception):
+            transport.close()
 
 
 def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
