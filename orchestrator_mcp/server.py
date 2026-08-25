@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import inspect
 import os
+import sys
+from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -775,8 +777,41 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         return WorkflowDeletionResult(deleted=await service.delete_all(confirm_token))
 
 
-def main() -> None:
-    build_server().run()
+_USAGE = """orchestrator-mcp-server -- an MCP server, spoken to over stdin by an MCP client.
+
+There is nothing to run here by hand. Configure it in the client, which spawns it and
+holds the conversation; `ORCHESTRATOR_HOST_RUNTIME` must name the runtime that client
+is (`codex`, `claude`, `antigravity`, `opencode`) so the server can leave that agent
+out of its own routing.
+
+  -h, --help     print this
+  -V, --version  print the installed version
+"""
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    # The unknown one first: `--help --helpp` is a typo either way, and answering the
+    # flag it did spell right would send the reader off believing the other one took.
+    unknown = [arg for arg in args if arg not in {"-h", "--help", "-V", "--version"}]
+    if unknown:
+        # Silently ignoring an argument would let a typo look like a server that
+        # started and then went quiet, which is what stdio transport looks like anyway.
+        print(f"orchestrator-mcp-server: unexpected argument {unknown[0]!r}", file=sys.stderr)
+        print(_USAGE, end="", file=sys.stderr)
+        raise SystemExit(2)
+    if "-h" in args or "--help" in args:
+        print(_USAGE, end="")
+        return
+    if "-V" in args or "--version" in args:
+        print(_version())
+        return
+    try:
+        build_server().run()
+    except ConfigError as exc:
+        # The config is the user's file to fix, and a traceback through our frames
+        # names none of its lines. The message already says which key and what values.
+        raise SystemExit(f"orchestrator-mcp-server: {exc}") from exc
 
 
 if __name__ == "__main__":

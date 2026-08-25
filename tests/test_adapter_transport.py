@@ -20,9 +20,11 @@ import pytest
 from orchestrator_mcp.consult.adapters.base import (
     PASSTHROUGH_ENV,
     AdapterError,
+    _terminate,
     child_env,
     resolve_command,
     run_process,
+    run_streaming,
 )
 from orchestrator_mcp.consult.config import AgentConfig
 from orchestrator_mcp.consult.errors import ConsultErrorCode
@@ -190,3 +192,66 @@ def test_an_uninstalled_command_names_itself():
 
 def test_an_installed_command_resolves_to_an_absolute_path():
     assert Path(resolve_command(agent_config("python3"))).is_absolute()
+
+
+# --- what a killed child leaves behind --------------------------------------
+
+
+async def test_a_killed_child_hands_its_pipes_back_while_there_is_still_a_loop():
+    """A transport nobody closed is a `RuntimeError` raised where nothing can catch it.
+
+    A subprocess transport closes itself once the child has exited *and* every pipe
+    has reached EOF, and the second half stops being true exactly where `_terminate`
+    is reached: a `StreamReader` holding more than its limit has paused the transport,
+    so no EOF is coming for a pipe nobody may read again. What is left is collected
+    whenever the collector gets to it, and if the loop has closed by then,
+    `BaseSubprocessTransport.__del__` calls into it and raises `RuntimeError: Event
+    loop is closed` from a `__del__`, where the only thing that can report it is the
+    unraisable hook.
+
+    The line over the limit is the real path, not a stand-in: it is what
+    `STREAM_LINE_LIMIT` refuses in a streamed consultation.
+    """
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import sys, time; sys.stdout.write('x' * 200_000); sys.stdout.flush(); time.sleep(300)",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+        limit=1024,
+    )
+    with pytest.raises(ValueError):
+        await process.stdout.readline()
+
+    await _terminate(process)
+
+    assert process.returncode is not None
+    assert process._transport.is_closing()
+
+
+async def test_stopping_a_child_early_still_returns_the_stderr_it_had_written():
+    """The one place `_terminate` runs with a reader still live.
+
+    Every other caller cancels its readers first; the turn-budget stop awaits
+    `stderr_task` *after* terminating, so closing the transport there could have
+    turned a diagnostic into a truncated one. It does not: `_terminate` waits for the
+    child before it closes anything, and the reader has been draining the whole time.
+    """
+    child = (
+        "import sys, time\n"
+        "sys.stderr.write('E' * 200_000); sys.stderr.flush()\n"
+        "sys.stdout.write('one event\\n'); sys.stdout.flush()\n"
+        "time.sleep(30)\n"
+    )
+
+    result = await run_streaming(
+        [sys.executable, "-c", child],
+        stdin_text=None,
+        timeout_s=30,
+        on_line=lambda line: False,
+    )
+
+    assert result.stdout == "one event\n"
+    assert len(result.stderr) == 200_000
