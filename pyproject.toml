@@ -3,7 +3,7 @@
 # else, so the distribution carries the `-server` suffix. The import package,
 # the repo, and the config env var are unchanged.
 name = "orchestrator-mcp-server"
-version = "0.6.0"
+version = "0.6.1"
 description = "Let one coding-agent CLI consult another through Codex, Claude Code, OpenCode, or Antigravity."
 readme = "README.md"
 license = "MIT"
