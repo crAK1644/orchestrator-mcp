@@ -132,6 +132,11 @@ consult:
       scores: { coding: 90, research: 95, writing: 95, review: 95 }
 ```
 
+The key each agent is filed under is its id -- the name callers pass as `target_agent`,
+and the name the dashboard writes into URLs. It has to be lowercase, start with a letter
+or digit, and use only letters, digits, dots, dashes and underscores, up to 64
+characters. Anything else is refused at startup with a message naming the key.
+
 See [`config.example.yaml`](config.example.yaml) for a broader annotated configuration,
 an OpenCode agent, and an experimental Antigravity example.
 
@@ -171,16 +176,20 @@ Restart the MCP client after changing its configuration.
 > [!TIP]
 > Use an absolute `ORCHESTRATOR_CONFIG` path. GUI-launched clients often start in a different working directory and inherit a smaller `PATH` than your terminal.
 
-The client spawns the server and talks to it over stdin, so there is nothing to start
-by hand. Two flags answer questions from outside a client:
+The client spawns the server and talks to it over stdin, so `orchestrator-mcp-server`
+is not a command you start yourself. (The [dashboard](#local-dashboard) is the other
+half of this distribution and *is* started by hand.) Two flags answer questions from
+outside a client:
 
 ```bash
 orchestrator-mcp-server --version   # which build the client will spawn
 orchestrator-mcp-server --help      # what the environment variables have to say
 ```
 
-Anything else on the command line is refused rather than ignored, and a configuration
-the server cannot accept leaves as a message naming the key, not a traceback.
+Both answer and exit without reading your configuration. Anything else on the command
+line is refused rather than ignored. To make the server read the configuration, run it
+with no arguments: a file it cannot accept leaves as a message naming the key -- one
+line for most mistakes, several for a schema violation, never a traceback.
 
 ### Run with `uvx` instead
 
@@ -345,6 +354,10 @@ reviewers. The path string supplied by the caller is also included as the file h
 and manifest label, so an absolute path can disclose a username or directory layout. If
 that is sensitive, pass the bytes through `context` with neutral labels instead.
 
+Each root has to be an absolute path to a directory that exists. The server checks that
+at startup and refuses to start naming the one it could not find, rather than starting
+and failing the first `context_paths` call -- which is a reviewer's turn later.
+
 The workflow is deliberately split:
 
 1. `orchestrator_review` creates a plan and **sends nothing**. The plan shows reviewers, material size, web access, request count, and locations of credential-shaped text.
@@ -442,6 +455,11 @@ consult:
 `workflow:` requires `store_full_content: true` and refuses at startup otherwise. A
 workflow *is* its stored plans, briefs, patches and reports, and the review step cannot
 finalize without them — the failure belongs at boot, not several paid steps in.
+
+`roots:` follows the same rule as `review.roots:` — absolute after `~`/`$VAR` expansion,
+and a directory that exists, checked at startup. A relative root is refused rather than
+resolved against wherever the client spawned the server, which would make the allowlist
+something other than what the file says.
 
 ### Models are not tied to phases
 
@@ -925,7 +943,7 @@ Live tests make real requests and may use paid capacity. Do not run them in CI u
 | `agent_not_installed` | Use an absolute path for `command`; GUI apps often inherit a smaller `PATH`. |
 | `connection_required` | Run the login command returned in `required_action`, then retry. |
 | Host runtime error | Set `ORCHESTRATOR_HOST_RUNTIME` to `claude`, `codex`, `opencode`, or `antigravity`. |
-| The client lists the server as failed | Run `orchestrator-mcp-server --version` in the same shell. Command not found is a `PATH` problem; a printed message names the configuration key to fix. |
+| The client lists the server as failed | Read the client's own stderr first; it carries the real message. `orchestrator-mcp-server --version` tells you only whether *that* shell can find the command, which a GUI client's smaller `PATH` may not. Running it with no arguments is what exercises the configuration: it either names the key to fix, or goes quiet waiting on stdin because the configuration is fine. |
 | Every consultation starts over | Return the previous `consultation_id` on the next call. |
 | `timeout` during a review | Raise `consult.timeout_s`; high-effort review can take much longer than 180 seconds. |
 | Dashboard changes do not appear | Restart the MCP server; configuration is loaded at startup. |

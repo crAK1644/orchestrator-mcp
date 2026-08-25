@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 
@@ -30,6 +31,16 @@ from .managed import DEFAULT_MANAGED_PATH, managed_path, read_managed_document
 HOST_RUNTIME_ENV = "ORCHESTRATOR_HOST_RUNTIME"
 
 Score = Annotated[int, Field(ge=0, le=100)]
+
+# Conservative on purpose: an agent id ends up in a file name's neighbourhood, in a
+# URL, in a response header, and in an MCP tool's advertised enum. Nothing here needs
+# to be more exciting.
+#
+# Here rather than in the dashboard, which is where it used to live: the dashboard is
+# one of two ways an agent arrives, and the other one -- an operator editing the file
+# by hand -- reached every one of those places without passing this. The shape a value
+# has to have belongs beside the model, not beside one of its writers.
+AGENT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 class AgentConfig(BaseModel):
@@ -309,6 +320,12 @@ class WorkflowConfig(BaseModel):
             path = Path(os.path.expandvars(str(root))).expanduser()
             if str(path).strip() in ("", "."):
                 raise ValueError("a root must name a directory, not a blank path")
+            # `resolve_workdir` resolves a relative root against the server's own
+            # working directory, which is wherever the client happened to spawn it.
+            # That makes the allowlist something other than what the file says, and
+            # says it silently -- so refuse the shape rather than resolve it.
+            if not path.is_absolute():
+                raise ValueError(f"workflow root `{path}` must be absolute")
             # `/` as a root is every file the user owns, which is not a root, it is
             # the absence of one written as though it were a decision.
             if path == Path(path.anchor):
@@ -377,8 +394,18 @@ class ConsultConfig(BaseModel):
     @classmethod
     def _label_agents(cls, agents: dict[str, AgentConfig]) -> dict[str, AgentConfig]:
         for agent_id, agent in agents.items():
-            if not agent_id.strip():
-                raise ValueError("agent ids must not be blank")
+            # `fullmatch`, not `match`: `$` also matches just before a trailing
+            # newline, so an anchored `match` would let `codex\n` through -- the one
+            # character in this whole check that turns a `Location` into two headers.
+            #
+            # `!r` on the id, because an id this refuses is by definition not the shape
+            # anything expects, and a raw control character in it would rearrange the
+            # startup message that is supposed to say which key to go and fix.
+            if not AGENT_ID.fullmatch(agent_id):
+                raise ValueError(
+                    f"agent id {agent_id!r} must start with a letter or digit and use only "
+                    "lowercase letters, digits, dots, dashes and underscores (max 64)"
+                )
             agent.agent_id = agent_id
         return agents
 
@@ -560,9 +587,45 @@ def load_consult_config(config: dict[str, Any]) -> ConsultConfig | None:
         "review": _merged_review(block, document),
     }
     try:
-        return ConsultConfig(**block)
+        parsed = ConsultConfig(**block)
     except ValidationError as exc:
         raise ConfigError(f"invalid `consult:` block: {exc}") from exc
+    if parsed.review:
+        check_roots(parsed.review.roots, "review")
+    if parsed.workflow:
+        check_roots(parsed.workflow.roots, "workflow")
+    return parsed
+
+
+def check_roots(roots: list[Path], kind: str) -> None:
+    """Raise unless every root in `review:` or `workflow:` is a directory here.
+
+    Not in either model's validator: they are built by the dashboard and by tests
+    too, where a root is a name rather than a place. Existence is a fact about one
+    machine, so it is checked where that machine's config is read -- at boot, and by
+    the dashboard before it writes a review root into the managed file, which is the
+    only other way one arrives.
+
+    The request-time checks stay either way -- `_read_paths` for review material,
+    `resolve_workdir` for a workflow's directory. A directory can be deleted while
+    the server runs, and only those are late enough to see it. This one exists
+    because until it did, a typo in a path started a server, got the tools
+    advertised, and reported the mistake on the first call that used them: for
+    review, after a reviewer had been spawned; for workflow, as a workdir that was
+    "not under any configured root", naming a root that was not anywhere.
+
+    A hard failure rather than a dropped entry, because every other check in
+    `_expand_roots` raises, and an allowlist quietly shorter than the file says
+    reads fewer trees than whoever wrote it thinks. The cost is real and one-sided:
+    a laptop that has not cloned one of several configured trees cannot start the
+    server until the entry goes or the directory arrives.
+    """
+    for root in roots:
+        if not root.is_dir():
+            raise ConfigError(
+                f"{kind} root `{root}` is not a directory on this machine. Create it, "
+                "fix the path, or drop it from `roots:`."
+            )
 
 
 def _merged_review(block: dict[str, Any], document: dict[str, Any]) -> Any:

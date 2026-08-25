@@ -136,9 +136,14 @@ consult:
   review:
     reviewers: [codex-sol]                    # exactly one, for `mode: standard`
     deep_reviewers: [codex-sol, claude-opus]  # 1 to 5, for `mode: deep`
-    roots: [~/src]                            # absolute after ~/$VAR expansion;
-                                              # context_paths may read only beneath
-                                              # these; empty disables path reads
+    roots: []                                 # absolute after ~/$VAR expansion, and
+                                              # a directory that exists -- a root the
+                                              # server cannot find refuses the boot,
+                                              # which is why the example ships empty
+                                              # rather than naming a tree you may not
+                                              # have. context_paths may read only
+                                              # beneath these; empty disables path
+                                              # reads entirely
 
   # Which execution identity this installation *is*. `runtime` still comes from
   # ORCHESTRATOR_HOST_RUNTIME and that stays the authority -- naming it here is an
@@ -162,9 +167,13 @@ consult:
   workflow:
     max_fix_rounds: 5         # reached with serious findings still open, the
                               # workflow ends `needs_attention`, not `completed`
-    roots: [~/src]            # a workflow's workdir must resolve beneath one of
-                              # these. `/` is refused, and nothing is inferred from
-                              # the working directory.
+    roots: []                 # fill this in: a workflow's workdir must resolve
+                              # beneath one of these, so empty means no workflow can
+                              # run. Absolute and a directory that exists -- `/` is
+                              # refused, a relative path is refused rather than
+                              # resolved against wherever the client spawned the
+                              # server, and a root that is not there refuses the
+                              # boot. Nothing is inferred from the working directory.
     advance_on_failed_test: false
                               # off by default: reviewing code already known to be
                               # broken spends reviewers on a known answer

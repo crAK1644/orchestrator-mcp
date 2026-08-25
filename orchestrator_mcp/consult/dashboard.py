@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import html
 import json
-import re
 import secrets
 import sqlite3
 import sys
@@ -38,7 +37,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 from pathlib import Path
 from typing import Any, get_args
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import yaml
 from pydantic import ValidationError
@@ -50,10 +49,12 @@ from .adapters import adapter_for
 from .adapters.base import AdapterError, resolve_command
 from .adapters.codex_cli import rate_limit as codex_rate_limit
 from .config import (
+    AGENT_ID,
     MAX_DEEP_REVIEWERS,
     AgentConfig,
     ConsultConfig,
     ReviewConfig,
+    check_roots,
     load_consult_config,
 )
 from .contract import Capability, Runtime
@@ -110,10 +111,6 @@ MODEL_PRESETS: dict[str, tuple[str, ...]] = {
         "opencode/nemotron-3-ultra-free",
     ),
 }
-
-# Conservative on purpose: an agent id ends up in a file name's neighbourhood, in a
-# URL, and in an MCP tool's advertised enum. Nothing here needs to be more exciting.
-AGENT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 # A form of this shape is a few hundred bytes. The cap is here so a request cannot ask
 # this process to allocate whatever it likes before anything has been checked.
@@ -1323,6 +1320,13 @@ class ConsultDashboard:
             )
         except ValidationError as exc:
             return refuse(_first_error(exc))
+        try:
+            # Same check the server runs at boot. Refusing here means the operator
+            # reads the message in the form they are looking at, rather than the
+            # next start refusing a file only this page can edit back.
+            check_roots(block.roots, "review")
+        except ConfigError as exc:
+            return refuse(str(exc))
 
         def store(document: dict[str, Any]) -> tuple[int, str] | None:
             # Older/non-browser callers did not submit ``roots``. Preserve the
@@ -1629,7 +1633,7 @@ class ConsultDashboard:
             f"<td data-label=Capabilities><div class=capabilities>"
             f"{''.join(f'<span class=tag>{_e(k)} {v}</span>' for k, v in sorted(agent.scores.items())) or '<span class=meta>none</span>'}"
             f"</div></td>"
-            f"<td data-label=Actions><a href='/agents/{_e(aid)}'>edit</a> &middot; "
+            f"<td data-label=Actions><a href='/agents/{_e(quote(aid, safe=''))}'>edit</a> &middot; "
             f"{_delete_form(aid, self.token)}</td>"
             "</tr>"
             for aid, agent in sorted(managed.items())
@@ -1783,7 +1787,7 @@ class ConsultDashboard:
                 None, values=form, error=message, editing=bool(editing)
             ), None
 
-        if not AGENT_ID.match(agent_id):
+        if not AGENT_ID.fullmatch(agent_id):
             return refuse(
                 "An agent id must start with a letter or digit and use only lowercase "
                 "letters, digits, dots, dashes and underscores."
@@ -1863,7 +1867,14 @@ class ConsultDashboard:
             return status, _document(
                 "Not deleted", f"<p>{_e(message)}</p><p><a href='/agents'>Back</a></p>"
             ), None
-        return HTTPStatus.SEE_OTHER, "", f"/agents?deleted={agent_id}"
+        # Encoded, not validated. `send_header` writes a `Location` exactly as given,
+        # so a newline in an id would be a second header -- and unlike `save`, which
+        # only ever redirects to an id it just checked, this one can legitimately be
+        # handed a key nothing of ours wrote: `_split_agents` re-reads the managed file
+        # on every request, so an id hand-edited into it after boot is rendered with a
+        # delete button beside it. Refusing that id would leave the only row that can
+        # remove it unable to. `parse_qs` decodes it back on the page that reads it.
+        return HTTPStatus.SEE_OTHER, "", f"/agents?deleted={quote(agent_id, safe='')}"
 
 
 # --- form translation -------------------------------------------------------

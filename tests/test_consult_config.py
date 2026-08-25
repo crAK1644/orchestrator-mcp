@@ -63,11 +63,40 @@ def test_the_block_parses_with_defaults():
         pytest.param(consult_block(managed_agents_path=""), id="a blank managed path"),
         pytest.param(consult_block(database_path=""), id="a blank database path"),
         pytest.param("not a mapping", id="not a mapping"),
+        # An agent id is a mapping key, so it is whatever the file says. It reaches a
+        # scratch directory's name, a redirect header, and the `target_agent` enum in
+        # the published tool schema -- and until this check it only had to be non-blank.
+        pytest.param({"agents": {"": agent()}}, id="a blank agent id"),
+        pytest.param({"agents": {"Codex-Sol": agent()}}, id="an agent id with capitals"),
+        pytest.param({"agents": {"codex sol": agent()}}, id="an agent id with a space"),
+        pytest.param({"agents": {"../codex": agent()}}, id="an agent id with a separator"),
+        pytest.param(
+            {"agents": {"codex\r\nX-Injected: yes": agent()}}, id="an agent id with a newline"
+        ),
+        pytest.param({"agents": {"c" * 65: agent()}}, id="an agent id past 64 characters"),
+        # `$` matches before a trailing newline too, so an anchored `match` accepted
+        # this one -- and a newline is the whole of what turns a redirect into two
+        # headers. `fullmatch` is what makes the anchors mean the whole string.
+        pytest.param({"agents": {"codex\n": agent()}}, id="an agent id with a trailing newline"),
     ],
 )
 def test_a_bad_block_refuses_to_boot(block):
     with pytest.raises(ConfigError):
         load_consult_config({"consult": block})
+
+
+def test_a_refused_agent_id_is_named_in_the_message():
+    """The key is the only thing that identifies which entry to go and fix."""
+    with pytest.raises(ConfigError, match="Codex-Sol"):
+        load_consult_config({"consult": {"agents": {"Codex-Sol": agent()}}})
+
+
+def test_the_ordinary_punctuation_in_an_agent_id_still_boots():
+    """Dots, dashes and underscores are what real ids are made of -- `codex-sol`,
+    `gpt-5.6-sol`, `claude_opus.2`. The check refuses shapes, not readability."""
+    config = load_consult_config({"consult": {"agents": {"gpt-5.6_sol.2": agent()}}})
+    assert config is not None
+    assert config.agents["gpt-5.6_sol.2"].agent_id == "gpt-5.6_sol.2"
 
 
 @pytest.mark.parametrize("field", ["database_path", "managed_agents_path"])
@@ -251,3 +280,46 @@ def test_every_runtime_honours_the_override(runtime, command):
         )
     )
     assert adapter_for(config.agents["one"], config).timeout_s == 42
+
+
+# --- workflow roots ---------------------------------------------------------
+
+
+def _workflow_block(tmp_path, roots):
+    return {
+        "consult": consult_block(
+            database_path=str(tmp_path / "c.sqlite3"),
+            managed_agents_path=str(tmp_path / "agents.yaml"),
+            host={"runtime": "claude", "model": "opus"},
+            workflow={"roots": roots},
+        )
+    }
+
+
+def test_a_relative_workflow_root_is_refused(host_claude):
+    """`resolve_workdir` would resolve it against the server's own cwd.
+
+    Which is wherever the client happened to spawn the server, so the allowlist
+    would be something other than what the file says -- and silently.
+    """
+    with pytest.raises(ValidationError, match="must be absolute"):
+        ConsultConfig(**consult_block(workflow={"roots": ["relative/work"]}))
+
+
+def test_a_workflow_root_that_does_not_exist_refuses_to_boot(tmp_path, host_claude):
+    """Before this, every `workdir` was refused for being "not under any configured
+    workflow root" -- and the root it named was not anywhere at all."""
+    missing = tmp_path / "not-cloned"
+
+    with pytest.raises(ConfigError) as exc:
+        load_consult_config(_workflow_block(tmp_path, [str(missing)]))
+    assert str(missing) in str(exc.value)
+    assert "workflow root" in str(exc.value)
+
+
+def test_a_workflow_root_that_exists_boots(tmp_path, host_claude):
+    tree = tmp_path / "repo"
+    tree.mkdir()
+
+    loaded = load_consult_config(_workflow_block(tmp_path, [str(tree)]))
+    assert loaded.workflow.roots == [tree]

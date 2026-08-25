@@ -50,10 +50,12 @@ jobs:
 
       - run: uv build
 
-      # The check above read pyproject; this one reads the files. `uv build` writes
-      # into `dist/` without emptying it first, so "something is in there" is not the
-      # same claim as "the two distributions for this tag are in there, and nothing
-      # else". Last place to say so while the upload is still withdrawable.
+      # The check above read pyproject; this one reads the directory listing. `uv
+      # build` writes into `dist/` without emptying it first, so "something is in
+      # there" is not the same claim as "these two filenames are in there and nothing
+      # else is". Names and count only -- nothing here opens a distribution or looks
+      # at its metadata, so a correctly named artifact is taken at its name. Last
+      # place to say even that much while the upload is still withdrawable.
       - name: Check dist holds exactly this tag's wheel and sdist
         run: |
           version="${GITHUB_REF_NAME#v}"

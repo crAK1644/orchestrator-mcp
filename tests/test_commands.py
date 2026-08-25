@@ -103,12 +103,16 @@ async def test_the_review_command_carries_the_deep_mode_precondition(host_claude
     assert "host_findings" not in await expand(srv, "review")
 
 
-async def test_the_review_command_names_the_configured_material_roots(host_claude):
-    configured = REVIEW | {"roots": ["/var/tmp/orchestrator-reviews"]}
+async def test_the_review_command_names_the_configured_material_roots(host_claude, tmp_path):
+    # A real directory: the boot check refuses a root that is not one, and this test
+    # is about what the command says, not about where the refusal lives.
+    tree = tmp_path / "orchestrator-reviews"
+    tree.mkdir()
+    configured = REVIEW | {"roots": [str(tree)]}
 
     text = await expand(server(review=configured), "review")
 
-    assert "/var/tmp/orchestrator-reviews" in text
+    assert str(tree) in text
     assert "context_paths" in text
 
 
