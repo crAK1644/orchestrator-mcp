@@ -24,6 +24,7 @@ from orchestrator_mcp.consult.adapters.base import (
     child_env,
     resolve_command,
     run_process,
+    run_streaming,
 )
 from orchestrator_mcp.consult.config import AgentConfig
 from orchestrator_mcp.consult.errors import ConsultErrorCode
@@ -228,3 +229,29 @@ async def test_a_killed_child_hands_its_pipes_back_while_there_is_still_a_loop()
 
     assert process.returncode is not None
     assert process._transport.is_closing()
+
+
+async def test_stopping_a_child_early_still_returns_the_stderr_it_had_written():
+    """The one place `_terminate` runs with a reader still live.
+
+    Every other caller cancels its readers first; the turn-budget stop awaits
+    `stderr_task` *after* terminating, so closing the transport there could have
+    turned a diagnostic into a truncated one. It does not: `_terminate` waits for the
+    child before it closes anything, and the reader has been draining the whole time.
+    """
+    child = (
+        "import sys, time\n"
+        "sys.stderr.write('E' * 200_000); sys.stderr.flush()\n"
+        "sys.stdout.write('one event\\n'); sys.stdout.flush()\n"
+        "time.sleep(30)\n"
+    )
+
+    result = await run_streaming(
+        [sys.executable, "-c", child],
+        stdin_text=None,
+        timeout_s=30,
+        on_line=lambda line: False,
+    )
+
+    assert result.stdout == "one event\n"
+    assert len(result.stderr) == 200_000

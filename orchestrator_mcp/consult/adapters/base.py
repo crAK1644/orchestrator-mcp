@@ -858,9 +858,14 @@ def _release_pipes(process: asyncio.subprocess.Process) -> None:
     reading of exactly the output that got it killed.
     """
     transport = getattr(process, "_transport", None)
-    if transport is not None:
-        with contextlib.suppress(Exception):
-            transport.close()
+    if transport is None:
+        # Nothing breaks: what comes back is the warning this function exists to
+        # remove. But silence would make a CPython rename look like the bug returning
+        # on its own, so the version that stopped having a `_transport` says so.
+        log.debug("pid=%d has no `_transport`; its pipes go to the collector", process.pid)
+        return
+    with contextlib.suppress(Exception):
+        transport.close()
 
 
 def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
