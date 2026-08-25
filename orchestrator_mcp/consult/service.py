@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 
 from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json
 from ..log import get_logger
+from ..spend import refusal as spend_refusal
 from ..workflow.contract import StepSnapshot
 from ..workflow.identity import host_identity_conflict
 from .adapters import AdapterError, adapter_for
@@ -546,6 +547,39 @@ class ConsultService:
             explicitly_selected=True,
         )
 
+    async def _within_ceiling(self, consultation_id: UUID, agent: AgentConfig) -> None:
+        """Refuse a turn on a consultation that has already reached `consult.spend`.
+
+        Here rather than beside the review and workflow checks because this is where
+        every door arrives. `orchestrator_consult` resuming a session by id, a
+        reviewer, a workflow step -- three binds, one turn -- and the review and
+        workflow ceilings sit on two of them. A consultation resumed from the public
+        tool passes neither, which left the tool this server exists for spending
+        against an unbounded paid CLI.
+
+        Before `next_sequence`, so a refusal writes no turn. Recording one would count
+        toward the very ceiling that produced it, and each refused call would push the
+        total further past a bound it is already refusing to cross.
+
+        Keyed by agent id so `refusal` can name who spent unpriced -- there is only
+        ever one agent on a consultation, which is what makes the map a formality here
+        and the whole answer for a review.
+        """
+        spend = await self.store.consultation_spend(consultation_id)
+        if spend is None:
+            # No turns yet, so nothing spent and nothing to refuse. A ceiling stops
+            # the turn after one is reached; it never stops the first.
+            return
+        message = spend_refusal(
+            {agent.agent_id: spend},
+            self.config.spend.max_cost_usd_per_consultation,
+            f"consultation `{consultation_id}`",
+            self.config.spend.max_turns_per_consultation,
+        )
+        if message is not None:
+            log.warning("consultation %s refused: %s", consultation_id, message)
+            raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
+
     async def _turn(
         self,
         consultation_id: UUID,
@@ -558,6 +592,7 @@ class ConsultService:
     ) -> ConsultResponse:
         adapter = self.adapter(agent)
         capability = request.capability
+        await self._within_ceiling(consultation_id, agent)
         sequence = await self.store.next_sequence(consultation_id)
         prompt = compile_prompt(capability, source_mode, request.prompt, request.context, turn=sequence)
 

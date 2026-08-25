@@ -218,14 +218,21 @@ class HostConfig(BaseModel):
 
 
 class SpendPolicy(BaseModel):
-    """Ceilings on what one review or one workflow may cost.
+    """Ceilings on what one consultation, one review, or one workflow may cost.
 
-    Both absent by default, which is no ceiling and no behavior change.
+    All absent by default, which is no ceiling and no behavior change.
 
     What this buys is bounded, and the bound is the point: a request cannot be priced
     before it is made, so the guarantee is **the next request after the ceiling is
     crossed is refused**, not that spend never exceeds the ceiling. A fan-out of five
     reviewers is one request in that sense; the ceiling stops the round after it.
+
+    The three scopes nest rather than compete. A workflow's reviewers count into its
+    review and into the workflow, and every one of them is a consultation, so a turn
+    can be refused by whichever ceiling it reaches first. That is why the consultation
+    pair is checked at the turn itself rather than beside the other two: `orchestrator_
+    consult` resumes a session by id and spends another turn on it, which is a door
+    into a paid CLI that neither of the other scopes covers.
 
     Set a turn ceiling as well as a dollar one if the routing includes an agent on a
     flat-rate plan. Those report no per-turn price, and a dollar ceiling can only
@@ -234,11 +241,18 @@ class SpendPolicy(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # The narrowest scope, and the only one that bounds `orchestrator_consult`. A
+    # consultation is resumable by id: one call starts it, and every call after that
+    # spends another turn on the same session against the same paid CLI. Reviews and
+    # workflows were bounded and this was not, so the tool this server exists for was
+    # the one path with no ceiling over it at all.
+    max_cost_usd_per_consultation: float | None = Field(default=None, gt=0)
     max_cost_usd_per_review: float | None = Field(default=None, gt=0)
     max_cost_usd_per_workflow: float | None = Field(default=None, gt=0)
     # The bound for work that cannot be priced. An agent on a flat-rate plan reports
     # no per-turn cost, so a dollar ceiling over it stays at $0.00 and never fires --
     # a ceiling that reads as a bound and is not one. Turns are always counted.
+    max_turns_per_consultation: int | None = Field(default=None, gt=0)
     max_turns_per_review: int | None = Field(default=None, gt=0)
     max_turns_per_workflow: int | None = Field(default=None, gt=0)
 

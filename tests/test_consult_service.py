@@ -45,12 +45,17 @@ class StubAdapter:
         error=None,
         verified: bool = False,
         content: ConsultationContent = ANSWER,
+        cost_usd: float | None = None,
     ) -> None:
         self.runtime = runtime
         self._status = status
         self._error = error
         self._verified = verified
         self._content = content
+        # `None` by default, which is what codex and antigravity really report. A
+        # dollar ceiling over an adapter like that never leaves $0.00, so a test for
+        # one has to say a price out loud.
+        self._cost_usd = cost_usd
         self.calls: list[tuple[str, str | None, SourceMode, int]] = []
         self.prompts: list[str] = []
         self.preflights = 0
@@ -81,7 +86,9 @@ class StubAdapter:
             model_used="gpt-5.6-sol",
             model_verified=self._verified,
             raw_output='{"answer": "blue"}',
-            usage=Usage(prompt_tokens=10, completion_tokens=2, total_tokens=12),
+            usage=Usage(
+                prompt_tokens=10, completion_tokens=2, total_tokens=12, cost_usd=self._cost_usd
+            ),
         )
 
 
@@ -521,3 +528,118 @@ async def test_repointing_an_agent_at_another_runtime_invalidates_its_entry(serv
     await service.consult(capability="coding", prompt="q2")
 
     assert adapter.preflights == 2
+
+
+# --- the consultation ceiling -----------------------------------------------
+#
+# The scope the other two never covered. A review is bounded and a workflow is
+# bounded, but `orchestrator_consult` takes a `consultation_id` and resumes the
+# session behind it, so a caller can spend turns on one paid CLI indefinitely
+# without either of them ever being asked.
+
+
+async def test_a_consultation_ceiling_refuses_the_turn_after_it_is_reached(service_factory):
+    """Reached, not exceeded: the second turn brings the count to the ceiling and is
+    allowed to answer, and the third is the one refused."""
+    adapter = StubAdapter()
+    service = await service_factory(adapter, spend={"max_turns_per_consultation": 2})
+
+    first = await service.consult(capability="coding", prompt="q1")
+    second = await service.consult(
+        capability="coding", prompt="q2", consultation_id=first.consultation_id
+    )
+    third = await service.consult(
+        capability="coding", prompt="q3", consultation_id=first.consultation_id
+    )
+
+    assert first.ok and second.ok
+    assert not third.ok
+    assert third.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "2 of its 2 turn ceiling" in third.error.message
+    # The refused turn never reached the CLI.
+    assert [c[0] for c in adapter.calls] == ["start", "resume"]
+
+
+async def test_a_dollar_ceiling_bounds_a_consultation(service_factory):
+    adapter = StubAdapter(cost_usd=0.75)
+    service = await service_factory(adapter, spend={"max_cost_usd_per_consultation": 1.0})
+
+    first = await service.consult(capability="coding", prompt="q1")
+    second = await service.consult(
+        capability="coding", prompt="q2", consultation_id=first.consultation_id
+    )
+    third = await service.consult(
+        capability="coding", prompt="q3", consultation_id=first.consultation_id
+    )
+
+    assert first.ok and second.ok
+    assert not third.ok
+    assert third.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "$1.50 of its $1.00 ceiling" in third.error.message
+
+
+async def test_an_unpriced_agent_is_bounded_by_turns_and_not_by_dollars(service_factory):
+    """The reason both halves exist. The stub reports no price, exactly like codex, so
+    the dollar ceiling counts nothing and would let this run forever."""
+    adapter = StubAdapter()
+    service = await service_factory(
+        adapter, spend={"max_cost_usd_per_consultation": 0.01, "max_turns_per_consultation": 1}
+    )
+
+    first = await service.consult(capability="coding", prompt="q1")
+    second = await service.consult(
+        capability="coding", prompt="q2", consultation_id=first.consultation_id
+    )
+
+    assert first.ok and not second.ok
+    # The turn ceiling, not the dollar one -- $0.01 was never reached.
+    assert "1 of its 1 turn ceiling" in second.error.message
+
+
+async def test_a_first_turn_is_never_refused(service_factory):
+    """Nothing has been spent on a consultation that has no turns, so there is no
+    ceiling for it to have reached. A ceiling of 1 still answers once."""
+    service = await service_factory(spend={"max_turns_per_consultation": 1})
+    response = await service.consult(capability="coding", prompt="q")
+    assert response.ok
+
+
+async def test_a_refused_turn_is_not_recorded(service_factory):
+    """Otherwise each refusal counts toward the ceiling that produced it, and the
+    total climbs further past a bound it is already refusing to cross."""
+    service = await service_factory(spend={"max_turns_per_consultation": 1})
+    first = await service.consult(capability="coding", prompt="q1")
+    for _ in range(3):
+        refused = await service.consult(
+            capability="coding", prompt="q", consultation_id=first.consultation_id
+        )
+        assert not refused.ok
+
+    turns = await service.store.turns(first.consultation_id)
+    assert len(turns) == 1
+    assert "1 of its 1 turn ceiling" in refused.error.message
+
+
+async def test_no_spend_block_means_no_consultation_ceiling(service_factory):
+    """The default, and the one that must not change: an absent `spend:` bounds
+    nothing, exactly as it did before this ceiling existed."""
+    service = await service_factory()
+    first = await service.consult(capability="coding", prompt="q1")
+    for _ in range(5):
+        again = await service.consult(
+            capability="coding", prompt="q", consultation_id=first.consultation_id
+        )
+        assert again.ok
+
+
+async def test_a_review_or_workflow_ceiling_does_not_bound_a_plain_consultation(service_factory):
+    """The gap this closes, asserted from the other side. These two were the whole
+    policy, and neither of them is ever asked about the tool below."""
+    service = await service_factory(
+        spend={"max_turns_per_review": 1, "max_turns_per_workflow": 1}
+    )
+    first = await service.consult(capability="coding", prompt="q1")
+    second = await service.consult(
+        capability="coding", prompt="q2", consultation_id=first.consultation_id
+    )
+    assert first.ok and second.ok

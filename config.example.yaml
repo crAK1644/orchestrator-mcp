@@ -43,9 +43,15 @@ consult:
   # The turn ceilings are the ones that bind an agent on a flat-rate plan. Codex and
   # Antigravity report no per-turn price, so a dollar ceiling over them never leaves
   # $0.00 and can never fire; turns are counted whatever an agent charges.
+  #
+  # The consultation pair is the one that bounds `orchestrator_consult` itself. That
+  # tool resumes a session by id, so a caller can keep spending turns on one paid CLI
+  # session forever; the review and workflow ceilings never saw it.
   spend:
+    max_cost_usd_per_consultation: 2.0
     max_cost_usd_per_review: 5.0
     max_cost_usd_per_workflow: 25.0
+    max_turns_per_consultation: 8
     max_turns_per_review: 12
     max_turns_per_workflow: 40
 

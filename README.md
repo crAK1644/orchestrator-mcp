@@ -842,7 +842,7 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 | `review` | absent | Configured reviewers; absent means no review tools. |
 | `workflow` | absent | The three-phase workflow; absent means no workflow tools. Requires `store_full_content: true`. |
 | `host` | runtime from the environment | Asserted host runtime, and the host model that makes same-runtime routing possible. |
-| `spend` | no ceiling | Dollar and turn ceilings, per review and per workflow. See below. |
+| `spend` | no ceiling | Dollar and turn ceilings, per consultation, per review, and per workflow. See below. |
 | `dashboard` | off | Loopback history UI and optional agent editor. |
 
 ### Spending ceilings
@@ -850,18 +850,27 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 ```yaml
 consult:
   spend:
+    max_cost_usd_per_consultation: 2.0
     max_cost_usd_per_review: 5.0
     max_cost_usd_per_workflow: 25.0
+    max_turns_per_consultation: 8
     max_turns_per_review: 12
     max_turns_per_workflow: 40
 ```
 
-All four are optional and all are absent by default, which is no ceiling and no change
-in behavior. A review's ceiling is checked before each round of reviewers; a
-workflow's is checked before each step, reviewers included, since the workflow is
-what paid for them. The check happens before the one-time token is spent and before
-any subprocess starts, so a refusal costs nothing and the same token still works once
-the ceiling is raised.
+All six are optional and all are absent by default, which is no ceiling and no change
+in behavior. A consultation's ceiling is checked before each turn on it; a review's
+before each round of reviewers; a workflow's before each step, reviewers included,
+since the workflow is what paid for them. The check happens before the one-time token
+is spent and before any subprocess starts, so a refusal costs nothing and the same
+token still works once the ceiling is raised.
+
+The three scopes nest, and a turn is refused by whichever it reaches first. The
+consultation pair is the one that bounds `orchestrator_consult`: that tool takes a
+`consultation_id` and resumes the session behind it, so every call after the first
+spends another turn against the same paid CLI. Reviewers and workflow steps are
+consultations too, so they are now bounded by their own ceiling as well as the ones
+above them.
 
 What this buys is bounded, and the bound is the point: a request cannot be priced
 before it is made, so the guarantee is that **the next request after the ceiling is
@@ -879,6 +888,9 @@ every agent whatever it charges, so `max_turns_per_review` and `max_turns_per_wo
 bound the work that money cannot see. They are checked at the same moments, refuse with
 the same error code, and count the same way spend does: rebuilt from the turn ledger, so
 a retried reviewer counts every attempt exactly once.
+
+A consultation with no turns yet is never refused. Nothing has been spent on it, so
+there is no ceiling for it to have reached -- what these stop is the turn after one.
 
 ### Watching a run
 

@@ -1279,3 +1279,34 @@ async def test_a_second_process_may_hold_a_different_consultation(store):
     other = await new_consultation(store)
     async with store.lease(held):
         assert await contend(store, other) == "acquired"
+
+
+async def test_the_enforcing_total_keeps_the_price_a_partial_rollup_did_report(store):
+    """`consultation_spend` is what a ceiling reads. One priced turn beside one that
+    is not makes `usage.cost_usd` `None` -- a floor shown as a sum would read as
+    complete -- while `known_cost_usd` keeps the $0.40 that was really spent. Reading
+    the unknown half as zero is what would let a free-tier turn erase a paid one.
+    """
+    consultation_id = await new_consultation(store)
+    await store.record_turn(
+        consultation_id, 1, SourceMode.MODEL, "q1", None, "compiled",
+        input_tokens=10, output_tokens=2, cost_usd=0.4,
+    )
+    await store.record_turn(
+        consultation_id, 2, SourceMode.MODEL, "q2", None, "compiled",
+        input_tokens=20, output_tokens=4,
+    )
+
+    spend = await store.consultation_spend(consultation_id)
+    assert spend.turns == 2
+    assert spend.known_cost_usd == 0.4
+    assert spend.usage.cost_usd is None
+    # The display half is the same object `usage` hands out, from the same query.
+    assert (await store.usage(consultation_id)).model_dump() == spend.usage.model_dump()
+
+
+async def test_a_consultation_with_no_turns_has_nothing_to_bound(store):
+    """`None`, not a zeroed rollup. This is the first turn of a new session: nothing
+    spent, so no ceiling has been reached and there is nothing to refuse."""
+    consultation_id = await new_consultation(store)
+    assert await store.consultation_spend(consultation_id) is None
