@@ -558,11 +558,28 @@ class ConsultConfig(BaseModel):
 
     def config_hash(self) -> str:
         """Recorded with each consultation, so a reply can be read against the
-        routing table that produced it rather than today's."""
-        payload = json.dumps(
-            {aid: a.model_dump(mode="json") for aid, a in sorted(self.agents.items())},
-            sort_keys=True,
-        )
+        configuration that produced it rather than today's -- and compared against
+        the running server's, which is how the dashboard knows to say "restart".
+
+        Everything the MCP server reads at boot and cannot re-read, which is
+        everything in this model except `dashboard:`. That block belongs to the
+        dashboard process, which re-reads this file on every request, so changing a
+        port there needs no restart and a banner demanding one would be wrong.
+
+        It used to hash the agent table alone. Reviewers, roots, workflow bindings,
+        spend ceilings and timeouts could all change without moving it, so the banner
+        stayed silent on most of what the dashboard itself can edit -- and a stored
+        reply recorded the routing table that answered it while saying nothing about
+        the ceilings and limits it was answered under.
+
+        `sort_keys` rather than sorting the agents by hand: it reaches every mapping
+        in the payload, so no nested block can reorder the hash either.
+
+        Widening moves every hash, so the first dashboard load after this ships finds
+        a stored row that cannot match and shows the banner. That is not a false
+        positive: a server still serving the old rows is running the old code.
+        """
+        payload = json.dumps(self.model_dump(mode="json", exclude={"dashboard"}), sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 

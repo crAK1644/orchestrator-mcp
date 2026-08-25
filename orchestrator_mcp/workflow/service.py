@@ -197,9 +197,10 @@ class WorkflowService:
                 host_model=self.config.host.model,
                 bindings=snapshot,
                 policy=policy,
-                # Wider than `config_hash`, which covers the agent table only: two
-                # workflows with the same agents and a different round cap are not
-                # the same workflow.
+                # Narrower than `config_hash`, and deliberately: this is the identity
+                # of one workflow, so it is the bindings and policy that workflow ran
+                # under and nothing else. `config_hash` moves when any part of the
+                # `consult:` block does, which is a question about the server.
                 workflow_hash=_text_sha256(canonical({"bindings": snapshot, "policy": policy})),
                 baseline_commit=head,
             )
