@@ -63,12 +63,40 @@ def test_the_block_parses_with_defaults():
         pytest.param(consult_block(managed_agents_path=""), id="a blank managed path"),
         pytest.param(consult_block(database_path=""), id="a blank database path"),
         pytest.param("not a mapping", id="not a mapping"),
+        # An agent id is a mapping key, so it is whatever the file says. It reaches a
+        # scratch directory's name, a redirect header, and the `target_agent` enum in
+        # the published tool schema -- and until this check it only had to be non-blank.
+        pytest.param({"agents": {"": agent()}}, id="a blank agent id"),
+        pytest.param({"agents": {"Codex-Sol": agent()}}, id="an agent id with capitals"),
+        pytest.param({"agents": {"codex sol": agent()}}, id="an agent id with a space"),
+        pytest.param({"agents": {"../codex": agent()}}, id="an agent id with a separator"),
+        pytest.param(
+            {"agents": {"codex\r\nX-Injected: yes": agent()}}, id="an agent id with a newline"
+        ),
+        pytest.param({"agents": {"c" * 65: agent()}}, id="an agent id past 64 characters"),
+        # `$` matches before a trailing newline too, so an anchored `match` accepted
+        # this one -- and a newline is the whole of what turns a redirect into two
+        # headers. `fullmatch` is what makes the anchors mean the whole string.
+        pytest.param({"agents": {"codex\n": agent()}}, id="an agent id with a trailing newline"),
     ],
 )
 def test_a_bad_block_refuses_to_boot(block):
     with pytest.raises(ConfigError):
         load_consult_config({"consult": block})
 
+
+def test_a_refused_agent_id_is_named_in_the_message():
+    """The key is the only thing that identifies which entry to go and fix."""
+    with pytest.raises(ConfigError, match="Codex-Sol"):
+        load_consult_config({"consult": {"agents": {"Codex-Sol": agent()}}})
+
+
+def test_the_ordinary_punctuation_in_an_agent_id_still_boots():
+    """Dots, dashes and underscores are what real ids are made of -- `codex-sol`,
+    `gpt-5.6-sol`, `claude_opus.2`. The check refuses shapes, not readability."""
+    config = load_consult_config({"consult": {"agents": {"gpt-5.6_sol.2": agent()}}})
+    assert config is not None
+    assert config.agents["gpt-5.6_sol.2"].agent_id == "gpt-5.6_sol.2"
 
 
 @pytest.mark.parametrize("field", ["database_path", "managed_agents_path"])

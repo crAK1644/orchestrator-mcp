@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 
@@ -30,6 +31,16 @@ from .managed import DEFAULT_MANAGED_PATH, managed_path, read_managed_document
 HOST_RUNTIME_ENV = "ORCHESTRATOR_HOST_RUNTIME"
 
 Score = Annotated[int, Field(ge=0, le=100)]
+
+# Conservative on purpose: an agent id ends up in a file name's neighbourhood, in a
+# URL, in a response header, and in an MCP tool's advertised enum. Nothing here needs
+# to be more exciting.
+#
+# Here rather than in the dashboard, which is where it used to live: the dashboard is
+# one of two ways an agent arrives, and the other one -- an operator editing the file
+# by hand -- reached every one of those places without passing this. The shape a value
+# has to have belongs beside the model, not beside one of its writers.
+AGENT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 class AgentConfig(BaseModel):
@@ -383,8 +394,18 @@ class ConsultConfig(BaseModel):
     @classmethod
     def _label_agents(cls, agents: dict[str, AgentConfig]) -> dict[str, AgentConfig]:
         for agent_id, agent in agents.items():
-            if not agent_id.strip():
-                raise ValueError("agent ids must not be blank")
+            # `fullmatch`, not `match`: `$` also matches just before a trailing
+            # newline, so an anchored `match` would let `codex\n` through -- the one
+            # character in this whole check that turns a `Location` into two headers.
+            #
+            # `!r` on the id, because an id this refuses is by definition not the shape
+            # anything expects, and a raw control character in it would rearrange the
+            # startup message that is supposed to say which key to go and fix.
+            if not AGENT_ID.fullmatch(agent_id):
+                raise ValueError(
+                    f"agent id {agent_id!r} must start with a letter or digit and use only "
+                    "lowercase letters, digits, dots, dashes and underscores (max 64)"
+                )
             agent.agent_id = agent_id
         return agents
 

@@ -132,6 +132,11 @@ consult:
       scores: { coding: 90, research: 95, writing: 95, review: 95 }
 ```
 
+The key each agent is filed under is its id -- the name callers pass as `target_agent`,
+and the name the dashboard writes into URLs. It has to be lowercase, start with a letter
+or digit, and use only letters, digits, dots, dashes and underscores, up to 64
+characters. Anything else is refused at startup with a message naming the key.
+
 See [`config.example.yaml`](config.example.yaml) for a broader annotated configuration,
 an OpenCode agent, and an experimental Antigravity example.
 

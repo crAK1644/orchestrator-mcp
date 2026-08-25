@@ -854,6 +854,36 @@ async def test_delete_cannot_reach_an_agent_defined_in_config_yaml(serve, editab
     assert not editable.path.exists()
 
 
+async def test_delete_encodes_an_id_nothing_of_ours_wrote_rather_than_refusing_it(
+    serve, editable
+):
+    """A newline in an id is a second header, and `send_header` writes what it is given.
+
+    `save` cannot produce such an id -- it checks the shape first -- but `delete` can be
+    handed one, because the managed file is a file: `_split_agents` re-reads it on every
+    request, so a key hand-edited in after boot is rendered with a delete button beside
+    it. Refusing the id would leave the only row that can remove it unable to, so the
+    redirect encodes it instead. `load_consult_config` still refuses the key outright,
+    which is what stops it surviving a restart.
+    """
+    get, _ = serve(editable())
+    get.post("/agents", form(_token=get.token))
+
+    hand_edited = "codex-luna\r\nX-Injected: yes"
+    document = yaml.safe_load(editable.path.read_text())
+    document["agents"][hand_edited] = dict(document["agents"]["codex-luna"])
+    editable.path.write_text(yaml.safe_dump(document))
+
+    status, _, location = get.post(
+        "/agents/delete", {"_token": get.token, "id": hand_edited}
+    )
+    assert status == 303
+    assert "\r" not in location and "\n" not in location
+    assert location == "/agents?deleted=codex-luna%0D%0AX-Injected%3A%20yes"
+    assert hand_edited not in written(editable.path)
+    assert "codex-luna" in written(editable.path), "only the hand-written key was removed"
+
+
 async def test_delete_without_the_token_changes_nothing(serve, editable):
     get, _ = serve(editable())
     get.post("/agents", form(_token=get.token))
