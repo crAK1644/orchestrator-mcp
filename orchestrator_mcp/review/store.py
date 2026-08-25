@@ -349,14 +349,6 @@ class ReviewStore:
 
         return await self._run(work)
 
-    async def save_summary(self, review_id: UUID | str, summary: Any) -> None:
-        await self._run(
-            lambda: self._db.execute(
-                "UPDATE reviews SET summary_json = ?, updated_at = ? WHERE id = ?",
-                (_json_or_none(self._keep(summary)), _now(), str(review_id)),
-            )
-        )
-
     async def complete_review(self, review_id: UUID | str, summary: Any) -> bool:
         """Store the synthesis only if it atomically wins the completion transition."""
 

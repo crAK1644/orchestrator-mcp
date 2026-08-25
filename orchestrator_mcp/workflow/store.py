@@ -305,16 +305,6 @@ class WorkflowStore:
 
         return await self._run(work)
 
-    async def list_workflows(self, limit: int = 20) -> list[WorkflowRun]:
-        def work() -> list[WorkflowRun]:
-            rows = self._db.execute(
-                "SELECT * FROM workflow_runs ORDER BY created_at DESC, id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-            return [WorkflowRun(**dict(row)) for row in rows]
-
-        return await self._run(work)
-
     async def transition(
         self,
         workflow_id: UUID | str,

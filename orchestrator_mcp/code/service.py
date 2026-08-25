@@ -175,18 +175,6 @@ async def read_patch(workflow_id: str, step_id: str) -> str | None:
     return await asyncio.to_thread(read)
 
 
-async def remove_patch(workflow_id: str, step_id: str) -> None:
-    target = patch_path(workflow_id, step_id)
-
-    def remove() -> None:
-        with suppress(FileNotFoundError):
-            target.unlink()
-        with suppress(OSError):
-            target.parent.rmdir()
-
-    await asyncio.to_thread(remove)
-
-
 def remove_workflow_patches_now(workflow_id: str) -> None:
     """Best-effort removal of every raw patch owned by one workflow.
 
