@@ -1021,7 +1021,12 @@ async def test_a_live_consultation_lease_is_renewed_past_its_initial_expiry(stor
             "SELECT expires_at FROM consultation_leases WHERE consultation_id = ?",
             (str(consultation_id),),
         ).fetchone()[0]
-        assert renewed > initial and renewed > time.time()
+        # Only that the heartbeat fired: with a 60ms ttl and a 80ms sleep, an
+        # un-renewed lease would still read its original expiry. Deliberately not
+        # `renewed > time.time()` -- the heartbeat runs every ttl/3, so that asks a
+        # shared runner to schedule a task within 60ms of when it meant to, and CI
+        # missed it by 6ms. The clock read is the flake; the renewal is the claim.
+        assert renewed > initial
 
 
 async def test_losing_a_consultation_lease_interrupts_the_guarded_turn(
