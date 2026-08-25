@@ -49,6 +49,25 @@ jobs:
           fi
 
       - run: uv build
+
+      # The check above read pyproject; this one reads the files. `uv build` writes
+      # into `dist/` without emptying it first, so "something is in there" is not the
+      # same claim as "the two distributions for this tag are in there, and nothing
+      # else". Last place to say so while the upload is still withdrawable.
+      - name: Check dist holds exactly this tag's wheel and sdist
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # `uv build` drops its own `.gitignore` in beside the distributions, so
+          # count the things that get uploaded rather than everything present.
+          built=$(find dist -type f \( -name '*.whl' -o -name '*.tar.gz' \) | wc -l)
+          if [ "$built" -ne 2 ] \
+            || [ ! -f "dist/orchestrator_mcp_server-${version}-py3-none-any.whl" ] \
+            || [ ! -f "dist/orchestrator_mcp_server-${version}.tar.gz" ]; then
+            echo "dist/ is not exactly the wheel and sdist for ${version}:" >&2
+            ls -1A dist >&2
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
@@ -56,12 +75,17 @@ jobs:
           if-no-files-found: error
 
   # The only job that can mint a PyPI credential, and it runs no project code:
-  # it downloads the finished distributions and uploads them.
+  # it downloads the finished distributions and uploads them. `id-token: write` is
+  # job-wide -- GitHub has no step-scoped permission -- so the two actions below sit
+  # inside that boundary as much as `uv publish` does. That is what the SHA pins and
+  # the uv checksum are for; the boundary is the whole job, not the final line.
   publish:
     needs: build
     runs-on: ubuntu-latest
-    # Named so PyPI's publisher can be narrowed to this environment, and so the
-    # repo can require a review before a release is uploadable.
+    # Named so PyPI's publisher can be narrowed to this environment. It carries no
+    # protection rules, so it is an identity boundary and not an approval one:
+    # publishing a Release starts the upload with nothing further to confirm. Adding
+    # a required reviewer here is the switch, if that ever stops being wanted.
     environment: pypi
     permissions:
       # The OIDC token PyPI verifies. Without this the job cannot authenticate.
