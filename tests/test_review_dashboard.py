@@ -370,6 +370,8 @@ async def test_dashboard_can_save_review_material_roots(serve, editable, tmp_pat
     get, consult_config = serve(editable())
     first = tmp_path / "review material"
     second = tmp_path / "other"
+    for tree in (first, second):
+        tree.mkdir()
 
     status, _, location = get.post(
         "/reviewers",
@@ -384,6 +386,30 @@ async def test_dashboard_can_save_review_material_roots(serve, editable, tmp_pat
     assert (status, location) == (303, "/reviewers?saved=1")
     review = read_managed_document(consult_config.managed_agents_path)["review"]
     assert review["roots"] == [str(first), str(second)]
+
+
+async def test_dashboard_refuses_a_review_material_root_that_does_not_exist(
+    serve, editable, tmp_path
+):
+    """The same refusal the server makes at boot, made where it can still be fixed.
+
+    Saved unchecked, the entry would be read back by a server that then refuses to
+    start -- and this page is the only thing that can edit the file it refuses over.
+    """
+    get, _ = serve(editable())
+
+    status, body, _ = get.post(
+        "/reviewers",
+        {
+            "_token": get.token,
+            "reviewer": "codex-sol",
+            "deep.codex-sol": "on",
+            "roots": str(tmp_path / "not-cloned"),
+        },
+    )
+
+    assert status == 200
+    assert "not a directory" in body
 
 
 async def test_dashboard_refuses_a_relative_review_material_root(serve, editable):

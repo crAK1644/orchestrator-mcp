@@ -8,6 +8,8 @@ which is the bug the two-file merge was extended to fix.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -252,3 +254,69 @@ def test_an_empty_review_block_is_the_absent_block(tmp_path, host_claude, where)
         }
     )
     assert loaded.review is None
+
+
+# --- roots that exist -------------------------------------------------------
+
+
+def _with_roots(tmp_path, roots):
+    return {
+        "consult": consult_block(
+            database_path=str(tmp_path / "c.sqlite3"),
+            managed_agents_path=str(tmp_path / "agents.yaml"),
+            review={
+                "reviewers": ["codex-sol"],
+                "deep_reviewers": ["codex-sol"],
+                "roots": roots,
+            },
+        )
+    }
+
+
+def test_a_review_root_that_is_not_a_directory_refuses_to_boot(tmp_path, host_claude):
+    """Until this refused, the mistake surfaced a review later.
+
+    A mistyped root started a server, advertised the review tool, and reported the
+    typo only on the first call that passed `context_paths` -- by which point a
+    reviewer had already been spawned against material it could not read.
+    """
+    missing = tmp_path / "not-cloned"
+
+    with pytest.raises(ConfigError) as exc:
+        load_consult_config(_with_roots(tmp_path, [str(missing)]))
+    assert str(missing) in str(exc.value)
+
+
+def test_a_review_root_pointing_at_a_file_refuses_the_same_way(tmp_path, host_claude):
+    notes = tmp_path / "notes.md"
+    notes.write_text("not a directory")
+
+    with pytest.raises(ConfigError, match="not a directory"):
+        load_consult_config(_with_roots(tmp_path, [str(notes)]))
+
+
+def test_a_review_root_that_exists_boots(tmp_path, host_claude):
+    tree = tmp_path / "repo"
+    tree.mkdir()
+
+    loaded = load_consult_config(_with_roots(tmp_path, [str(tree)]))
+    assert loaded.review.roots == [tree]
+
+
+def test_the_model_alone_still_takes_a_root_that_does_not_exist():
+    """The check belongs to the loader, not to `ReviewConfig`.
+
+    The dashboard builds this model, and so do tests, where a root is a name rather
+    than a place on this disk. Existence is a fact about one machine, so it is
+    checked where that machine's config is read.
+    """
+    loaded = ConsultConfig(
+        **consult_block(
+            review={
+                "reviewers": ["codex-sol"],
+                "deep_reviewers": ["codex-sol"],
+                "roots": ["/no/such/tree"],
+            }
+        )
+    )
+    assert loaded.review.roots == [Path("/no/such/tree")]

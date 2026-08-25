@@ -70,6 +70,7 @@ def test_a_bad_block_refuses_to_boot(block):
         load_consult_config({"consult": block})
 
 
+
 @pytest.mark.parametrize("field", ["database_path", "managed_agents_path"])
 def test_a_variable_that_expands_to_nothing_is_the_same_blank_path(field, monkeypatch):
     """The blank check ran before expansion, so `$UNSET` walked straight past it and
@@ -251,3 +252,46 @@ def test_every_runtime_honours_the_override(runtime, command):
         )
     )
     assert adapter_for(config.agents["one"], config).timeout_s == 42
+
+
+# --- workflow roots ---------------------------------------------------------
+
+
+def _workflow_block(tmp_path, roots):
+    return {
+        "consult": consult_block(
+            database_path=str(tmp_path / "c.sqlite3"),
+            managed_agents_path=str(tmp_path / "agents.yaml"),
+            host={"runtime": "claude", "model": "opus"},
+            workflow={"roots": roots},
+        )
+    }
+
+
+def test_a_relative_workflow_root_is_refused(host_claude):
+    """`resolve_workdir` would resolve it against the server's own cwd.
+
+    Which is wherever the client happened to spawn the server, so the allowlist
+    would be something other than what the file says -- and silently.
+    """
+    with pytest.raises(ValidationError, match="must be absolute"):
+        ConsultConfig(**consult_block(workflow={"roots": ["relative/work"]}))
+
+
+def test_a_workflow_root_that_does_not_exist_refuses_to_boot(tmp_path, host_claude):
+    """Before this, every `workdir` was refused for being "not under any configured
+    workflow root" -- and the root it named was not anywhere at all."""
+    missing = tmp_path / "not-cloned"
+
+    with pytest.raises(ConfigError) as exc:
+        load_consult_config(_workflow_block(tmp_path, [str(missing)]))
+    assert str(missing) in str(exc.value)
+    assert "workflow root" in str(exc.value)
+
+
+def test_a_workflow_root_that_exists_boots(tmp_path, host_claude):
+    tree = tmp_path / "repo"
+    tree.mkdir()
+
+    loaded = load_consult_config(_workflow_block(tmp_path, [str(tree)]))
+    assert loaded.workflow.roots == [tree]

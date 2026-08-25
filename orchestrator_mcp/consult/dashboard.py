@@ -54,6 +54,7 @@ from .config import (
     AgentConfig,
     ConsultConfig,
     ReviewConfig,
+    check_roots,
     load_consult_config,
 )
 from .contract import Capability, Runtime
@@ -1323,6 +1324,13 @@ class ConsultDashboard:
             )
         except ValidationError as exc:
             return refuse(_first_error(exc))
+        try:
+            # Same check the server runs at boot. Refusing here means the operator
+            # reads the message in the form they are looking at, rather than the
+            # next start refusing a file only this page can edit back.
+            check_roots(block.roots, "review")
+        except ConfigError as exc:
+            return refuse(str(exc))
 
         def store(document: dict[str, Any]) -> tuple[int, str] | None:
             # Older/non-browser callers did not submit ``roots``. Preserve the

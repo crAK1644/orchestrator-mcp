@@ -309,6 +309,12 @@ class WorkflowConfig(BaseModel):
             path = Path(os.path.expandvars(str(root))).expanduser()
             if str(path).strip() in ("", "."):
                 raise ValueError("a root must name a directory, not a blank path")
+            # `resolve_workdir` resolves a relative root against the server's own
+            # working directory, which is wherever the client happened to spawn it.
+            # That makes the allowlist something other than what the file says, and
+            # says it silently -- so refuse the shape rather than resolve it.
+            if not path.is_absolute():
+                raise ValueError(f"workflow root `{path}` must be absolute")
             # `/` as a root is every file the user owns, which is not a root, it is
             # the absence of one written as though it were a decision.
             if path == Path(path.anchor):
@@ -560,9 +566,45 @@ def load_consult_config(config: dict[str, Any]) -> ConsultConfig | None:
         "review": _merged_review(block, document),
     }
     try:
-        return ConsultConfig(**block)
+        parsed = ConsultConfig(**block)
     except ValidationError as exc:
         raise ConfigError(f"invalid `consult:` block: {exc}") from exc
+    if parsed.review:
+        check_roots(parsed.review.roots, "review")
+    if parsed.workflow:
+        check_roots(parsed.workflow.roots, "workflow")
+    return parsed
+
+
+def check_roots(roots: list[Path], kind: str) -> None:
+    """Raise unless every root in `review:` or `workflow:` is a directory here.
+
+    Not in either model's validator: they are built by the dashboard and by tests
+    too, where a root is a name rather than a place. Existence is a fact about one
+    machine, so it is checked where that machine's config is read -- at boot, and by
+    the dashboard before it writes a review root into the managed file, which is the
+    only other way one arrives.
+
+    The request-time checks stay either way -- `_read_paths` for review material,
+    `resolve_workdir` for a workflow's directory. A directory can be deleted while
+    the server runs, and only those are late enough to see it. This one exists
+    because until it did, a typo in a path started a server, got the tools
+    advertised, and reported the mistake on the first call that used them: for
+    review, after a reviewer had been spawned; for workflow, as a workdir that was
+    "not under any configured root", naming a root that was not anywhere.
+
+    A hard failure rather than a dropped entry, because every other check in
+    `_expand_roots` raises, and an allowlist quietly shorter than the file says
+    reads fewer trees than whoever wrote it thinks. The cost is real and one-sided:
+    a laptop that has not cloned one of several configured trees cannot start the
+    server until the entry goes or the directory arrives.
+    """
+    for root in roots:
+        if not root.is_dir():
+            raise ConfigError(
+                f"{kind} root `{root}` is not a directory on this machine. Create it, "
+                "fix the path, or drop it from `roots:`."
+            )
 
 
 def _merged_review(block: dict[str, Any], document: dict[str, Any]) -> Any:
