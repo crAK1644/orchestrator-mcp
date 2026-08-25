@@ -171,6 +171,17 @@ Restart the MCP client after changing its configuration.
 > [!TIP]
 > Use an absolute `ORCHESTRATOR_CONFIG` path. GUI-launched clients often start in a different working directory and inherit a smaller `PATH` than your terminal.
 
+The client spawns the server and talks to it over stdin, so there is nothing to start
+by hand. Two flags answer questions from outside a client:
+
+```bash
+orchestrator-mcp-server --version   # which build the client will spawn
+orchestrator-mcp-server --help      # what the environment variables have to say
+```
+
+Anything else on the command line is refused rather than ignored, and a configuration
+the server cannot accept leaves as a message naming the key, not a traceback.
+
 ### Run with `uvx` instead
 
 <details>
@@ -914,6 +925,7 @@ Live tests make real requests and may use paid capacity. Do not run them in CI u
 | `agent_not_installed` | Use an absolute path for `command`; GUI apps often inherit a smaller `PATH`. |
 | `connection_required` | Run the login command returned in `required_action`, then retry. |
 | Host runtime error | Set `ORCHESTRATOR_HOST_RUNTIME` to `claude`, `codex`, `opencode`, or `antigravity`. |
+| The client lists the server as failed | Run `orchestrator-mcp-server --version` in the same shell. Command not found is a `PATH` problem; a printed message names the configuration key to fix. |
 | Every consultation starts over | Return the previous `consultation_id` on the next call. |
 | `timeout` during a review | Raise `consult.timeout_s`; high-effort review can take much longer than 180 seconds. |
 | Dashboard changes do not appear | Restart the MCP server; configuration is loaded at startup. |
