@@ -35,7 +35,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
-from ...contract import Usage, redact
+from ...contract import Usage
 from ...log import get_logger
 from ...spend import tallied
 from ..config import AgentConfig
@@ -212,21 +212,30 @@ def _parse_count(value: Any) -> int | None:
     `Decimal`, a `Fraction`, an object of its own -- is converted by a rule nobody
     here chose and can raise something nobody here listed.
 
-    Naming the four types answers all of that at once, and needs no `except` at all on
+    Naming the three types answers all of that at once, and needs no `except` at all on
     the numeric paths. Numeric strings still read: a runtime that quotes its counts
     has reported them. Anything outside the list is not something a usage envelope
     parsed from JSON can contain, and a runtime that starts sending one has done
     something worth hearing about rather than worth coercing.
+
+    Exact types rather than `isinstance`, for the reason `_shape` uses them and one
+    more. `_shape` is downstream of this: an object that gets past here never reaches
+    the guard that was supposed to refuse it, and every method it carries runs instead
+    -- `__lt__` from `usage_count`'s own negative check, `is_integer` from the branch
+    below, `__int__` from the `int()` on the string branch, which prefers it to
+    parsing. Each of the three raises out of a helper whose first promise is that it
+    does not. And an accepted subclass is *returned*, so what reaches `Usage` is that
+    object rather than an `int`. `bool` needs no line of its own now: it is rejected
+    by not being listed, which is the same reason as everything else.
     """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
+    kind = type(value)
+    if kind is int:
         return value
-    if isinstance(value, float):
+    if kind is float:
         # False for both infinities and for NaN, so neither reaches a conversion that
         # would raise on them -- the guard and the overflow are the same check here.
         return int(value) if value.is_integer() else None
-    if isinstance(value, str):
+    if kind is str:
         try:
             return int(value)
         except ValueError:
@@ -253,18 +262,15 @@ def usage_count(value: Any) -> int:
         return 0
     count = _parse_count(value)
     if count is None:
-        # Redacted and bounded before it is quoted, because this string is durable.
-        # `counts_incomplete` is written to the turn row and kept even where the
-        # prompts are not, on the grounds that it describes the number in the column
-        # beside it rather than carrying content -- and a verbatim `repr` of whatever
-        # a runtime put in a usage field is content, of unknown length, from a payload
-        # nobody vetted. What makes the caveat worth keeping is the *shape*: that the
-        # field was there and unreadable. Sixty characters is more than any real token
-        # count needs and enough to recognize what arrived instead.
-        quoted = redact(repr(value))
-        if len(quoted) > 60:
-            quoted = f"{quoted[:60]}... ({len(quoted)} characters)"
-        _caveat(f"{quoted} is not a token count; counting it as 0")
+        # The value is described and never quoted, not even in part, because this
+        # string is durable: `counts_incomplete` is written to the turn row and kept
+        # where the prompts, the context and the raw output are all dropped. That is
+        # only defensible while it holds no content, and an excerpt of whatever a
+        # runtime put in a usage field is content -- redaction does not make it
+        # otherwise, since it matches credential shapes and knows nothing of an
+        # address, a name, or a fragment of somebody's prompt. What the caveat is for
+        # survives the loss: the field was there, and it was not a number.
+        _caveat(f"a {_shape(value)} is not a token count; counting it as 0")
         return 0
     if count < 0:
         # Not clamped quietly. A negative token count is a runtime reporting a
@@ -273,6 +279,36 @@ def usage_count(value: Any) -> int:
         _caveat(f"token count {count} is negative; counting it as 0")
         return 0
     return count
+
+
+# Everything a usage envelope parsed from JSON can hold, split by whether a length
+# means anything for it, and the only names `_shape` will ever say.
+_SIZED = frozenset({str, bytes, list, dict, tuple})
+_SCALAR = frozenset({int, float, bool, type(None)})
+
+
+def _shape(value: Any) -> str:
+    """What arrived, said without saying what it held.
+
+    A length for the containers, because "a str" alone cannot tell a runtime writing
+    `"N/A"` from one dumping a page of XML into the field, and that is the difference
+    between a quirk and an outage. A count of items or characters is a measurement of
+    the value, not a copy of any part of it.
+
+    Exact types rather than `isinstance`, and a fixed phrase for anything not listed,
+    because what this returns is written to a durable column. A subclass carries a
+    name somebody else chose, and `type(value).__name__` would put that name where
+    nothing from outside is allowed to reach; its `__len__` would run here too, inside
+    a helper `usage_count` promises will return rather than raise. Nothing parsed out
+    of JSON is such an object, which is the argument for it being safe and exactly the
+    reason not to rest on the argument.
+    """
+    kind = type(value)
+    if kind in _SIZED:
+        return f"{kind.__name__} of length {len(value)}"
+    if kind in _SCALAR:
+        return kind.__name__
+    return "value of an unrecognized type"
 
 
 def usage_any(*values: Any) -> int:
@@ -325,7 +361,7 @@ def check_reported_total(reported: Any, expected: int, runtime: str) -> None:
         )
 
 
-def check_cache_is_a_breakdown(cached: Any, prompt_tokens: int) -> None:
+def check_cache_is_a_breakdown(cached: Any, *prompt_spellings: Any) -> None:
     """Test the containment that reading Codex's cache as a breakdown depends on.
 
     The codex adapters read `cached_input_tokens` as a breakdown *of* `input_tokens`
@@ -350,24 +386,49 @@ def check_cache_is_a_breakdown(cached: Any, prompt_tokens: int) -> None:
     that fires on all of them is one nobody can read.
     """
     count = _parse_count(cached)
-    # A prompt of 0 is not evidence and cannot be treated as any. `usage_any`
-    # substitutes a zero for an `input_tokens` it could not read, and by the time the
-    # number arrives here that substitution is indistinguishable from a measured zero
-    # -- so without this the unreadable field would be reported as proof the runtime
-    # had changed how it reports the cache, which is a confident claim about a number
-    # nobody managed to read. `usage_count` already caveats that field, truthfully.
-    #
-    # The measured zero is given up with it, and costs nothing: under the disjoint
-    # reading this is hunting for, `input_tokens` is the uncached remainder, and the
-    # user's new message is in every prompt and in no cache. A remainder of exactly
-    # zero is not the warm session that would expose the drift -- it is a shape
-    # neither reading produces.
-    if count is not None and prompt_tokens > 0 and count > prompt_tokens:
+    if count is None or count <= 0:
+        return
+    # The prompt is resolved here rather than taken as a number, because the caller's
+    # copy has already lost the one thing this comparison depends on: `usage_any`
+    # returns 0 for a field it could not read, and a substituted zero is a zero. Read
+    # through it, an unreadable `input_tokens` becomes proof that the runtime changed
+    # how it reports the cache -- a confident claim about a number nobody managed to
+    # read, printed beside the `usage_count` caveat that says so. Same alias order the
+    # caller uses; `_parse_count` says nothing, so nothing is warned about twice.
+    prompt_tokens = next(
+        (
+            parsed
+            for parsed in map(_parse_count, prompt_spellings)
+            if parsed is not None and parsed >= 0
+        ),
+        None,
+    )
+    if prompt_tokens is None:
+        return
+    if prompt_tokens == 0:
+        # Reported, but not as evidence of the drift below: a cache against a prompt
+        # of none is not the warm session that would expose a disjoint reading, it is
+        # a shape neither reading produces at all. Which is also as far as the numbers
+        # go. Either one of them could be the wrong one, and picking the prompt would
+        # be naming a culprit out of a pair the comparison cannot tell apart.
+        _caveat(
+            f"codex reported {count} cached input tokens against a prompt of 0; a "
+            "cache is tokens that were sent, so these two figures cannot both be "
+            "what they claim and neither can be relied on here"
+        )
+        return
+    if count > prompt_tokens:
+        # Same restraint, for the same reason. A cache exceeding the prompt is what a
+        # runtime reporting the two disjointly looks like -- and it is also what a
+        # miscounted cache looks like against a prompt that was fine. The consequence
+        # holds either way and is what a reader needs: whatever produced these two
+        # numbers, the prompt beside them cannot be taken to already include the
+        # cache. Which of the two moved is not something this comparison establishes.
         _caveat(
             f"codex reported {count} cached input tokens against a prompt of "
-            f"{prompt_tokens}; the cache is counted as part of that prompt, so a "
-            "cache larger than it means the runtime no longer reports them nested "
-            "and every prompt here is short by the cached share"
+            f"{prompt_tokens}; the adapters read the cache as part of that prompt, "
+            "which these two numbers cannot both allow, so no prompt total here can "
+            "be trusted to include the cached share"
         )
 
 

@@ -27,6 +27,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -218,6 +219,18 @@ class StepRow:
 
     def output(self) -> dict[str, Any] | None:
         return json.loads(self.output_json) if self.output_json else None
+
+
+LEASE_HELD: ContextVar[str | None] = ContextVar("workflow_lease_held", default=None)
+"""The workflow this task already holds the lease on, or `None`.
+
+Set by `lease` itself rather than passed down, so it is true of whoever is inside
+one without a caller having to remember to say so. What reads it is the review
+layer: a review step's token is its review's own token, so `ReviewService.run` is
+reachable both from inside a step and directly from a host, and it has to tell
+those apart. `_acquire` has no same-holder exemption -- deliberately -- so a
+nested acquire would refuse the very step it belongs to.
+"""
 
 
 class WorkflowStore:
@@ -668,13 +681,17 @@ class WorkflowStore:
         """
         token = f"pid-{os.getpid()}-{uuid.uuid4().hex[:12]}"
         await self._run(lambda: self._acquire(str(workflow_id), str(step_id), ttl_s, token))
-        async with _renewing_lease(
-            self._run,
-            lambda: self._renew(str(step_id), ttl_s, token),
-            lambda: self._release(str(step_id), token),
-            ttl_s,
-        ):
-            yield
+        held = LEASE_HELD.set(str(workflow_id))
+        try:
+            async with _renewing_lease(
+                self._run,
+                lambda: self._renew(str(step_id), ttl_s, token),
+                lambda: self._release(str(step_id), token),
+                ttl_s,
+            ):
+                yield
+        finally:
+            LEASE_HELD.reset(held)
 
     def _acquire(self, workflow_id: str, step_id: str, ttl_s: float, token: str) -> None:
         db = self._db

@@ -193,29 +193,103 @@ def test_a_count_that_does_not_read_says_so_before_it_returns_zero(warnings):
 
     lines = [record.getMessage() for record in warnings.records]
     assert len(lines) == 2
-    assert "'N/A' is not a token count" in lines[0]
+    assert "a str of length 3 is not a token count" in lines[0]
     assert "negative" in lines[1]
 
 
-def test_what_a_runtime_put_where_a_number_belonged_is_not_kept_verbatim(warnings):
+def test_what_a_runtime_put_where_a_number_belonged_is_never_quoted(warnings):
     """This caveat outlives the turn, so it is held to what a durable field may carry.
 
-    `counts_incomplete` is written to the row and kept even where the prompts are not,
-    because it describes the number in the column beside it rather than the content of
-    the conversation. A `repr` of an arbitrary payload field is content -- it is
-    whatever the runtime happened to put there, at whatever length. The fact worth
-    keeping is that the field was present and unreadable, and that survives both the
-    redaction and the bound.
+    `counts_incomplete` is written to the row and kept where the prompts, the context
+    and the raw output are all dropped, on the grounds that it describes the number in
+    the column beside it rather than the content of the conversation. Any excerpt of
+    an arbitrary payload field breaks that, and redacting one does not repair it --
+    a masker matches credential shapes and knows nothing of an address or a name. So
+    the value is described and never quoted, and what the caveat exists to say
+    survives: the field was there, and it was not a number.
     """
     assert usage_count({"api_key": "sk-ant-live-0123456789abcdef"}) == 0
-    assert usage_count("N/A" * 400) == 0
+    assert usage_count("patient jane.roe@example.com asked about a diagnosis") == 0
 
-    secret, long = [record.getMessage() for record in warnings.records]
-    assert "sk-ant" not in secret and "[redacted]" in secret
-    # Not merely shortened: the reader has to be told the value went on, or a quoted
-    # fragment reads as the whole of what arrived.
-    assert "characters)" in long and len(long) < 200
-    assert "is not a token count" in secret and "is not a token count" in long
+    credential, ordinary = [record.getMessage() for record in warnings.records]
+    assert "sk-ant" not in credential and "api_key" not in credential
+    assert credential.endswith("a dict of length 1 is not a token count; counting it as 0")
+    # The second case is the one redaction would have missed, and the reason nothing is
+    # quoted rather than merely masked: an address matches no credential pattern.
+    assert "jane.roe" not in ordinary and "example.com" not in ordinary
+    assert ordinary.endswith("a str of length 52 is not a token count; counting it as 0")
+
+
+def test_a_length_is_kept_because_a_type_alone_cannot_tell_the_two_apart(warnings):
+    """A quirk and an outage arrive in the same field and read alike without it.
+
+    `"N/A"` is a runtime with nothing to report. A page of XML in the same field is a
+    runtime that has stopped reporting usage at all, and an operator who can see only
+    that both were strings cannot tell which they have. The length is a measurement of
+    the value, not a copy of any part of it, which is what makes it keepable here.
+    """
+    assert usage_count("N/A") == 0
+    assert usage_count("<error>" * 500) == 0
+
+    short, long = [record.getMessage() for record in warnings.records]
+    assert "a str of length 3 is not a token count" in short
+    assert "a str of length 3500 is not a token count" in long
+
+
+def test_a_type_nobody_listed_is_described_without_being_asked_anything(warnings):
+    """The durable column takes no name this module did not choose, and runs no code.
+
+    Nothing `json.loads` produces is an object of its own class, so the adapters as
+    they stand cannot reach this. It is pinned anyway, because the guarantee is what
+    the column rests on rather than a fact about today's callers: an arbitrary
+    object's type name is a string somebody else wrote, and taking its length runs a
+    `__len__` of their choosing inside a helper documented to return rather than raise.
+    """
+
+    class PatientRecordJaneRoe(list):
+        def __len__(self):
+            raise RuntimeError("which would have escaped usage_count entirely")
+
+    assert usage_count(PatientRecordJaneRoe()) == 0
+
+    (line,) = [record.getMessage() for record in warnings.records]
+    assert line.endswith(
+        "a value of an unrecognized type is not a token count; counting it as 0"
+    )
+    assert "PatientRecord" not in line and "JaneRoe" not in line
+
+
+def test_a_subclass_of_a_listed_type_runs_none_of_its_own_code(warnings):
+    """`_shape` guards nothing if the parse in front of it hands the object through.
+
+    Each of these is a subclass of a type `_parse_count` accepts, and each raises from
+    a method that ran only because `isinstance` said yes: the comparison in
+    `usage_count`'s own negative check, `is_integer` on the float branch, and `__int__`
+    on the string branch, which `int()` prefers to parsing the characters. Three
+    routes out of a helper whose first promise is that it never raises -- and past a
+    caveat that describes rather than quotes, since none of them reach it.
+    """
+
+    class Ledger(int):
+        def __lt__(self, other):
+            raise RuntimeError("escaped from usage_count's own check")
+
+    class Reading(float):
+        def is_integer(self):
+            raise RuntimeError("escaped from inside _parse_count")
+
+    class Quoted(str):
+        def __int__(self):
+            raise RuntimeError("escaped past the except ValueError")
+
+    assert [usage_count(Ledger(5)), usage_count(Reading(1.0)), usage_count(Quoted("7"))] == [0, 0, 0]
+
+    # The list, not a loop over it: `for line in []` asserts nothing, and this test
+    # would pass in the exact case it exists to catch -- two of the three going quiet
+    # while still returning 0.
+    assert [record.getMessage() for record in warnings.records] == [
+        "usage: a value of an unrecognized type is not a token count; counting it as 0"
+    ] * 3
 
 
 def test_an_absent_count_is_nothing_and_says_nothing(warnings):
@@ -244,7 +318,7 @@ def test_a_malformed_first_spelling_does_not_take_the_slot(warnings):
     # still on the record, and the `None` that follows a bad one stays silent.
     lines = [record.getMessage() for record in warnings.records]
     assert len(lines) == 2
-    assert "'N/A' is not a token count" in lines[0]
+    assert "a str of length 3 is not a token count" in lines[0]
     assert "negative" in lines[1]
 
 
@@ -255,7 +329,7 @@ def test_every_alias_failing_is_zero_and_is_not_silent(warnings):
     assert usage_any("N/A", None) == 0
 
     (line,) = [record.getMessage() for record in warnings.records]
-    assert "'N/A' is not a token count" in line
+    assert "a str of length 3 is not a token count" in line
 
 
 def test_a_count_that_is_not_a_whole_number_is_not_a_count(warnings):
@@ -379,7 +453,7 @@ def test_a_caveat_survives_the_rollup_that_hides_it():
     a caveat stops being visible: one reviewer whose counts were substituted
     contributes a figure indistinguishable from the rest. Carrying it up is what
     keeps the field from being defeated one level above where it is set."""
-    note = "'N/A' is not a token count; counting it as 0"
+    note = "a str of length 3 is not a token count; counting it as 0"
     used = [
         Usage(prompt_tokens=2000, completion_tokens=500, total_tokens=2500),
         Usage(counts_incomplete=[note]),
@@ -396,7 +470,7 @@ def test_one_broken_runtime_behind_five_agents_is_one_caveat_and_a_count():
     Counted, though, rather than only collapsed. One reviewer reporting nothing is a
     fluke and every reviewer reporting nothing is an outage, and a bare de-duplication
     renders them identically."""
-    same = "'N/A' is not a token count; counting it as 0"
+    same = "a str of length 3 is not a token count; counting it as 0"
     other = "token count -5 is negative; counting it as 0"
     used = [Usage(counts_incomplete=[n]) for n in (same, other, same)]
 
@@ -412,7 +486,7 @@ def test_a_count_is_the_whole_depth_and_not_one_suffix_per_level():
     rather than folded turns four occurrences into "(x2) (x2)" -- a number no reader
     can add up, on a line that reads like a formatting fault rather than an outage.
     """
-    note = "'N/A' is not a token count; counting it as 0"
+    note = "a str of length 3 is not a token count; counting it as 0"
     # One turn that failed the same way on both of its count fields, twice over.
     turn = tallied([note, note])
     rollup = tallied(turn + turn)
@@ -432,7 +506,7 @@ def test_two_reasons_are_never_mistaken_for_one_reason_with_a_semicolon():
     strings then compares "A; B" against "A" as two unrelated notes and emits the
     shared half twice, which is exactly the noise the de-duplication was for.
     """
-    a = "'N/A' is not a token count; counting it as 0"
+    a = "a str of length 3 is not a token count; counting it as 0"
     b = "token count -5 is negative; counting it as 0"
     used = [Usage(counts_incomplete=[a, b]), Usage(counts_incomplete=[a])]
 
@@ -452,15 +526,79 @@ def test_a_cache_bigger_than_the_prompt_holding_it_is_reported(warnings):
     # The warm session under the other reading: 1800 cached, 200 left to send.
     check_cache_is_a_breakdown(1800, 200)
 
-    # The prompt this cache is measured against is the one field that may not have
-    # been read at all: `usage_any` returns 0 for an `input_tokens` it could not
-    # parse, and a substituted zero is a zero. Reporting against it would answer a
-    # question about the runtime's reporting with a number the runtime never
-    # reported -- and it would arrive beside the caveat that says so, contradicting it.
-    check_cache_is_a_breakdown(1800, usage_any("N/A"))
+    (line,) = [record.getMessage() for record in warnings.records]
+    # The whole message, because what it must not say is open-ended: banning the
+    # phrases it used to use leaves every other way of naming a culprit, and a
+    # sentence appended after them would pass. Equality rather than a tail, since a
+    # tail admits anything in front of it -- including the payload text this caveat
+    # exists to keep out of a durable column.
+    assert line == (
+        "usage: codex reported 1800 cached input tokens against a prompt of 200; the adapters "
+        "read the cache as part of that prompt, which these two numbers cannot both "
+        "allow, so no prompt total here can be trusted to include the cached share"
+    )
 
-    lines = [record.getMessage() for record in warnings.records]
-    assert "1800 cached input tokens against a prompt of 200" in lines[0]
-    # The unreadable field is still on the record. What it is not is evidence of drift.
-    (unreadable,) = lines[1:]
-    assert unreadable.endswith("'N/A' is not a token count; counting it as 0")
+
+def test_a_prompt_nobody_could_read_is_not_evidence_of_anything(warnings):
+    """The prompt is resolved here rather than handed over as a number.
+
+    `usage_any` returns 0 for a field it could not parse, and downstream that zero is
+    indistinguishable from a measured one. Read through it, an unreadable
+    `input_tokens` becomes a confident claim that the runtime changed how it reports
+    the cache -- printed beside the caveat saying that same field could not be read.
+    Given the spellings instead, this can tell the two apart, and it says nothing
+    about a number that was never available to compare against.
+    """
+    from orchestrator_mcp.consult.adapters.base import check_cache_is_a_breakdown
+
+    check_cache_is_a_breakdown(1800, "N/A")
+    # Silent about the cache *and* silent about the prompt: `usage_count` is where the
+    # unreadable field is reported, once, from the parse that had to substitute for it.
+    # Saying it again from here would double every such turn.
+    assert warnings.records == []
+
+    # Both spellings, resolved in the caller's order, so a readable alias behind an
+    # unreadable one still gives the comparison something real to run against.
+    check_cache_is_a_breakdown(1800, "N/A", 200)
+    (line,) = [record.getMessage() for record in warnings.records]
+    assert "1800 cached input tokens against a prompt of 200" in line
+
+
+def test_a_cache_against_a_prompt_of_none_is_reported_without_a_cause(warnings):
+    """A measured zero is not the substituted one, and is not silence either.
+
+    A cache is tokens that were sent, so a prompt of zero carrying one is a shape
+    neither reading of these fields produces -- which makes it worth reporting and
+    makes the drift explanation the wrong thing to say about it. What is left is the
+    pair of numbers and what they cannot both be. Saying the prompt is the false one
+    would be picking a culprit the comparison cannot distinguish from a cache count
+    that is simply wrong.
+    """
+    from orchestrator_mcp.consult.adapters.base import check_cache_is_a_breakdown
+
+    check_cache_is_a_breakdown(1800, 0)
+
+    (line,) = [record.getMessage() for record in warnings.records]
+    # Neither figure is named as the wrong one, and the whole message is pinned rather
+    # than the absence of the phrase that used to name one: a cache of 1800 against a
+    # prompt of none is equally a miscounted cache and a prompt that lost its cached
+    # share, and the comparison sees the same pair either way. The prefix is asserted
+    # too -- a tail would let arbitrary text stand in front of the caveat.
+    assert line == (
+        "usage: codex reported 1800 cached input tokens against a prompt of 0; a cache is "
+        "tokens that were sent, so these two figures cannot both be what they claim "
+        "and neither can be relied on here"
+    )
+
+
+def test_a_cache_of_zero_says_nothing_whatever_the_prompt_did(warnings):
+    """Codex reports `cached_input_tokens: 0` on every cold turn, which is most of
+    them. A check that spoke there would put a line on the ordinary case, and the
+    comparison has nothing to test: no cache is contained by any prompt."""
+    from orchestrator_mcp.consult.adapters.base import check_cache_is_a_breakdown
+
+    check_cache_is_a_breakdown(0, 0)
+    check_cache_is_a_breakdown(0, "N/A")
+    check_cache_is_a_breakdown(None, 200)
+
+    assert warnings.records == []

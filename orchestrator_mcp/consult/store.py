@@ -72,16 +72,44 @@ def _rollup_caveats(row: sqlite3.Row) -> list[str]:
     behalf that an approximate figure is worse than none, and these numbers gate
     nothing -- `spend.refusal` bounds on money and on turns.
     """
+    # Sorted, because two-argument `GROUP_CONCAT` has no defined input order and
+    # `tallied` preserves the order it is given -- so an unsorted read returns the same
+    # caveats in a different order between two refreshes of rows that did not change.
+    # Sorting the chunk text here rather than ordering three aggregates in SQL: this is
+    # the one place the concatenation is consumed, and first-appearance order across
+    # turns never meant anything. Determinism was the whole of what was wanted.
     notes = tallied(
         note
-        for chunk in (row["turn_caveats"] or "").split(_CAVEAT_SEP)
+        for chunk in sorted((row["turn_caveats"] or "").split(_CAVEAT_SEP))
         if chunk
         for note in json.loads(chunk)
     )
+    # `MIN == 0` rather than `MIN != MAX`, which reported a *mixed* group and left the
+    # commonest legacy group of all -- the one where every turn is legacy -- saying
+    # nothing whatsoever. Nor did the arithmetic test below cover it: the migration
+    # that added `total_tokens` backfilled it to the two columns added, so every row
+    # written before that migration agrees with itself by construction. Two detectors,
+    # the same blind spot, over exactly the rows a reader is most likely to be looking
+    # at. Two real legacy Claude turns came back reporting 37 prompt tokens against
+    # prompts of roughly half a million, with an empty caveat list.
+    if row["min_semantics"] == 0:
+        # No turn count in this one. A homogeneous group can hold a single turn, where
+        # a mixed group needs two by definition -- which is why the note below could
+        # always afford to count and this one cannot.
+        notes.append(
+            ("every turn here" if row["max_semantics"] == 0 else "at least one turn here")
+            + " was counted under the definition that predates usage_semantics 1, "
+            "where a prompt figure was whatever its runtime called input -- claude "
+            "counted only the share that missed cache, codex the whole prompt -- so "
+            "these totals are not comparable across runtimes and can sit far below "
+            "what was sent and paid for"
+        )
     if row["min_semantics"] != row["max_semantics"]:
         # Work in flight across the upgrade that introduced `usage_semantics`: a
         # consultation resumed, a review taking a later fix round. Rare, which is
-        # exactly why nobody would think to check by hand.
+        # exactly why nobody would think to check by hand. A mixed group takes both
+        # notes: one says some of these numbers understate, the other says they cannot
+        # be added at all.
         notes.append(
             f"these {row['turns']} turns were counted under more than one definition "
             f"of the token fields (usage_semantics {row['min_semantics']} through "
@@ -93,28 +121,28 @@ def _rollup_caveats(row: sqlite3.Row) -> list[str]:
     # and another 3 under adds up to a clean sum. Every turn in it contradicts the
     # definition, and the comparison that only sees the totals reports nothing at all.
     if contradicting := row["contradicting_turns"]:
-        # A group of one reaches here where the mixing test above cannot: a single row
-        # is trivially counted one way, and can still be a row from before that way
-        # existed. Which is also why only that message can name both numbers -- across
-        # several turns the two sums are what cancelled, so quoting them would offer
-        # the reader the arithmetic that hid the problem.
-        # `Usage` says a total is its two parts added, and in these rows it is not.
-        # Every turn written under the current rule derives its total from its parts,
-        # so one of those cannot drift -- reaching this means a row in the group
-        # predates that, back when the total was whatever its CLI totalled. A group
-        # entirely of those is *self*-consistent and so passes the semantics test
-        # above, while still returning three numbers that contradict the definition
-        # they arrive under.
+        # What is said is what was counted, and no more. `Usage` says a total is its
+        # two parts added and in these rows it is not; the likeliest reason is a row
+        # written before that rule, back when a total was whatever its CLI totalled.
+        # But the query does not test `usage_semantics`, and the write path could
+        # produce a contradictory row under the current marker until it stopped
+        # accepting a total of its own -- so the cause is left to whoever looks. The
+        # legacy note above does not cover this and never could: a legacy row can
+        # contradict its own columns and a current one can too, and neither fact is
+        # the other.
+        #
+        # A group of one names both numbers, where they are the row itself. Across
+        # several turns it names how many disagree: there the two sums are what
+        # cancelled, and quoting them would hand the reader the arithmetic that hid
+        # the problem.
         notes.append(
-            f"this turn totals {row['total_tokens']} where the prompt and completion "
-            f"columns add to {row['input_tokens'] + row['output_tokens']}; a total "
-            "meant something else when this was counted, so the three numbers here "
-            "are not one measurement"
+            f"this turn totals {row['total_tokens']} where its own prompt and "
+            f"completion columns add to {row['input_tokens'] + row['output_tokens']}, "
+            "so the three numbers here are not one measurement"
             if row["turns"] == 1
             else f"{contradicting} of these {row['turns']} turns total something other "
-            "than their own prompt and completion columns added; a total meant "
-            "something else when they were counted, so the three numbers here are not "
-            "one measurement"
+            "than their own prompt and completion columns added, so the three numbers "
+            "here are not one measurement"
         )
     return notes
 
@@ -807,6 +835,19 @@ class ConsultStore:
         latency_ms: int = 0,
         error_code: ConsultErrorCode | None = None,
     ) -> None:
+        # Refused, never coerced. The annotations enforce nothing, and a caller
+        # passing "1" and "2" derives "12" below -- SQLite then coerces all three to
+        # integers and stores a row contradicting its own columns, stamped with the
+        # marker asserting it was counted the current way. The rollup can only report
+        # that as the ledger's fault, which sends whoever reads it to the wrong place.
+        # Exact type for the reason `_parse_count` uses one: `bool` is an `int`, and
+        # `True + True` is a plausible-looking 2.
+        for name, count in (("input_tokens", input_tokens), ("output_tokens", output_tokens)):
+            if type(count) is not int:
+                raise TypeError(f"{name} must be an int, not {type(count).__name__}")
+            if count < 0:
+                raise ValueError(f"{name} must not be negative, got {count}")
+
         # `store_full_content: false` drops the bodies and keeps the shape: an
         # operator who cannot keep prompts on disk still gets timings, usage and
         # failures, which is what makes the record worth having at all.
@@ -956,11 +997,19 @@ class ConsultStore:
         def work() -> dict[str, Spend]:
             rows = self._db.execute(
                 # The step is read from whichever relationship put this row in *this*
-                # workflow. `COALESCE(c.step_id, r.step_id)` would prefer a non-null
-                # direct step even on a row that only qualified through its review,
-                # keying another workflow's step into this one's rollup.
+                # workflow. `COALESCE(c.step_id, r.step_id)` alone would prefer a
+                # non-null direct step even on a row that only qualified through its
+                # review, keying another workflow's step into this one's rollup.
+                #
+                # Which is why the ELSE reaches for nothing. There the row qualified
+                # through `r` and only `r`, already narrowed below to this workflow's
+                # reviews, so `c.step_id` is by construction a step of the workflow
+                # this row did *not* qualify under -- the exact substitution the THEN
+                # branch was written to prevent, arrived at from the other side. A
+                # NULL is the honest answer and lands on `_UNATTRIBUTED`. Both of the
+                # THEN branch's candidates belong here, so it keeps its COALESCE.
                 "SELECT CASE WHEN c.workflow_id = :workflow_id "
-                "THEN COALESCE(c.step_id, r.step_id) ELSE COALESCE(r.step_id, c.step_id) END "
+                "THEN COALESCE(c.step_id, r.step_id) ELSE r.step_id END "
                 "AS step_id, COUNT(*) AS turns, "
                 "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
@@ -996,7 +1045,15 @@ class ConsultStore:
             # A turn that reached this workflow without naming a step is still money
             # the workflow spent, so it is bucketed rather than dropped: no step view
             # claims it, and the workflow total and its ceiling both still see it.
-            return {(row["step_id"] or _UNATTRIBUTED): _spend(row) for row in rows}
+            # `is None` rather than a falsy test: NULL is what the CASE returns for a
+            # row that named no step, and it is the only thing that should land in this
+            # bucket. A falsy test also folds in an empty step id and a step genuinely
+            # named `_unattributed` -- neither reachable while every step id is a
+            # server-generated UUID, and neither the question being asked.
+            return {
+                (_UNATTRIBUTED if row["step_id"] is None else row["step_id"]): _spend(row)
+                for row in rows
+            }
 
         return await self._run(work)
 

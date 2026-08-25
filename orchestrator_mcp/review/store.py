@@ -389,7 +389,9 @@ class ReviewStore:
 
         Upsert rather than insert: a retry is another attempt by the same reviewer on
         the same review, and `(review_id, agent_id)` stays one row so no consultation
-        is left dangling where deletion cannot find it.
+        is left dangling where deletion cannot find it. A second call moves the
+        outcome columns freely; `consultation_id` only ever moves from nothing to
+        something, for the reason spelled out over the clause.
 
         `sources` is stored rather than left in the response because finalization is a
         separate call: it rebuilds every result from these rows, so a citation that
@@ -402,7 +404,27 @@ class ReviewStore:
                 "findings_json, findings_parsed, findings_truncated, answer, error_code, "
                 "sources_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT (review_id, agent_id) DO UPDATE SET "
-                "consultation_id = excluded.consultation_id, status = excluded.status, "
+                # First link wins. `excluded.consultation_id` overwrote it, and the
+                # caller that reaches here on a failure carries `None`: a reviewer
+                # whose turn raised inside the orchestrator is reported through
+                # `_failed(requested_id)`, which on a first attempt is the id the
+                # caller asked for -- nothing -- even though `create_consultation`
+                # had already written and linked the consultation. That NULL erased
+                # the only pointer to it: its turns stopped joining to the review, so
+                # its spend vanished from every rollup, and `delete_review` walked
+                # past a consultation holding the prompt and the answer of a review
+                # the user asked to erase.
+                #
+                # Not merely non-null-safe: once set the link never moves again,
+                # because it has exactly one writer by design -- `create_consultation`
+                # takes the row only `WHERE consultation_id IS NULL`, and a retry
+                # resumes the id it finds. A second, *different* id arriving here is a
+                # claim this table is not the one that decides. A first attempt that
+                # failed before any consultation existed does carry `None`, and the
+                # retry that finally creates one links it here on the second call:
+                # that is the one transition this clause allows.
+                "consultation_id = COALESCE(review_consultations.consultation_id, "
+                "excluded.consultation_id), status = excluded.status, "
                 "findings_json = excluded.findings_json, "
                 "findings_parsed = excluded.findings_parsed, "
                 "findings_truncated = excluded.findings_truncated, answer = excluded.answer, "

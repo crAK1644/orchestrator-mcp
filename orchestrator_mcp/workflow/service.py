@@ -29,7 +29,7 @@ import asyncio
 import json
 import secrets as secrets_mod
 import time
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
@@ -49,7 +49,7 @@ from ..consult.config import ConsultConfig, ReviewPolicy, StepBinding, WorkflowC
 from ..consult.contract import ConsultError, Runtime
 from ..consult.errors import ConsultErrorCode
 from ..consult.prompts import compile_execution_prompt
-from ..consult.store import ConsultStore, StoreError
+from ..consult.store import _UNATTRIBUTED, ConsultStore, StoreError
 from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
 from ..log import get_logger
 from ..review.contract import SERIOUS, ReviewSummary, open_serious
@@ -119,6 +119,10 @@ class WorkflowService:
         self.reviews = reviews or ReviewService(config, host_runtime, store=shared)
         self.consult = self.reviews.consult
         self.store = WorkflowStore(shared)
+        # So a review reached directly -- through the token its review step shares with
+        # it -- can take the lease this service takes for a step. Set here rather than
+        # constructed there because the review layer stands on its own without one.
+        self.reviews.workflows = self.store
         self.router = WorkflowRouter(config, host_runtime)
         self._recovery_sweep_task: asyncio.Task[None] | None = None
 
@@ -440,12 +444,29 @@ class WorkflowService:
                     f"step `{step_id}` is the host's to do; record it with "
                     "`orchestrator_workflow_record_host_step`",
                 )
-            await self._within_ceiling(workflow_id)
             # A contained run gets the longer lease, because it gets the longer
             # timeout: a lease that expires while its process is still working would
             # let a second caller take the step the first one is running.
             contained = row.snapshot().execution_mode == "isolated_write"
             async with self.store.lease(workflow_id, step_id, ttl_s=self._lease_ttl(contained)):
+                # Inside the lease, because the ceiling is read from the ledger and
+                # the ledger is what the step holding the lease is writing to. Read
+                # outside it, two callers arriving together both see the spend of a
+                # step that has not finished paying: the first runs, and the second
+                # is admitted on a total that was already stale when it read it.
+                # Being unable to price a request before making it is the bound this
+                # is allowed to have -- reading a total that something else is mid-way
+                # through changing is not the same thing, and it is avoidable here.
+                await self._within_ceiling(workflow_id)
+                # The review's ceiling before the workflow's token, never after. A
+                # review step's token *is* the review's, and `_run_review` spends it
+                # on the way to `ReviewService.run`, which then checks a second
+                # ceiling and can refuse -- burning the token on a refusal that
+                # started nothing. Raising the ceiling would then cost a whole
+                # re-plan and a second approval of a send nobody changed, which is
+                # the one thing `_within_ceiling` exists to promise it will not.
+                if row.review_id is not None:
+                    await self.reviews.within_ceiling(row.review_id)
                 await self.store.consume_step_token(step_id, workflow_id, confirm_token)
                 async with self._finished(step_id):
                     log.info(
@@ -476,10 +497,11 @@ class WorkflowService:
     async def _within_ceiling(self, workflow_id: str) -> None:
         """Refuse a step that would be paid for past `consult.spend`.
 
-        Before the lease and before the token is spent: a refusal must not burn the
-        one-time token, or raising the ceiling would cost a whole re-plan. Reviewers
-        count towards the workflow's ceiling as well as their review's own, because
-        the workflow is what paid for them.
+        Under the lease and before the token is spent: a refusal must not burn the
+        one-time token, or raising the ceiling would cost a whole re-plan, and it must
+        not be decided on a total another step is still adding to. Reviewers count
+        towards the workflow's ceiling as well as their review's own, because the
+        workflow is what paid for them.
         """
         message = spend_refusal(
             await self.consult.store.workflow_usage(workflow_id),
@@ -1395,7 +1417,7 @@ class WorkflowService:
                 reason=workflow.reason,
                 bindings=json.loads(workflow.bindings_json),
                 steps=views,
-                usage=_total(spend.values()),
+                usage=_total(spend),
                 next_steps=[
                     step for step, definition in STEPS.items()
                     if workflow.status in definition.runs_from
@@ -1476,23 +1498,38 @@ def _validated(model: type, payload: dict[str, Any], step: str):
         ) from exc
 
 
-def _total(spent: Iterable[Spend]) -> Usage | None:
+def _total(spent: Mapping[str, Spend]) -> Usage | None:
     """The workflow's spend, or `None` when nothing has been spent on it yet.
 
     Steps that spent nothing are absent rather than zero, so a host-only workflow
     reports no usage instead of a row of zeroes. One unpriced step makes the whole
     cost unknown, matching what the reviewer rollup does across reviewers.
+
+    Takes the mapping rather than its values because one of its keys is not a step.
+    `workflow_usage` buckets a turn that reached this workflow naming no step under
+    `_UNATTRIBUTED` rather than dropping it, so the money is in this sum -- but no
+    step view carries it, and the steps and the total then disagree by an amount a
+    reader can only find by subtracting. Saying so is the difference between a
+    rollup that is larger than its parts and one that says why.
+
+    Unreachable as the code stands: every step id is a server-generated UUID, and
+    both writers pass one. That is an argument for the caveat, not against it -- if
+    the bucket ever fills, the number it is hiding shows up here instead of being
+    reconciled by hand.
     """
-    used = [s.usage for s in spent]
+    used = [s.usage for s in spent.values()]
     if not used:
         return None
     priced = all(u.cost_usd is not None for u in used)
+    notes = caveats(used)
+    if _UNATTRIBUTED in spent:
+        notes.append("some turns of this workflow name no step: counted here, in no step")
     return Usage(
         prompt_tokens=sum(u.prompt_tokens for u in used),
         completion_tokens=sum(u.completion_tokens for u in used),
         total_tokens=sum(u.total_tokens for u in used),
         cost_usd=sum(u.cost_usd for u in used) if priced else None,  # type: ignore[misc]
-        counts_incomplete=caveats(used),
+        counts_incomplete=notes,
     )
 
 
