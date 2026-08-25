@@ -71,6 +71,12 @@ jobs:
         with:
           version: "0.11.26"
           checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
+          # This job deliberately never checks the repo out -- it runs no project
+          # code -- so there is no `pyproject.toml` to key a cache on and no working
+          # tree to look at. Both defaults assume otherwise and warn. Saying so here
+          # keeps the log free of two lines that describe the design, not a problem.
+          enable-cache: false
+          ignore-empty-workdir: true
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: dist
