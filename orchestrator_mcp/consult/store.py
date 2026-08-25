@@ -911,8 +911,23 @@ class ConsultStore:
 
     async def usage(self, consultation_id: UUID | str) -> Usage | None:
         """Cumulative accounting for every recorded turn in one native session."""
+        spend = await self.consultation_spend(consultation_id)
+        return spend.usage if spend is not None else None
 
-        def work() -> Usage | None:
+    async def consultation_spend(self, consultation_id: UUID | str) -> Spend | None:
+        """The same rollup read as a bound, or `None` when nothing has run yet.
+
+        `usage` above is this with the enforcing half dropped. Kept as one query
+        because the two numbers have to agree: a display total and the total a ceiling
+        is checked against that came from different SQL are two chances to be counted
+        differently, and only one of them is visible when they disagree.
+
+        `None` rather than a zeroed `Spend` for a consultation with no turns, because
+        that is the first turn of a new session -- nothing has been spent, so there is
+        no ceiling for it to have reached and nothing to refuse.
+        """
+
+        def work() -> Spend | None:
             row = self._db.execute(
                 "SELECT COUNT(*) AS turns, COALESCE(SUM(input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
@@ -925,15 +940,7 @@ class ConsultStore:
                 "FROM consultation_turns WHERE consultation_id = ?",
                 (str(consultation_id),),
             ).fetchone()
-            if row["turns"] == 0:
-                return None
-            return Usage(
-                prompt_tokens=row["input_tokens"],
-                completion_tokens=row["output_tokens"],
-                total_tokens=row["total_tokens"],
-                cost_usd=row["cost_usd"] if row["priced_turns"] == row["turns"] else None,
-                counts_incomplete=_rollup_caveats(row),
-            )
+            return _spend(row) if row["turns"] else None
 
         return await self._run(work)
 

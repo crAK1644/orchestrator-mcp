@@ -218,14 +218,21 @@ class HostConfig(BaseModel):
 
 
 class SpendPolicy(BaseModel):
-    """Ceilings on what one review or one workflow may cost.
+    """Ceilings on what one consultation, one review, or one workflow may cost.
 
-    Both absent by default, which is no ceiling and no behavior change.
+    All absent by default, which is no ceiling and no behavior change.
 
     What this buys is bounded, and the bound is the point: a request cannot be priced
     before it is made, so the guarantee is **the next request after the ceiling is
     crossed is refused**, not that spend never exceeds the ceiling. A fan-out of five
     reviewers is one request in that sense; the ceiling stops the round after it.
+
+    The three scopes nest rather than compete. A workflow's reviewers count into its
+    review and into the workflow, and every one of them is a consultation, so a turn
+    can be refused by whichever ceiling it reaches first. That is why the consultation
+    pair is checked at the turn itself rather than beside the other two: `orchestrator_
+    consult` resumes a session by id and spends another turn on it, which is a door
+    into a paid CLI that neither of the other scopes covers.
 
     Set a turn ceiling as well as a dollar one if the routing includes an agent on a
     flat-rate plan. Those report no per-turn price, and a dollar ceiling can only
@@ -234,11 +241,18 @@ class SpendPolicy(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # The narrowest scope, and the only one that bounds `orchestrator_consult`. A
+    # consultation is resumable by id: one call starts it, and every call after that
+    # spends another turn on the same session against the same paid CLI. Reviews and
+    # workflows were bounded and this was not, so the tool this server exists for was
+    # the one path with no ceiling over it at all.
+    max_cost_usd_per_consultation: float | None = Field(default=None, gt=0)
     max_cost_usd_per_review: float | None = Field(default=None, gt=0)
     max_cost_usd_per_workflow: float | None = Field(default=None, gt=0)
     # The bound for work that cannot be priced. An agent on a flat-rate plan reports
     # no per-turn cost, so a dollar ceiling over it stays at $0.00 and never fires --
     # a ceiling that reads as a bound and is not one. Turns are always counted.
+    max_turns_per_consultation: int | None = Field(default=None, gt=0)
     max_turns_per_review: int | None = Field(default=None, gt=0)
     max_turns_per_workflow: int | None = Field(default=None, gt=0)
 
@@ -558,11 +572,28 @@ class ConsultConfig(BaseModel):
 
     def config_hash(self) -> str:
         """Recorded with each consultation, so a reply can be read against the
-        routing table that produced it rather than today's."""
-        payload = json.dumps(
-            {aid: a.model_dump(mode="json") for aid, a in sorted(self.agents.items())},
-            sort_keys=True,
-        )
+        configuration that produced it rather than today's -- and compared against
+        the running server's, which is how the dashboard knows to say "restart".
+
+        Everything the MCP server reads at boot and cannot re-read, which is
+        everything in this model except `dashboard:`. That block belongs to the
+        dashboard process, which re-reads this file on every request, so changing a
+        port there needs no restart and a banner demanding one would be wrong.
+
+        It used to hash the agent table alone. Reviewers, roots, workflow bindings,
+        spend ceilings and timeouts could all change without moving it, so the banner
+        stayed silent on most of what the dashboard itself can edit -- and a stored
+        reply recorded the routing table that answered it while saying nothing about
+        the ceilings and limits it was answered under.
+
+        `sort_keys` rather than sorting the agents by hand: it reaches every mapping
+        in the payload, so no nested block can reorder the hash either.
+
+        Widening moves every hash, so the first dashboard load after this ships finds
+        a stored row that cannot match and shows the banner. That is not a false
+        positive: a server still serving the old rows is running the old code.
+        """
+        payload = json.dumps(self.model_dump(mode="json", exclude={"dashboard"}), sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 

@@ -154,6 +154,59 @@ def test_the_config_hash_tracks_the_agents_and_not_their_order():
     assert ConsultConfig(**changed).config_hash() != a.config_hash()
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"timeout_s": 240}, id="a different timeout"),
+        pytest.param({"preflight_ttl_s": 0}, id="a preflight cache turned off"),
+        pytest.param({"store_full_content": False}, id="a different storage decision"),
+        pytest.param({"web_turn_limit": 3}, id="a different web turn limit"),
+        pytest.param({"host": {"model": "opus-something-else"}}, id="a different host model"),
+        pytest.param(
+            {"review": {"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol"]}},
+            id="a review block arriving",
+        ),
+        pytest.param(
+            {"spend": {"max_turns_per_review": 4}}, id="a spend ceiling where there was none"
+        ),
+        pytest.param({"workflow": {"max_fix_rounds": 2}}, id="a different fix round cap"),
+    ],
+)
+def test_the_config_hash_moves_for_anything_the_server_reads_at_boot(overrides):
+    """The dashboard compares this against the hash the last consultation recorded,
+    which is the only way it can tell that the separate MCP server process is still
+    running an older file. While this hashed the agent table alone, every edit here
+    left it unmoved -- so the banner stayed quiet on reviewers, roots, ceilings and
+    timeouts, which is most of what an operator changes and then waits to take effect.
+    """
+    base = ConsultConfig(**consult_block())
+    assert ConsultConfig(**consult_block(**overrides)).config_hash() != base.config_hash()
+
+
+def test_a_review_root_is_part_of_the_config_hash(tmp_path):
+    """Separate from the parametrized cases because a root has to be a real absolute
+    directory to survive its own validator, and `tmp_path` is the only one there is."""
+    base = consult_block(review={"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol"]})
+    widened = consult_block(
+        review={
+            "reviewers": ["codex-sol"],
+            "deep_reviewers": ["codex-sol"],
+            "roots": [str(tmp_path)],
+        }
+    )
+    assert ConsultConfig(**widened).config_hash() != ConsultConfig(**base).config_hash()
+
+
+def test_the_dashboard_block_is_not_part_of_the_config_hash():
+    """`dashboard:` is read by the dashboard, which re-reads this file on every
+    request. Nothing in the MCP server looks at it, so changing a port cannot need a
+    restart -- and a banner that told the operator to perform one would be wrong about
+    the only thing it exists to say."""
+    base = ConsultConfig(**consult_block())
+    moved = ConsultConfig(**consult_block(dashboard={"enabled": True, "port": 9000}))
+    assert moved.config_hash() == base.config_hash()
+
+
 def test_the_host_runtime_must_be_set_and_known(monkeypatch):
     monkeypatch.delenv(HOST_RUNTIME_ENV, raising=False)
     with pytest.raises(ConfigError, match=HOST_RUNTIME_ENV):
