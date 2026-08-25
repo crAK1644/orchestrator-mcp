@@ -119,6 +119,10 @@ class WorkflowService:
         self.reviews = reviews or ReviewService(config, host_runtime, store=shared)
         self.consult = self.reviews.consult
         self.store = WorkflowStore(shared)
+        # So a review reached directly -- through the token its review step shares with
+        # it -- can take the lease this service takes for a step. Set here rather than
+        # constructed there because the review layer stands on its own without one.
+        self.reviews.workflows = self.store
         self.router = WorkflowRouter(config, host_runtime)
         self._recovery_sweep_task: asyncio.Task[None] | None = None
 

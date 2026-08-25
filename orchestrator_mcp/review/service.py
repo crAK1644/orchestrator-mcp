@@ -23,7 +23,8 @@ import os
 import secrets as secrets_mod
 import stat
 import time
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -51,6 +52,7 @@ from ..progress import step as progress_step
 from ..spend import caveats
 from ..spend import refusal as spend_refusal
 from ..workflow.identity import host_identity_conflict, same_execution_identity
+from ..workflow.store import LEASE_HELD, WorkflowStore
 from .contract import (
     FIX_STEPS,
     MAX_FINDINGS,
@@ -116,6 +118,10 @@ class ReviewService:
         # children are out of reach, which is what the execution lease covers instead.
         self._tasks: dict[str, list[asyncio.Task[Any]]] = {}
         self._batch_done: dict[str, asyncio.Event] = {}
+        # Set by `WorkflowService` when there is one. A review layer running on its own
+        # owns no workflows, and a review with no `workflow_id` has nothing to serialize
+        # against either way.
+        self.workflows: WorkflowStore | None = None
 
     async def open(self) -> ReviewService:
         await self.consult.open()
@@ -455,24 +461,26 @@ class ReviewService:
                 )
             goal, context = material.goal, material.context
 
-        await self.within_ceiling(review.id)
-        # Both ceilings on the way in, because both doors lead here. `run_step` asks
-        # them before the step token and then calls this, which is a re-read of a
-        # total nothing has moved -- the workflow lease is held and this review has
-        # not sent yet. The door that needs it is the other one: a review step's
-        # token *is* this review's token, so a host holding it can spend it here
-        # directly, and until this line that route bought reviewer turns the
-        # workflow is charged for and never got to refuse. The same hole `retry`
-        # had, through a different door.
-        await self._within_workflow_ceiling(review)
+        # Both ceilings on the way in, because both doors lead here, and under the
+        # owning workflow's lease because a ceiling read is only worth reading when
+        # nothing else can spend behind it. `run_step` asks them before the step token
+        # and then calls this, which is a re-read of a total nothing has moved -- it
+        # holds the lease and this review has not sent yet. The door that needs it is
+        # the other one: a review step's token *is* this review's token, so a host
+        # holding it can spend it here directly, and until this line that route bought
+        # reviewer turns the workflow is charged for and never got to refuse. The same
+        # hole `retry` had, through a different door.
+        async with self._workflow_serialized(review):
+            await self.within_ceiling(review.id)
+            await self._within_workflow_ceiling(review)
 
-        results = await self._batch(
-            review,
-            [s.agent_id for s in approved],
-            context,
-            goal,
-            confirm=(confirm_token, findings, secrets),
-        )
+            results = await self._batch(
+                review,
+                [s.agent_id for s in approved],
+                context,
+                goal,
+                confirm=(confirm_token, findings, secrets),
+            )
         return await self._settle(started, review.id, results, findings)
 
     async def retry(
@@ -528,15 +536,19 @@ class ReviewService:
                     "the exact original goal and context in `raw`"
                 )
             goal, context = material.goal, material.context
-        await self.within_ceiling(review.id)
-        await self._within_workflow_ceiling(review)
-        if not await self.store.transition(review.id, "running", RETRYABLE):
-            raise ValueError(
-                f"review `{review.id}` is `{review.status}` and cannot be retried from there"
-            )
+        # Under the same lease as `run`, and for the same reason: this door is never
+        # reached from inside a step, so the workflow it is spending against is free
+        # to be spending elsewhere while the totals here are read.
+        async with self._workflow_serialized(review):
+            await self.within_ceiling(review.id)
+            await self._within_workflow_ceiling(review)
+            if not await self.store.transition(review.id, "running", RETRYABLE):
+                raise ValueError(
+                    f"review `{review.id}` is `{review.status}` and cannot be retried from there"
+                )
 
-        host = json.loads(review.host_findings_json) if review.host_findings_json else []
-        results = await self._batch(review, wanted, context, goal, rows)
+            host = json.loads(review.host_findings_json) if review.host_findings_json else []
+            results = await self._batch(review, wanted, context, goal, rows)
         return await self._settle(started, review.id, results, host)
 
     async def _batch(
@@ -771,6 +783,39 @@ class ReviewService:
         if message is not None:
             log.warning("review %s refused: %s", review.id, message)
             raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
+
+    @asynccontextmanager
+    async def _workflow_serialized(self, review: Review) -> AsyncIterator[None]:
+        """Hold the owning workflow's lease across this review's check and its spend.
+
+        Both ceilings are read from the ledger and then acted on, which is only a
+        ceiling if nothing else on the same workflow can spend between the two. Inside
+        `run_step` that is the workflow lease's job. The other door -- a host calling
+        `run` or `retry` with the token a review step shares with its review -- read
+        the same totals holding nothing, so two operations on one workflow could both
+        find themselves under a ceiling neither had reached yet.
+
+        Nothing to take when the review belongs to no workflow, and nothing to take
+        again when this task is already inside the lease: `_acquire` has no same-holder
+        exemption, so `run_step` calling through here would otherwise refuse its own
+        step with `SESSION_BUSY`. A review carrying a workflow but no step predates the
+        step rows the lease columns live on; there is no row to hold and it is left
+        alone rather than refused.
+        """
+        if (
+            not review.workflow_id
+            or not review.step_id
+            or self.workflows is None
+            or LEASE_HELD.get() == review.workflow_id
+        ):
+            yield
+            return
+        async with self.workflows.lease(
+            review.workflow_id,
+            review.step_id,
+            ttl_s=self.config.timeout_s + REVIEW_LEASE_SLACK_S,
+        ):
+            yield
 
     async def _results(
         self,

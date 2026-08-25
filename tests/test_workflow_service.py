@@ -2403,3 +2403,128 @@ async def test_a_workflow_owned_review_cannot_be_run_directly_past_the_workflows
     assert (await service.run_step(workflow_id, step_id, token)).error.code is (
         ConsultErrorCode.SPEND_LIMIT_REACHED
     )
+
+
+async def to_review(service, repo) -> tuple[str, str, str, str]:
+    """Walk a workflow to a planned review step: `(workflow, step, token, review)`."""
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    await host_step(service, workflow_id, "plan", json.loads(PLAN))
+    await host_step(service, workflow_id, "author_execution_prompt", json.loads(BRIEF))
+    await host_step(
+        service, workflow_id, "implement", {"summary": "s", "files": [], "patch": PATCH}
+    )
+    await host_step(
+        service, workflow_id, "test",
+        {"command": "pytest", "workdir": str(repo), "exit_code": 0, "status": "passed"},
+    )
+    step_id, token = await step(service, workflow_id, "review")
+    return workflow_id, step_id, token, _review_id(await service.store.steps(workflow_id))
+
+
+async def test_a_review_run_directly_takes_the_lease_of_the_workflow_that_owns_it(
+    build, repo
+):
+    """A ceiling read holding nothing is a number, not a ceiling.
+
+    `run` and `retry` read the workflow's totals and then spend against them, and
+    they are reached with the token a review step shares with its review -- from
+    outside `run_step`, which is where the workflow lease is otherwise taken. Two
+    operations on one workflow could each read a total the other was about to move
+    and both find themselves under a ceiling neither had reached. Holding the lease
+    across the read and the send is what makes the second one wait its turn, which
+    for this lease means being refused rather than queued.
+    """
+    service = await build(
+        adapters={"codex-sol": StubAdapter(FINDINGS), "opus-agent": StubAdapter(),
+                  "flash": StubAdapter(RESEARCH)},
+        bindings={"research": {"agent": "flash"}},
+    )
+    workflow_id, _step_id, token, review_id = await to_review(service, repo)
+    research = next(
+        s.id for s in await service.store.steps(workflow_id) if s.step == "research"
+    )
+    sent = len(service.adapters["codex-sol"].prompts)
+    holding, release = asyncio.Event(), asyncio.Event()
+
+    async def hold() -> None:
+        # In its own task, so the contextvar the lease sets is that task's and this
+        # test stands where a second request would: outside, holding nothing.
+        async with service.store.lease(workflow_id, research, ttl_s=30):
+            holding.set()
+            await release.wait()
+
+    held = asyncio.create_task(hold())
+    await holding.wait()
+    try:
+        direct = await service.reviews.run(review_id, token)
+    finally:
+        release.set()
+        await held
+
+    assert direct.error is not None
+    assert direct.error.code is ConsultErrorCode.SESSION_BUSY
+    assert len(service.adapters["codex-sol"].prompts) == sent
+    # Refused, not spent: the same token still opens the step once the lease is gone.
+    assert (await service.run_step(workflow_id, _step_id, token)).error is None
+
+
+async def test_a_review_step_run_through_the_workflow_does_not_refuse_its_own_lease(
+    build, repo
+):
+    """The lease `run` now takes is the one `run_step` is already holding.
+
+    `_acquire` has no exemption for the holder, deliberately, so reaching it a second
+    time from inside a step would refuse that step with `SESSION_BUSY` -- every
+    workflow review, not an edge case. What tells the two apart is the contextvar the
+    lease sets on the way in.
+    """
+    service = await build(
+        adapters={"codex-sol": StubAdapter(FINDINGS), "opus-agent": StubAdapter(),
+                  "flash": StubAdapter(RESEARCH)},
+        bindings={"research": {"agent": "flash"}},
+    )
+    workflow_id, step_id, token, _review_id_ = await to_review(service, repo)
+
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is None, response.error
+    assert len(service.adapters["codex-sol"].prompts) == 1
+
+
+async def test_a_retry_of_a_workflow_owned_review_takes_the_workflows_lease(build, repo):
+    """The third door, and the one no step ever calls: a retry is always from outside."""
+    service = await build(
+        adapters={"codex-sol": StubAdapter(FINDINGS), "opus-agent": StubAdapter(),
+                  "flash": _Broken()},
+        bindings={"research": {"agent": "codex-sol"}, "review": {"agents": ["codex-sol", "flash"]}},
+    )
+    service.adapters["codex-sol"].answers = [RESEARCH, FINDINGS]
+    workflow_id, step_id, token, review_id = await to_review(service, repo)
+    # One reviewer answers and one fails, which is a review left retryable rather
+    # than a step that failed.
+    assert (await service.run_step(workflow_id, step_id, token)).error is None
+    broken = service.adapters["flash"]
+    research = next(
+        s.id for s in await service.store.steps(workflow_id) if s.step == "research"
+    )
+    tried = len(broken.prompts)
+    holding, release = asyncio.Event(), asyncio.Event()
+
+    async def hold() -> None:
+        async with service.store.lease(workflow_id, research, ttl_s=30):
+            holding.set()
+            await release.wait()
+
+    held = asyncio.create_task(hold())
+    await holding.wait()
+    try:
+        again = await service.reviews.retry(review_id)
+    finally:
+        release.set()
+        await held
+
+    assert again.error is not None
+    assert again.error.code is ConsultErrorCode.SESSION_BUSY
+    assert len(broken.prompts) == tried
