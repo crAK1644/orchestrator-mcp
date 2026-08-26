@@ -18,6 +18,7 @@ from typing import Any
 
 from ..consult.contract import ExecutionMode, Runtime
 from ..consult.errors import ConsultErrorCode
+from ..contract import CodedFailure
 
 # Why each runtime sits where it does:
 #
@@ -63,12 +64,8 @@ _UNSUPPORTED: dict[tuple[Runtime, ExecutionMode], str] = {
 }
 
 
-class CodeError(Exception):
+class CodeError(CodedFailure):
     """A refusal from the execution side, carrying a code the envelope can hold."""
-
-    def __init__(self, code: ConsultErrorCode, message: str) -> None:
-        super().__init__(message)
-        self.code = code
 
 
 def runtime_capabilities(runtime: str) -> frozenset[ExecutionMode]:

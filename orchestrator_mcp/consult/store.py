@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from uuid import UUID
 
-from ..contract import Usage, scrub_json
+from ..contract import CodedFailure, Usage, scrub_json
 from ..log import get_logger
 from ..spend import Spend, tallied
 from .contract import ConsultRoute, SourceMode
@@ -424,12 +424,8 @@ DELETE_CONFIRM_TTL_S = 300.0
 _T = TypeVar("_T")
 
 
-class StoreError(Exception):
+class StoreError(CodedFailure):
     """A refusal with a code the caller's envelope can carry."""
-
-    def __init__(self, code: ConsultErrorCode, message: str) -> None:
-        super().__init__(message)
-        self.code = code
 
 
 @dataclass(frozen=True)

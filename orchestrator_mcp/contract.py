@@ -3,6 +3,10 @@
 Small on purpose. The consult and review packages own their own contracts, and
 what is left here is only what more than one of them needs -- so this module has
 no reason to import either, and neither has to import the other to reach it.
+
+The one exception is `consult.errors`, for the code vocabulary that every refusal
+in this server carries. It is a leaf holding a single enum and imports nothing from
+here, so reaching for it costs none of the independence above.
 """
 
 from __future__ import annotations
@@ -10,7 +14,32 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel
+
+from .consult.errors import ConsultErrorCode
+
+
+class CodedFailure(ToolError):
+    """A refusal this server anticipated, carrying a code and a message for the caller.
+
+    `ToolError` is the SDK's word for "a failure you saw coming". Anything else
+    escaping a tool body is treated as a crash: since mcp 2.1 the caller receives only
+    `Error executing tool <name>`, with the original text withheld and a traceback
+    logged at ERROR. Every refusal in this server is the anticipated kind -- each one
+    has a code from a closed set and a message written to be read -- so each one has
+    to arrive as a `ToolError` or the model is told a bad argument and a broken server
+    apart. On mcp 2.0 the message passed through either way, which is why this went
+    unnoticed until the pin resolved higher.
+
+    The subclasses stay distinct types rather than collapsing into this one. Each path
+    catches its own, and a storage failure is not a routing failure however alike the
+    two look from here.
+    """
+
+    def __init__(self, code: ConsultErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class ConfigError(ValueError):
