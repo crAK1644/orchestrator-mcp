@@ -24,21 +24,16 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..consult.contract import Capability, ConsultError, ExecutionMode, Runtime
-from ..consult.errors import ConsultErrorCode
-from ..contract import MAX_ERROR_CHARS, Usage
+from ..contract import MAX_ERROR_CHARS, CodedFailure, Usage
 
 
-class WorkflowError(Exception):
+class WorkflowError(CodedFailure):
     """A refusal carrying a code the tool's envelope can report.
 
-    The same shape as `StoreError` and `CodeError`, and deliberately not a subclass
-    of either: a refusal from routing is not a storage failure, and the service
-    catches them separately.
+    A sibling of `StoreError` and `CodeError` under `CodedFailure`, and deliberately
+    not a subclass of either: a refusal from routing is not a storage failure, and the
+    service catches them separately.
     """
-
-    def __init__(self, code: ConsultErrorCode, message: str) -> None:
-        super().__init__(message)
-        self.code = code
 
 WorkflowState = Literal[
     "created",

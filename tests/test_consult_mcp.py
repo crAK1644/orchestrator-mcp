@@ -9,6 +9,7 @@ nobody configured.
 from __future__ import annotations
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from orchestrator_mcp.contract import ConfigError
 from orchestrator_mcp.server import build_server
@@ -144,7 +145,12 @@ async def test_get_consultation_on_an_unknown_id_is_an_error_not_a_blank_record(
     tmp_path, host_claude
 ):
     server = build_server(config(tmp_path))
-    with pytest.raises(Exception) as exc:
+    # `ToolError` specifically, not any exception. It is the SDK's word for a failure
+    # the server anticipated, and it is the only kind whose message reaches the model:
+    # anything else is treated as a crash, and since mcp 2.1 the caller is told only
+    # `Error executing tool <name>`. An unknown id has to be the first kind, or the
+    # model cannot tell a bad argument from a broken server.
+    with pytest.raises(ToolError) as exc:
         await server.call_tool(
             "orchestrator_get_consultation", {"consultation_id": "11111111-2222-3333-4444-555555555555"}
         )
