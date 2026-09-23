@@ -920,7 +920,8 @@ clients that do not are unaffected.
 ## System requirements
 
 - macOS or Linux. Windows is not currently tested.
-- Python 3.11 or newer. CI currently tests 3.11, 3.12, and 3.13.
+- Python 3.11 or newer. CI currently tests 3.11 through 3.14 against the lockfile, and
+  3.14 against the newest release of every dependency.
 - Homebrew or [`uv`](https://docs.astral.sh/uv/).
 - A stdio MCP client such as Claude Code or Codex.
 - At least one eligible configured agent. Ordinary consultation requires another
@@ -933,7 +934,7 @@ The offline suite uses fake CLI agents. It needs no network and spends no model 
 
 ```bash
 uv sync
-uv run pytest -q
+uv run pytest -q -n auto
 ```
 
 Live smoke tests use the agents in your configuration:

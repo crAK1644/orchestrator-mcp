@@ -38,6 +38,7 @@ orchestrator-mcp-dashboard = "orchestrator_mcp.consult.dashboard:main"
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pytest-xdist>=3.8",
     "ruff>=0.16.3",
 ]
 

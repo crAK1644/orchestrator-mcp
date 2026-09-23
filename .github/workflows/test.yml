@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13"]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       # SHA-pinned, like the release workflow: a tag can be moved, a commit cannot.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -24,10 +24,28 @@ jobs:
           checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
       - run: uv sync --all-extras --dev
       # No network: every deployment is stubbed, so this needs no API keys.
-      - run: uv run pytest -q
+      - run: uv run pytest -q -n auto
+
+  # The matrix proves the lock. A user never gets the lock: `pip install` and the
+  # Homebrew formula resolve the newest release inside every range, and `mcp` in
+  # particular has shipped breaking behaviour in a minor. This job resolves the way
+  # they do, so an upstream release that breaks the server fails here first. One
+  # interpreter is enough, and the newest is the one that always receives the newest
+  # release of everything -- an older one can be held back by `requires-python`.
+  latest-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.14"
+          version: "0.11.26"
+          checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
+      - run: uv sync --all-extras --dev --upgrade
+      - run: uv run pytest -q -n auto
 
   # Separate from the matrix: the rules are the same on every interpreter, so
-  # running this three times would only mean reading the same failure three times.
+  # running this four times would only mean reading the same failure four times.
   ruff:
     runs-on: ubuntu-latest
     steps:
