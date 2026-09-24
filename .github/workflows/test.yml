@@ -23,6 +23,31 @@ jobs:
           version: "0.11.26"
           checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
       - run: uv sync --all-extras --dev
+
+      # Without a confinement mechanism, `sandbox.mechanism()` is None on this host and
+      # the escape suite skips itself -- so CI would report green having proven nothing
+      # about the sandbox. The argv tests do not even skip: they need a real mechanism
+      # to build the wrapper.
+      #
+      # Unprivileged user namespaces are AppArmor-restricted on Ubuntu 24.04 runners,
+      # and bubblewrap needs them. The sysctl is tolerated as absent because an older
+      # runner image does not have the knob and does not need it.
+      - name: Install a sandbox mechanism
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      # Proves the mechanism holds before the suite decides to skip past it.
+      - name: Refuse to test without one
+        run: |
+          uv run python -c "
+          from orchestrator_mcp.code import sandbox
+          if not sandbox.holds():
+              raise SystemExit(f'no sandbox on this runner: {sandbox.unavailable_reason()}')
+          print(f'sandbox: {sandbox.mechanism()}')
+          "
+
       # No network: every deployment is stubbed, so this needs no API keys.
       - run: uv run pytest -q -n auto
 

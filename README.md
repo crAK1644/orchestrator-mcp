@@ -501,14 +501,14 @@ refusal names which side said no.
 |---|---|---|
 | `consultation` | The read-only consult path, unchanged. | `context_only` |
 | `patch` | The same read-only path; it returns a unified diff. The host applies it. | `context_only` |
-| `isolated_write` | A disposable git worktree outside your repository, checked out at the workflow's baseline. The agent edits and runs commands there; Orchestrator reads the diff back out of git and the host applies it. **Codex only.** | `worktree` |
+| `isolated_write` | A disposable git worktree outside your repository, checked out at the workflow's baseline. The agent edits and runs commands there; Orchestrator reads the diff back out of git and the host applies it. **Codex, and OpenCode where the sandbox holds.** | `worktree` |
 | `executor: host` | Not an agent at all: the host edits its own checkout. | `active_tree` |
 
 | Runtime | `isolated_write` | Why |
 |---|---|---|
 | `codex` | **supported** | `sandbox_mode: workspace-write` with `approval_policy: never` is enforced by the CLI at OS level: a command aimed outside the worktree comes back `Operation not permitted` from the kernel, not from the model declining. Network is off, `/tmp` and `$TMPDIR` are excluded from the writable set. |
-| `opencode` | refused | Its permission set isolates *configuration*, not filesystem effects: an allowed shell command can leave the worktree. |
-| `claude` | refused | No contained executor yet — same bar as OpenCode. |
+| `opencode` | **supported where the sandbox holds** | Its own permission set isolates *configuration*, not filesystem effects, so the bound is Orchestrator's OS-level sandbox (seatbelt on macOS): writes are held to the worktree, and its runtime state is redirected into it and removed before the diff is read. **The network is open**, because the model is hosted: weaker than Codex, whose network is off. Stored `opencode auth` credentials are not carried in, so only providers that need none (such as OpenCode's free catalogue) work. Bubblewrap cannot grant that network yet, so Linux still refuses, and the refusal at startup says why. |
+| `claude` | refused | Same bar as OpenCode: its permission modes are requests, not kernel bounds. |
 | `antigravity` | refused | Writing needs `--dangerously-skip-permissions`, the one flag the adapter refuses by construction. |
 
 A root allowlist and a prompt instruction are not containment. An agent that declares
