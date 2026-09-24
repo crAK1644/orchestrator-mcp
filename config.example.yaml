@@ -32,6 +32,10 @@ consult:
                             # failure hands you a login command, and the retry after
                             # you run it must not be answered from a stale "no".
                             # 0 probes once per turn, as before this setting existed.
+  score_margin: 0           # how far below the top score an agent may be and still
+                            # win on `priority`. 0 is the plain score order. Give a
+                            # cheap agent the lower priority and a margin of 5, and
+                            # its 92 beats a paid agent's 95.
   protocol_version: consult-v1
 
   # Ceilings, all optional and all off by default. Checked before a request goes

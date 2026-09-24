@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from ..consult.config import AgentConfig, ConsultConfig, StepBinding
 from ..consult.contract import Capability, ExecutionMode
 from ..consult.errors import ConsultErrorCode
+from ..consult.routing import pick
 from .contract import (
     HOST_REVIEW_REFUSAL,
     STEPS,
@@ -174,9 +175,7 @@ class WorkflowRouter:
                 f"no configured agent can take `{step}` as `{mode}`"
                 + (f" ({refused})" if refused else ""),
             )
-        # Same order as the consult router: score, then priority ascending, then the id
-        # so that two identically configured agents resolve the same way twice.
-        return min(eligible, key=lambda a: (-a.score_for(capability), a.priority, a.agent_id))
+        return pick(eligible, capability, self.config.score_margin)
 
     def _ineligible(
         self, agent: AgentConfig, step: Step, mode: ExecutionMode, web: bool

@@ -59,6 +59,33 @@ def test_the_agent_id_breaks_a_full_tie():
     assert decision.route.agent_id == "alpha"
 
 
+def margin_router(margin: int) -> ConsultRouter:
+    agents = {
+        "paid": agent("codex", "a", priority=20, scores={"coding": 95}),
+        "cheap": agent("codex", "b", priority=5, scores={"coding": 92}),
+        "weak": agent("codex", "c", priority=1, scores={"coding": 60}),
+    }
+    return ConsultRouter(ConsultConfig(agents=agents, score_margin=margin), "claude")
+
+
+def test_a_zero_margin_is_the_plain_score_order():
+    assert margin_router(0).select("coding").route.agent_id == "paid"
+
+
+def test_within_the_margin_priority_beats_score():
+    """A cheaper agent a few points short wins when the operator says it is close enough."""
+    assert margin_router(5).select("coding").route.agent_id == "cheap"
+
+
+def test_the_margin_never_reaches_past_its_width():
+    assert margin_router(30).select("coding").route.agent_id == "cheap"
+    assert margin_router(35).select("coding").route.agent_id == "weak"
+
+
+def test_an_explicit_target_ignores_the_margin():
+    assert margin_router(5).select("coding", target_agent="paid").route.agent_id == "paid"
+
+
 def test_scoring_zero_makes_an_agent_ineligible():
     decision = router(
         "claude",
