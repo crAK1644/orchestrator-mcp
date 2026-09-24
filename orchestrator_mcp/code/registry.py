@@ -57,7 +57,7 @@ _SANDBOX_GATED_WRITE: frozenset[Runtime] = frozenset({"claude", "opencode"})
 #
 # This gates the capability as well, so that a containable runtime with no adapter is
 # refused at boot by `_agents_can_execute` rather than four steps into a workflow.
-_WRITE_ADAPTERS: frozenset[str] = frozenset({"codex"})
+_WRITE_ADAPTERS: frozenset[str] = frozenset({"codex", "opencode"})
 
 # Said back to an operator who asked for a mode the code cannot honour. Naming the
 # reason matters more than usual here: "not supported" reads as "not implemented
@@ -146,8 +146,9 @@ def code_adapter_for(agent: object, config: object) -> Any:
     # adapter imports the consult transport, so a top-level import would make the two
     # packages circular for the sake of one lookup.
     from .adapters.codex_cli import CodexWriteAdapter
+    from .adapters.opencode_write import OpenCodeWriteAdapter
 
-    adapters = {"codex": CodexWriteAdapter}
+    adapters = {"codex": CodexWriteAdapter, "opencode": OpenCodeWriteAdapter}
     build = adapters.get(runtime)
     if build is None:
         raise CodeError(

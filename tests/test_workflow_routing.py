@@ -71,17 +71,17 @@ def test_declaring_a_mode_a_runtime_cannot_do_is_refused_at_startup(contained_ho
     """`execution_modes:` is operator trust; containment is the code's own statement,
     and the two are reconciled at boot rather than at the step that needed it."""
     agents = {
-        "flash": workflow_agent(
-            "opencode",
-            "deepseek-v4-flash-free",
+        "opus": workflow_agent(
+            "claude",
+            "claude-opus-5",
             10,
             execution_modes=["consultation", "patch", "isolated_write"],
         )
     }
     with pytest.raises(ValidationError) as raised:
         config(agents)
-    # Which side said no: not "you did not ask for it" but "opencode cannot be held to it".
-    assert "`opencode` can be contained on this host" in str(raised.value)
+    # Which side said no: not "you did not ask for it" but "claude cannot be held to it".
+    assert "`claude` can be contained on this host" in str(raised.value)
     assert "no write adapter" in str(raised.value)
 
 
@@ -104,7 +104,6 @@ def test_a_mode_the_operator_never_granted_refuses_on_the_operator_s_side():
 @pytest.mark.parametrize(
     "runtime,expected",
     [
-        ("opencode", "no write adapter"),
         ("claude", "no write adapter"),
         ("antigravity", "--dangerously-skip-permissions"),
     ],
@@ -121,13 +120,20 @@ def test_each_runtime_refuses_isolated_write_with_its_own_reason(
     assert raised.value.code == ConsultErrorCode.AGENT_UNAVAILABLE
 
 
-def test_codex_is_the_one_runtime_with_a_write_adapter():
+def test_codex_is_the_one_runtime_with_a_write_adapter_of_its_own():
     """The table allows it and an adapter exists for it -- the only pairing that does.
     What the adapter then relies on is codex's own sandbox; see `test_code_execution`."""
     assert "isolated_write" in RUNTIME_CAPABILITIES["codex"]
     built = config({"a": workflow_agent("codex", "gpt-5.6-sol", 10)})
     adapter = code_adapter_for(built.agents["a"], built)
     assert adapter.runtime == "codex"
+
+
+def test_opencode_gets_its_write_adapter_on_a_host_that_confines_it(contained_host):
+    """Not in the table: its bound is this host's sandbox, see `tests/sandbox/test_gate.py`."""
+    assert "isolated_write" not in RUNTIME_CAPABILITIES["opencode"]
+    built = config({"a": workflow_agent("opencode", "opencode/mimo-v2.5-free", 10)})
+    assert code_adapter_for(built.agents["a"], built).runtime == "opencode"
 
 
 def test_a_runtime_outside_the_table_inherits_nothing():
