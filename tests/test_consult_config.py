@@ -274,7 +274,7 @@ def test_the_example_config_still_loads(tmp_path):
     # duplicate id the moment one of them is called `codex-sol`, as the example's is.
     doc["consult"]["managed_agents_path"] = str(tmp_path / "agents.yaml")
     config = load_consult_config(doc)
-    assert sorted(config.agents) == ["claude-opus", "codex-sol", "deepseek-flash", "gemini-reviewer"]
+    assert sorted(config.agents) == ["claude-opus", "codex-sol", "gemini-reviewer", "nemotron-ultra"]
     assert config.review.reviewers == ["codex-sol"]
     assert config.dashboard.enabled is False
 
@@ -288,13 +288,13 @@ def test_an_agent_may_carry_its_own_timeout():
             timeout_s=180,
             agents={
                 "codex-sol": agent("codex", "gpt-5.6-sol", 10, timeout_s=1800),
-                "deepseek-flash": agent("opencode", "deepseek", 20),
+                "nemotron-ultra": agent("opencode", "deepseek", 20),
             },
         )
     )
     assert config.agents["codex-sol"].timeout_s == 1800
     # Unset means the global one, so an existing config is unchanged.
-    assert config.agents["deepseek-flash"].timeout_s is None
+    assert config.agents["nemotron-ultra"].timeout_s is None
 
 
 def test_a_zero_timeout_is_refused():

@@ -116,10 +116,10 @@ consult:
     # OpenCode reaches many hosted providers through one CLI -- DeepSeek, Qwen, Kimi --
     # which is how a model none of the three above carry becomes consultable without
     # this server holding a key.
-    deepseek-flash:
+    nemotron-ultra:
       runtime: opencode
       command: opencode
-      model: opencode/deepseek-v4-flash-free
+      model: opencode/nemotron-3-ultra-free
                             # always `provider/model`; `opencode models` lists what is
                             # reachable. `opencode auth login` once for a provider that
                             # needs a credential. Hosted only: a consultation runs with
@@ -128,6 +128,9 @@ consult:
                             # server reaches a hosted OpenCode model; it does not run a
                             # model on your machine. Some hosted models are anonymous
                             # free tier; others need a subscription or credential.
+                            # The free `opencode/*-free` models rotate: one named here
+                            # can disappear, and the agent then fails preflight. Run
+                            # `opencode models` and pick one it still lists.
       priority: 40
       web_search: false     # not offered by this runtime, and setting it true here
                             # does not buy it: web mode is refused either way
@@ -196,7 +199,7 @@ consult:
       research:  {agent: codex-sol}
       plan:      {agent: codex-sol}
       author_execution_prompt: {executor: host}
-      implement: {agent: deepseek-flash, execution: patch}
+      implement: {agent: nemotron-ultra, execution: patch}
                               # `patch` returns a unified diff over the ordinary
                               # read-only path: the agent never sees your tree, and
                               # you apply the diff yourself. No new write surface.
