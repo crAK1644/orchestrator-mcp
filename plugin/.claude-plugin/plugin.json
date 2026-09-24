@@ -1,0 +1,22 @@
+{
+  "name": "orchestrator",
+  "version": "0.7.1",
+  "description": "Ask Codex, Antigravity or OpenCode for a second opinion, a code review or a phased workflow, through the CLIs already signed in on this machine.",
+  "author": {
+    "name": "Ayberk Karataban",
+    "url": "https://github.com/crAK1644"
+  },
+  "homepage": "https://github.com/crAK1644/orchestrator-mcp",
+  "repository": "https://github.com/crAK1644/orchestrator-mcp",
+  "license": "MIT",
+  "mcpServers": {
+    "orchestrator": {
+      "command": "uvx",
+      "args": ["orchestrator-mcp-server@0.7.1"],
+      "env": {
+        "ORCHESTRATOR_CONFIG": "${HOME}/.orchestrator-mcp/config.yaml",
+        "ORCHESTRATOR_HOST_RUNTIME": "claude"
+      }
+    }
+  }
+}
