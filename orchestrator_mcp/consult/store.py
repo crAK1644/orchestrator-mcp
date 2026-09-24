@@ -979,6 +979,27 @@ class ConsultStore:
 
         return await self._run(work)
 
+    async def turn_history(
+        self, agent_id: str, model: str, limit: int
+    ) -> list[tuple[int | None, int, int, float | None]]:
+        """`(stored prompt chars, input, output, cost)` for the agent's latest turns
+        on this model, newest first, failed turns left out. What `estimate` reads."""
+
+        def work() -> list[tuple[int | None, int, int, float | None]]:
+            return [
+                tuple(row)
+                for row in self._db.execute(
+                    "SELECT LENGTH(t.compiled_prompt), t.input_tokens, t.output_tokens, "
+                    "t.cost_usd FROM consultation_turns t "
+                    "JOIN consultations c ON c.id = t.consultation_id "
+                    "WHERE c.target_agent_id = ? AND c.target_model = ? "
+                    "AND t.error_code IS NULL ORDER BY t.id DESC LIMIT ?",
+                    (agent_id, model, limit),
+                )
+            ]
+
+        return await self._run(work)
+
     async def workflow_usage(self, workflow_id: str) -> dict[str, Spend]:
         """What each step of one workflow spent, keyed by step id.
 

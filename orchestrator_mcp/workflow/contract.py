@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..consult.contract import Capability, ConsultError, ExecutionMode, Runtime
 from ..contract import MAX_ERROR_CHARS, CodedFailure, Usage
+from ..estimate import Estimate
 
 
 class WorkflowError(CodedFailure):
@@ -469,6 +470,12 @@ class StepPreview(BaseModel):
     # A review step's token *is* the review plan's token. One approval, one review;
     # minting a second one here would mean approving the same send twice.
     review_id: str | None = None
+    # The same estimate a review plan carries, for whichever agents this step sends
+    # to. Not a quote; `None` total when any of them has no history or no price.
+    estimates: list[Estimate] = Field(default_factory=list)
+    estimated_cost_usd: float | None = None
+    # Advisory. `run_step` still refuses on what the workflow has spent.
+    ceiling_warning: str | None = None
     confirm_token: str
 
 
