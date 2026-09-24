@@ -107,7 +107,24 @@ These are the normal Codex and Claude Code login flows. Orchestrator checks read
 
 For OpenCode, sign in once with `opencode auth login` for whichever provider you plan to consult. Hosted providers only — this server does not run a model on your machine. See the [OpenCode runtime](#opencode-runtime--deepseek-qwen-kimi) section below.
 
-### 2. Create `config.yaml`
+### 2. Write a starter config
+
+```bash
+orchestrator-mcp-server init --host claude   # or codex: the client you run it under
+```
+
+`init` finds the Codex, Claude Code and Antigravity CLIs installed here, writes
+`~/.orchestrator-mcp/config.yaml` (mode `0600`, never over an existing file; `--path`
+picks another), and prints the exact line for step 3. It picks the best reviewer
+that is not the host. It writes no `workflow:` block, because only you can choose the
+directories a workflow may work in, and no OpenCode agent, because its free models
+rotate too often for a template; add both by hand from
+[`config.example.yaml`](config.example.yaml).
+
+<details>
+<summary><strong>Or write it by hand</strong></summary>
+
+<br>
 
 ```yaml
 consult:
@@ -140,7 +157,11 @@ characters. Anything else is refused at startup with a message naming the key.
 See [`config.example.yaml`](config.example.yaml) for a broader annotated configuration,
 an OpenCode agent, and an experimental Antigravity example.
 
+</details>
+
 ### 3. Add the server to your MCP client
+
+`init` printed this with your paths filled in.
 
 <details open>
 <summary><strong>Claude Code</strong></summary>
@@ -176,10 +197,22 @@ Restart the MCP client after changing its configuration.
 > [!TIP]
 > Use an absolute `ORCHESTRATOR_CONFIG` path. GUI-launched clients often start in a different working directory and inherit a smaller `PATH` than your terminal.
 
+### 4. Check it
+
+```bash
+ORCHESTRATOR_CONFIG=~/.orchestrator-mcp/config.yaml ORCHESTRATOR_HOST_RUNTIME=claude \
+  orchestrator-mcp-server doctor
+```
+
+One `ok` or `FAIL` line per check: the config loads, the database opens, and each
+agent's CLI is installed and logged in. It exits 1 if anything failed. The only
+things it runs are the CLIs' own login checks, so no project material leaves the
+machine.
+
 The client spawns the server and talks to it over stdin, so `orchestrator-mcp-server`
 is not a command you start yourself. (The [dashboard](#local-dashboard) is the other
 half of this distribution and *is* started by hand.) Two flags answer questions from
-outside a client:
+outside a client, besides `init` and `doctor` above:
 
 ```bash
 orchestrator-mcp-server --version   # which build the client will spawn

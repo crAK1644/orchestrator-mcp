@@ -26,6 +26,7 @@ import yaml
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 
+from . import cli
 from .commands import add_commands
 from .consult.config import (
     ConsultConfig,
@@ -826,6 +827,11 @@ holds the conversation; `ORCHESTRATOR_HOST_RUNTIME` must name the runtime that c
 is (`codex`, `claude`, `antigravity`, `opencode`) so the server can leave that agent
 out of its own routing.
 
+  init --host RUNTIME [--path P]
+                 write a starter config from the agent CLIs installed here
+                 (default ~/.orchestrator-mcp/config.yaml; never overwrites)
+  doctor         check the config, the database, and each agent's login,
+                 reading the same environment variables the server does
   -h, --help     print this
   -V, --version  print the installed version
 """
@@ -833,6 +839,10 @@ out of its own routing.
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["init"]:
+        raise SystemExit(cli.init(args[1:]))
+    if args == ["doctor"]:
+        raise SystemExit(cli.doctor(load_config))
     # The unknown one first: `--help --helpp` is a typo either way, and answering the
     # flag it did spell right would send the reader off believing the other one took.
     unknown = [arg for arg in args if arg not in {"-h", "--help", "-V", "--version"}]
