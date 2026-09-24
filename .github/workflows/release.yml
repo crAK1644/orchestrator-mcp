@@ -35,6 +35,13 @@ jobs:
       # A release that fails its own tests should not reach PyPI, and a version
       # is not withdrawable once uploaded.
       - run: uv sync --all-extras --dev
+      # Same step as test.yml: the suite asserts the sandbox holds, so a runner
+      # without bubblewrap fails it rather than skipping past it.
+      - name: Install a sandbox mechanism
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - run: uv run pytest -q
 
       # The tag must match the version in pyproject.toml, or the release notes
