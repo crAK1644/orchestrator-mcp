@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ..consult.contract import MAX_CONTEXT_CHARS as CONSULT_MAX_CONTEXT_CHARS
 from ..consult.contract import ConsultError, ConsultSource, Runtime
 from ..contract import MAX_REVIEWERS, Usage
+from ..estimate import Estimate
 
 ReviewMode = Literal["standard", "deep"]
 ReviewStatus = Literal[
@@ -215,6 +216,12 @@ class ReviewPlan(BaseModel):
     # and the reviewers `recheck_reviewers: raised` left out because none were theirs.
     recheck_of: str | None = Field(default=None, max_length=MAX_LABEL_CHARS)
     reviewers_skipped: list[str] = Field(default_factory=list, max_length=MAX_REVIEWERS)
+    # Read from each reviewer's past turns on the same model: an estimate, not a
+    # quote. The total is `None` when any reviewer has no history or no price.
+    estimates: list[Estimate] = Field(default_factory=list, max_length=MAX_REVIEWERS)
+    estimated_cost_usd: float | None = None
+    # Advisory. The ceiling still refuses on what was spent, never on this.
+    ceiling_warning: str | None = Field(default=None, max_length=MAX_LABEL_CHARS)
 
 
 class CombinedFinding(BaseModel):

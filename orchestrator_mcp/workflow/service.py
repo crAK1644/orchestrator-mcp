@@ -51,10 +51,11 @@ from ..consult.errors import ConsultErrorCode
 from ..consult.prompts import compile_execution_prompt
 from ..consult.store import _UNATTRIBUTED, ConsultStore, StoreError
 from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
+from ..estimate import ceiling_warning, for_agents
 from ..log import get_logger
 from ..review.contract import SERIOUS, ReviewSummary, open_serious
 from ..review.service import ReviewService
-from ..spend import Spend, caveats
+from ..spend import Spend, caveats, counted
 from ..spend import refusal as spend_refusal
 from .contract import (
     ARTIFACT_MODELS,
@@ -366,6 +367,17 @@ class WorkflowService:
             attempt=attempt,
             review_id=review_id,
         )
+        if review_id is not None:
+            estimates, estimated = review.plan.estimates, review.plan.estimated_cost_usd
+        elif prompt is not None:
+            estimates, estimated = await for_agents(
+                self.consult.store,
+                [(a.agent_id, a.model) for a in agents],
+                len(prompt) + len(payload or ""),
+            )
+        else:
+            estimates, estimated = [], None
+        known, _ = counted(await self.consult.store.workflow_usage(workflow.id))
         return WorkflowResponse(
             workflow_id=workflow.id,
             status=workflow.status,  # type: ignore[arg-type]
@@ -382,6 +394,12 @@ class WorkflowService:
                 prompt_chars=len(prompt or "") + len(payload or ""),
                 prompt_sha256=agent_snapshot["prompt_sha256"],
                 review_id=review_id,
+                estimates=estimates,
+                estimated_cost_usd=estimated,
+                ceiling_warning=ceiling_warning(
+                    known, estimated, self.config.spend.max_cost_usd_per_workflow,
+                    f"workflow `{workflow.id}`",
+                ),
                 confirm_token=token,
             ),
             latency_ms=_ms(started),

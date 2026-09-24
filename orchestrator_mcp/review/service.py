@@ -46,6 +46,7 @@ from ..consult.errors import ConsultErrorCode
 from ..consult.service import ConsultService
 from ..consult.store import ConsultStore, StoreError
 from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json, secret_lines
+from ..estimate import ceiling_warning, for_agents
 from ..json_objects import fenced_json_objects, json_object_candidates
 from ..log import get_logger
 from ..progress import step as progress_step
@@ -262,6 +263,11 @@ class ReviewService:
         raw_sha = sha256(canonical({"goal": goal, "context": context}))
         token = secrets_mod.token_urlsafe(32)
 
+        estimates, estimated = await for_agents(
+            self.consult.store,
+            [(s.agent_id, s.model) for s in snapshots],
+            len(goal) + len(context or ""),
+        )
         seen: dict[str, int] = {}
         for snapshot in snapshots:
             seen[snapshot.model] = seen.get(snapshot.model, 0) + 1
@@ -286,6 +292,11 @@ class ReviewService:
             confirm_token=token,
             recheck_of=str(parent_review_id) if parent_review_id else None,
             reviewers_skipped=skipped,
+            estimates=estimates,
+            estimated_cost_usd=estimated,
+            ceiling_warning=ceiling_warning(
+                0.0, estimated, self.config.spend.max_cost_usd_per_review, "this review"
+            ),
         )
 
         await self.store.create_review(

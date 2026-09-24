@@ -1123,6 +1123,50 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "Finding": {
           "additionalProperties": false,
           "description": "One reviewer's single finding, after parsing.",
@@ -1424,6 +1468,39 @@
               "maxItems": 5,
               "title": "Reviewers Skipped",
               "type": "array"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "maxItems": 5,
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             }
           },
           "required": [
@@ -2164,6 +2241,50 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "Finding": {
           "additionalProperties": false,
           "description": "One reviewer's single finding, after parsing.",
@@ -2465,6 +2586,39 @@
               "maxItems": 5,
               "title": "Reviewers Skipped",
               "type": "array"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "maxItems": 5,
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             }
           },
           "required": [
@@ -3191,6 +3345,50 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "Finding": {
           "additionalProperties": false,
           "description": "One reviewer's single finding, after parsing.",
@@ -3492,6 +3690,39 @@
               "maxItems": 5,
               "title": "Reviewers Skipped",
               "type": "array"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "maxItems": 5,
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             }
           },
           "required": [
@@ -4329,6 +4560,50 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "Finding": {
           "additionalProperties": false,
           "description": "One reviewer's single finding, after parsing.",
@@ -4630,6 +4905,39 @@
               "maxItems": 5,
               "title": "Reviewers Skipped",
               "type": "array"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "maxItems": 5,
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             }
           },
           "required": [
@@ -5306,6 +5614,50 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "Finding": {
           "additionalProperties": false,
           "description": "One reviewer's single finding, after parsing.",
@@ -5607,6 +5959,39 @@
               "maxItems": 5,
               "title": "Reviewers Skipped",
               "type": "array"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "maxItems": 5,
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             }
           },
           "required": [
@@ -6299,6 +6684,50 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "Finding": {
           "additionalProperties": false,
           "description": "One reviewer's single finding, after parsing.",
@@ -6600,6 +7029,39 @@
               "maxItems": 5,
               "title": "Reviewers Skipped",
               "type": "array"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "maxItems": 5,
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             }
           },
           "required": [
@@ -7268,6 +7730,50 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "Finding": {
           "additionalProperties": false,
           "description": "One reviewer's single finding, after parsing.",
@@ -7569,6 +8075,39 @@
               "maxItems": 5,
               "title": "Reviewers Skipped",
               "type": "array"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "maxItems": 5,
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             }
           },
           "required": [
@@ -8384,6 +8923,50 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "Finding": {
           "additionalProperties": false,
           "description": "One reviewer's single finding, after parsing.",
@@ -8685,6 +9268,39 @@
               "maxItems": 5,
               "title": "Reviewers Skipped",
               "type": "array"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "maxItems": 5,
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             }
           },
           "required": [
@@ -9580,6 +10196,50 @@
           "title": "ConsultErrorCode",
           "type": "string"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "RequiredAction": {
           "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
           "properties": {
@@ -9740,6 +10400,37 @@
               ],
               "default": null,
               "title": "Review Id"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             },
             "confirm_token": {
               "title": "Confirm Token",
@@ -10318,6 +11009,50 @@
           "title": "ConsultErrorCode",
           "type": "string"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "RequiredAction": {
           "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
           "properties": {
@@ -10478,6 +11213,37 @@
               ],
               "default": null,
               "title": "Review Id"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             },
             "confirm_token": {
               "title": "Confirm Token",
@@ -11045,6 +11811,50 @@
           "title": "ConsultErrorCode",
           "type": "string"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "RequiredAction": {
           "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
           "properties": {
@@ -11205,6 +12015,37 @@
               ],
               "default": null,
               "title": "Review Id"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             },
             "confirm_token": {
               "title": "Confirm Token",
@@ -11778,6 +12619,50 @@
           "title": "ConsultErrorCode",
           "type": "string"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "RequiredAction": {
           "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
           "properties": {
@@ -11938,6 +12823,37 @@
               ],
               "default": null,
               "title": "Review Id"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             },
             "confirm_token": {
               "title": "Confirm Token",
@@ -12495,6 +13411,50 @@
           "title": "ConsultErrorCode",
           "type": "string"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "RequiredAction": {
           "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
           "properties": {
@@ -12655,6 +13615,37 @@
               ],
               "default": null,
               "title": "Review Id"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             },
             "confirm_token": {
               "title": "Confirm Token",
@@ -13289,6 +14280,50 @@
           "title": "ConsultErrorCode",
           "type": "string"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "RequiredAction": {
           "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
           "properties": {
@@ -13449,6 +14484,37 @@
               ],
               "default": null,
               "title": "Review Id"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             },
             "confirm_token": {
               "title": "Confirm Token",
@@ -14011,6 +15077,50 @@
           "title": "ConsultErrorCode",
           "type": "string"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "RequiredAction": {
           "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
           "properties": {
@@ -14171,6 +15281,37 @@
               ],
               "default": null,
               "title": "Review Id"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             },
             "confirm_token": {
               "title": "Confirm Token",
@@ -14728,6 +15869,50 @@
           "title": "ConsultErrorCode",
           "type": "string"
         },
+        "Estimate": {
+          "additionalProperties": false,
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "input_tokens": {
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "output_tokens": {
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "basis_turns": {
+              "minimum": 0,
+              "title": "Basis Turns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agent_id",
+            "input_tokens",
+            "output_tokens",
+            "basis_turns"
+          ],
+          "title": "Estimate",
+          "type": "object"
+        },
         "RequiredAction": {
           "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
           "properties": {
@@ -14888,6 +16073,37 @@
               ],
               "default": null,
               "title": "Review Id"
+            },
+            "estimates": {
+              "items": {
+                "$ref": "#/$defs/Estimate"
+              },
+              "title": "Estimates",
+              "type": "array"
+            },
+            "estimated_cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Estimated Cost Usd"
+            },
+            "ceiling_warning": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ceiling Warning"
             },
             "confirm_token": {
               "title": "Confirm Token",

@@ -897,6 +897,15 @@ a retried reviewer counts every attempt exactly once.
 A consultation with no turns yet is never refused. Nothing has been spent on it, so
 there is no ceiling for it to have reached -- what these stop is the turn after one.
 
+**Plans carry an estimate.** A review plan and a workflow step preview show
+`estimates` (tokens and cost per agent) and `estimated_cost_usd`, fitted from that
+agent's last 50 successful turns on the same model. It is an estimate, not a quote:
+`basis_turns` says how many turns it rests on, an agent with no history gets none,
+and the cost is `null` for an agent with fewer than 3 priced turns -- so the total is
+`null` whenever any agent is unpriced, the same rule as above. When the estimate would
+reach a dollar ceiling the plan says so in `ceiling_warning`. That is advice only;
+refusals still read what was actually spent.
+
 ### Watching a run
 
 `ORCHESTRATOR_LOG_LEVEL` turns on stderr logging: routing decisions, child
