@@ -105,10 +105,10 @@ MODEL_PRESETS: dict[str, tuple[str, ...]] = {
     # is offerable: the consultation runs under a configuration with no `provider` block
     # at all, which leaves opencode's own catalogue and nothing locally served.
     "opencode": (
-        "opencode/deepseek-v4-flash-free",
-        "opencode/big-pickle",
-        "opencode/longcat-2.0-free",
+        # Free models rotate; `opencode models` is the live list.
         "opencode/nemotron-3-ultra-free",
+        "opencode/big-pickle",
+        "opencode/mimo-v2.5-free",
     ),
 }
 

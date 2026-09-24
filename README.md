@@ -479,7 +479,7 @@ consult:
       research:  {agent: codex-sol}
       plan:      {agent: codex-sol}
       author_execution_prompt: {executor: host}
-      implement: {agent: deepseek-flash, execution: patch}
+      implement: {agent: nemotron-ultra, execution: patch}
       apply_patch: {executor: host}
       test:      {executor: host}
       review:    {agents: [codex-sol, claude-opus]}
@@ -801,12 +801,14 @@ Orchestrator checks structure, routing, permissions, and model identity where ob
 [OpenCode](https://opencode.ai) is one CLI in front of many hosted providers, which is how models the other three runtimes do not carry become reachable without Orchestrator holding a key. Models are addressed as `provider/model`:
 
 ```yaml
-    deepseek-flash:
+    nemotron-ultra:
       runtime: opencode
       command: opencode
-      model: opencode/deepseek-v4-flash-free
+      model: opencode/nemotron-3-ultra-free
       scores: { coding: 60, reasoning: 60 }
 ```
+
+OpenCode's free models (`opencode/*-free`) rotate — the one above can stop being offered, and an agent naming a model that is gone fails preflight with ``is not among the models opencode offers``. Run `opencode models` and pick one it lists today.
 
 **Hosted providers only. Orchestrator does not run a model on your machine, or on anyone's.** Depending on the selected model, this runtime consults a subscription you already hold or OpenCode's anonymous free tier. A locally served model — Ollama, LM Studio, your own endpoint — cannot be reached through it, and that is enforced by construction rather than by a check: a consultation runs under a configuration with no `provider` block at all, and a provider block is the only place an endpoint outside OpenCode's own catalogue is ever named. Verified against the CLI: under this configuration `--model ollama/qwen2.5:7b` fails with `ProviderModelNotFoundError` and the local server is never contacted. The constraint is real — if the model you want is one you host yourself, this runtime cannot consult it.
 

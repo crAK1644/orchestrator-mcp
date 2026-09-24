@@ -81,18 +81,18 @@ GOAL = (
 )
 
 # Everything not named here falls to the host, which is the conservative default.
-# `plan` goes to codex for the same reason path B does: the free flash model truncates
+# `plan` goes to codex for the same reason path B does: the free opencode model truncates
 # a long structured answer often enough to fail the step outright. What this path is
 # here to prove is `implement` and `fix` -- a delegated diff from a model that never
 # saw the tree -- so those are the ones that stay on it.
 PATCH_PATH = {
     "plan": {"agent": "codex-sol"},
-    "implement": {"agent": "deepseek-flash", "execution": "patch"},
-    "fix": {"agent": "deepseek-flash", "execution": "patch"},
+    "implement": {"agent": "nemotron-ultra", "execution": "patch"},
+    "fix": {"agent": "nemotron-ultra", "execution": "patch"},
     "review": {"agents": ["codex-sol"]},
 }
 # A different model on the same step, which is the whole claim about bindings. It is
-# also the reliable one: `deepseek-v4-flash-free` returns schema-shaped prose often
+# also the reliable one: the free opencode model first used here returned schema-shaped prose often
 # enough that the first live runs failed here, and a `plan` that will not parse is
 # recorded as a failed step rather than stored as an artifact.
 HOST_PATH = {
@@ -109,7 +109,7 @@ CONTAINED_PATH = {
     "implement": {"agent": "codex-sol", "execution": "isolated_write"},
     "fix": {"agent": "codex-sol", "execution": "isolated_write"},
     # Not codex here: `different_from_implementer` is on, and codex wrote this one.
-    "review": {"agents": ["deepseek-flash"]},
+    "review": {"agents": ["nemotron-ultra"]},
 }
 
 # What the host would have written itself, in the second path. Applied verbatim, so
@@ -222,10 +222,10 @@ def live_config(root: Path) -> dict:
     agents = consult["agents"]
     # The steps route on capabilities the example config carries and a working
     # config.yaml written before the workflow existed does not.
-    agents["deepseek-flash"].setdefault("scores", {}).update(
+    agents["nemotron-ultra"].setdefault("scores", {}).update(
         {"planning": 60, "prompt_authoring": 55, "synthesis": 50}
     )
-    agents["deepseek-flash"]["execution_modes"] = ["consultation", "patch"]
+    agents["nemotron-ultra"]["execution_modes"] = ["consultation", "patch"]
     agents["codex-sol"].setdefault("scores", {}).update(
         {"planning": 85, "prompt_authoring": 80, "synthesis": 85}
     )
