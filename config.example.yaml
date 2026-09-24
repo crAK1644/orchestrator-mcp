@@ -92,14 +92,14 @@ consult:
     claude-opus:
       runtime: claude
       command: claude
-      model: claude-opus-4-6
+      model: claude-opus-5-5
       priority: 20
       web_search: true
       scores:
         writing: 95
         review: 90
 
-    gemini-reviewer:        # experimental; see docs/antigravity-spike.md
+    gemini-reviewer:        # experimental
       runtime: antigravity
       command: agy          # installs to ~/.local/bin/agy, which is often not on
                             # PATH for a server started by a desktop app -- an

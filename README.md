@@ -126,7 +126,7 @@ consult:
     claude:
       runtime: claude
       command: claude
-      model: claude-opus-4-6
+      model: claude-opus-5-5
       priority: 10
       web_search: true
       scores: { coding: 90, research: 95, writing: 95, review: 95 }

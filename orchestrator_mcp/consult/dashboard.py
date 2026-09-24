@@ -78,8 +78,8 @@ SEVERITIES = get_args(Severity)
 MODEL_PRESETS: dict[str, tuple[str, ...]] = {
     "codex": ("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5"),
     "claude": (
-        "claude-fable-5",
-        "claude-opus-5",
+        "claude-fable-5-1",
+        "claude-opus-5-5",
         "claude-sonnet-5",
         "claude-haiku-4-5",
         # The CLI takes an unversioned alias too, and resolves it to the latest.
