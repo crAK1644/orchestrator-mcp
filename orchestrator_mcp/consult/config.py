@@ -148,6 +148,9 @@ class ReviewConfig(BaseModel):
     # Files supplied through context_paths must resolve beneath one of these. Empty
     # disables server-side path reads; callers can still pass material as context.
     roots: list[Path] = Field(default_factory=list)
+    # Who a recheck (`parent_review_id`) asks again. `all` re-asks every reviewer;
+    # `raised` asks only those behind a finding the parent left open, and at least one.
+    recheck_reviewers: Literal["all", "raised"] = "all"
 
     @field_validator("roots")
     @classmethod

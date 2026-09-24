@@ -235,3 +235,96 @@ async def test_deleting_a_review_takes_its_rechecks_with_it(build):
 
     assert await service.delete(run.review_id) == 2
     assert (await service.list()) == []
+
+
+# --- rechecks carry the parent's open findings -------------------------------
+
+NOTHING = '```json\n{"findings": []}\n```'
+
+
+async def finalized(service, disposition="open", **overrides):
+    """A finished review; its one Critical is left at `disposition`."""
+    from .test_review_service import _synthesis
+
+    plan = await planned(service, **overrides)
+    extra = {"host_findings": ["mine"]} if overrides.get("mode") == "deep" else {}
+    run = await service.run(plan.review_id, plan.plan.confirm_token, **extra)
+    synthesis = _synthesis(run)
+    for finding in synthesis["combined_findings"]:
+        finding["disposition"] = disposition
+        finding["disposition_reason"] = "argued down"
+    done = await service.finalize(run.review_id, synthesis)
+    assert done.status == "complete", done.error
+    return run
+
+
+async def test_a_recheck_sends_the_parents_open_findings_with_the_diff(build):
+    adapters = {aid: StubAdapter() for aid in REVIEWERS}
+    service = await build(adapters)
+    run = await finalized(service)
+
+    child = await planned(service, parent_review_id=run.review_id, context="the diff")
+    await service.run(child.review_id, child.plan.confirm_token)
+
+    assert child.plan.recheck_of == str(run.review_id)
+    prompt = adapters["codex-sol"].prompts[-1]
+    assert "the diff" in prompt and "recheck" in prompt.lower()
+    assert critical_id(run) in prompt
+
+
+async def test_a_finding_already_dealt_with_is_not_carried(build):
+    for disposition in ("fixed", "rejected", "accepted_risk"):
+        adapters = {aid: StubAdapter() for aid in REVIEWERS}
+        service = await build(adapters)
+        run = await finalized(service, disposition)
+
+        child = await planned(service, parent_review_id=run.review_id, context="the diff")
+        await service.run(child.review_id, child.plan.confirm_token)
+
+        assert critical_id(run) not in adapters["codex-sol"].prompts[-1], disposition
+        await service.delete(run.review_id)
+
+
+async def test_raised_asks_only_the_reviewers_with_an_open_finding(build, tmp_path):
+    adapters = {"codex-sol": StubAdapter(), "gemini-x": StubAdapter(NOTHING)}
+    review = {"reviewers": ["codex-sol"], "deep_reviewers": list(REVIEWERS), "roots": [str(tmp_path)]}
+    service = await build(adapters, review={**review, "recheck_reviewers": "raised"})
+    run = await finalized(service, mode="deep")
+
+    child = await planned(service, mode="deep", parent_review_id=run.review_id, context="the diff")
+
+    assert [r.agent_id for r in child.plan.reviewers] == ["codex-sol"]
+    assert child.plan.reviewers_skipped == ["gemini-x"]
+
+
+async def test_raised_still_asks_someone_when_nothing_is_open(build, tmp_path):
+    adapters = {"codex-sol": StubAdapter(), "gemini-x": StubAdapter(NOTHING)}
+    review = {"reviewers": ["codex-sol"], "deep_reviewers": list(REVIEWERS), "roots": [str(tmp_path)]}
+    service = await build(adapters, review={**review, "recheck_reviewers": "raised"})
+    run = await finalized(service, "fixed", mode="deep")
+
+    child = await planned(service, mode="deep", parent_review_id=run.review_id, context="the diff")
+
+    assert len(child.plan.reviewers) == 1
+    assert len(child.plan.reviewers_skipped) == 1
+
+
+async def test_all_asks_every_reviewer_again(build):
+    service = await build({"codex-sol": StubAdapter(), "gemini-x": StubAdapter(NOTHING)})
+    run = await finalized(service, mode="deep")
+
+    child = await planned(service, mode="deep", parent_review_id=run.review_id, context="the diff")
+
+    assert {r.agent_id for r in child.plan.reviewers} == set(REVIEWERS)
+    assert child.plan.reviewers_skipped == []
+
+
+async def test_an_unsynthesized_parent_adds_nothing(build):
+    adapters = {aid: StubAdapter() for aid in REVIEWERS}
+    service = await build(adapters)
+    run = await reviewed(service)
+
+    child = await planned(service, parent_review_id=run.review_id, context="the diff")
+    await service.run(child.review_id, child.plan.confirm_token)
+
+    assert critical_id(run) not in adapters["codex-sol"].prompts[-1]

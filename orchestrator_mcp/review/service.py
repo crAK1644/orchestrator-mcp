@@ -63,6 +63,7 @@ from .contract import (
     MAX_MATERIAL_ITEMS,
     MAX_SECRET_HITS,
     REASK_INSTRUCTIONS,
+    RECHECK_INSTRUCTIONS,
     REVIEWER_INSTRUCTIONS,
     SEVERITY_ORDER,
     Finding,
@@ -221,6 +222,12 @@ class ReviewService:
                 manifest = read_manifest
                 material_verified = True
 
+        skipped: list[str] = []
+        if parent_review_id:
+            context, snapshots, skipped = await self._recheck(
+                str(parent_review_id), context, snapshots
+            )
+
         # Bounded here rather than left to `ReviewPlan`: a plan that fails validation
         # after the insert leaves a `pending` row nobody can reach, holding material
         # the caller was told was never accepted. `_read_paths` checks the same limit
@@ -277,6 +284,8 @@ class ReviewService:
                 (s.model for s in snapshots if host_model and s.model == host_model), None
             ),
             confirm_token=token,
+            recheck_of=str(parent_review_id) if parent_review_id else None,
+            reviewers_skipped=skipped,
         )
 
         await self.store.create_review(
@@ -303,6 +312,44 @@ class ReviewService:
             plan=plan,
             latency_ms=_ms(started),
         ).check_invariants()
+
+    async def _recheck(
+        self, parent_id: str, context: str | None, snapshots: list[ReviewerSnapshot]
+    ) -> tuple[str | None, list[ReviewerSnapshot], list[str]]:
+        """Append the parent's open findings to the context, and narrow the reviewers.
+
+        The host sends only the change; this is what the reviewer checks it against.
+        A fresh session each time, never a resumed one: a resumed session re-bills its
+        whole transcript as input once the provider's cache has expired, and a fix
+        round with tests in it routinely outlasts that cache.
+        """
+        parent = await self.store.get_review(parent_id)
+        if not parent.summary_json:
+            # ponytail: an unsynthesized parent has no dispositions to go by, so it
+            # contributes nothing; `orchestrator_apply_fixes` needs a synthesis anyway.
+            return context, snapshots, []
+        open_findings = [
+            f
+            for f in json.loads(parent.summary_json).get("combined_findings", [])
+            if f.get("disposition", "open") == "open"
+        ]
+        block = json.dumps(
+            {"recheck_of": parent_id, "previous_findings": open_findings},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        context = f"{context}\n\n" if context else ""
+        context += f"{RECHECK_INSTRUCTIONS}\n{block}"
+
+        review = self.config.review
+        if review is None or review.recheck_reviewers == "all":
+            return context, snapshots, []
+        # Finding ids are `{agent_id}-{n}`, assigned by `_parse_findings`.
+        raised = {
+            fid.rsplit("-", 1)[0] for f in open_findings for fid in f.get("source_finding_ids", [])
+        }
+        kept = [s for s in snapshots if s.agent_id in raised] or snapshots[:1]
+        return context, kept, [s.agent_id for s in snapshots if s not in kept]
 
     def _reviewer_snapshots(
         self, mode: ReviewMode, reviewers: list[str] | None

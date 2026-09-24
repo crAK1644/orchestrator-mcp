@@ -211,6 +211,10 @@ class ReviewPlan(BaseModel):
     # `host_model` is host-declared and unverifiable, like the manifest.
     host_model_conflict: str | None = Field(default=None, max_length=MAX_LABEL_CHARS)
     confirm_token: str = Field(min_length=1, max_length=MAX_LABEL_CHARS)
+    # Set on a recheck: the review whose open findings were appended to the context,
+    # and the reviewers `recheck_reviewers: raised` left out because none were theirs.
+    recheck_of: str | None = Field(default=None, max_length=MAX_LABEL_CHARS)
+    reviewers_skipped: list[str] = Field(default_factory=list, max_length=MAX_REVIEWERS)
 
 
 class CombinedFinding(BaseModel):
@@ -320,7 +324,8 @@ FIX_STEPS = [
     "Run the project's tests, and say what they did.",
     "Keep or undo, and record which with `orchestrator_record_fix_round`.",
     "To re-review, plan a new review with `parent_review_id` set to this one and "
-    "the diff as `context`. It gets the same preview and the same approval as any "
+    "only the diff as `context` -- the server adds this review's open findings. It "
+    "gets the same preview and the same approval as any "
     "other review -- a recheck is not exempt from them.",
 ]
 
@@ -515,6 +520,18 @@ synthesis that drops it will be accepted.
 Prose without the block loses every finding you made: nothing downstream can rank them, \
 group them, or check that your Critical survived. If you are asked again for the block, \
 send only the block.
+"""
+
+# Appended to a recheck's context, ahead of the parent's open findings. The host is
+# told to send only the change, so this is what tells the reviewer what the change was
+# meant to fix and what it may now ignore.
+RECHECK_INSTRUCTIONS = """\
+This is a recheck. The material is the change made since the previous review, not the \
+whole code. Below are the findings that review left open.
+
+For each previous finding: report it again, with the same severity or a revised one, \
+only if the change leaves it unresolved, and say why. Leave out every finding the change \
+resolves. Report a new finding only if it is in the changed code or caused by it.
 """
 
 # Sent as a second turn in the *same* consultation when the first answer's findings

@@ -395,6 +395,8 @@ Finalization must preserve every machine-readable Critical finding, even when ot
 
 Reviews default to `web: false`. Reviewers cannot change files or run commands. `orchestrator_apply_fixes` is a plan for work the host agent performs; it never applies a patch itself.
 
+A recheck is a review planned with `parent_review_id`. The server appends the parent's open findings and a recheck brief, so the host sends only the diff instead of the whole tree again. Set `review.recheck_reviewers: raised` to ask again only the reviewers behind an open finding (at least one); the plan lists the others in `reviewers_skipped`. The default `all` asks everyone. A recheck starts a fresh reviewer session rather than resuming the old one: a resumed session re-bills its whole transcript once the provider's prompt cache has expired.
+
 A reviewer's prose comes back once, with the call that ran it, and its `findings` -- parsed out of that prose -- come back every time. `orchestrator_get_review` is the call that returns the prose again. That keeps a review's later calls from re-sending the same reviewer answers into your agent's context, where they would be charged for on every turn that follows.
 
 Credential-shaped values are masked before storage. `secrets="send_as_is"` is an explicit escape hatch for a false positive: it requires the exact original goal and context again, sends those originals to the reviewers, and still stores only the redacted copy.
@@ -653,7 +655,10 @@ serious findings still open ends the workflow `needs_attention` — not `complet
 A fix round after review carries the findings that are still open, read back from the
 review row rather than from workflow storage, so the round is an answer to the review
 and not a second pass at the goal. A fix triggered by a failed test before review instead
-carries that failed `TestReport`. A re-review gets the open findings too.
+carries that failed `TestReport`. A re-review is a recheck of the previous round's review
+(`parent_review_id`): the server appends that review's open findings and tells the
+reviewers to confirm or drop each one and to look for new problems only in the change.
+Send the fix's diff as the step's `context`, not the whole tree again.
 
 ### The execution contract, honestly scoped
 

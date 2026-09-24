@@ -383,6 +383,13 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         this call created; the returned hash identifies that plan but is not a
         separate payload verifier.
 
+        `parent_review_id` makes this a recheck of a synthesized review. The server
+        appends that review's open findings and a recheck brief to the context, so
+        send only the change -- the diff and the files it touches -- not the whole
+        tree again. With `review.recheck_reviewers: raised` configured, only reviewers
+        behind an open finding are asked again; the plan lists the rest in
+        `reviewers_skipped`.
+
         `mode="deep"` asks up to five reviewers and requires your own findings first,
         passed to `orchestrator_review_run` as `host_findings`. `web=False` unless the user asked
         for web access: reviewers get none by default.
@@ -518,8 +525,9 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         dropped here is one the recheck will simply find again.
 
         To re-review, plan a new review with `parent_review_id` set to this one and
-        the diff as `context`. A recheck gets the same preview and the same approval
-        as any other review; it is not exempt from either.
+        only the diff as `context`: the server adds this review's open findings. A
+        recheck gets the same preview and the same approval as any other review; it
+        is not exempt from either.
         """
         return await service.fix_plan(review_id, finding_ids)
 
