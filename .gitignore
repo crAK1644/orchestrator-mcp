@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 .env
 dist/
+.DS_Store
 
 # Real config carries endpoints and key references; only the example is tracked.
 config.yaml
