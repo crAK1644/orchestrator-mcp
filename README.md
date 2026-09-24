@@ -266,7 +266,7 @@ Two things worth being clear about. **Nothing is installed.** These arrive over 
 
 ## How consultation works
 
-`orchestrator_consult` selects the eligible agent with the highest capability score. Lower `priority` wins a score tie; agent ID breaks the final tie. A missing capability or a score of `0` makes an agent ineligible.
+`orchestrator_consult` selects the eligible agent with the highest capability score. Lower `priority` wins a score tie; agent ID breaks the final tie. Set `consult.score_margin` to let priority decide among agents within that many points of the top score: give a cheap or free agent a low priority and a margin of 5, and its 92 beats a paid agent's 95. The default `0` keeps the plain score order. A missing capability or a score of `0` makes an agent ineligible.
 
 The selected CLI runs under its existing login and returns one response envelope:
 
@@ -315,7 +315,7 @@ Agent configuration:
 | `runtime` | required | `codex`, `claude`, `opencode`, or `antigravity`. |
 | `command` | required | Executable name or absolute path. |
 | `model` | required | Requested model and, where possible, verified responding model. |
-| `priority` | `100` | Lower wins a score tie. |
+| `priority` | `100` | Lower wins a score tie, or any pick within `consult.score_margin`. |
 | `enabled` | `true` | Keep the agent configured but out of routing when false. |
 | `scores` | none | 0–100 per capability; missing means ineligible. |
 | `web_search` | `false` | Permit `source_mode: web` for this agent. |

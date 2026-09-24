@@ -218,6 +218,26 @@ def test_auto_selects_for_a_step_that_had_no_capability_before():
     assert [a.agent_id for a in resolved.agents] == ["high"]
 
 
+def test_auto_selection_honours_the_score_margin():
+    """The workflow router shares the consult router's order, margin included."""
+    agents = {
+        "cheap": workflow_agent(
+            "codex", "gpt-5.6-low", 10, scores={**WORKFLOW_SCORES, "synthesis": 90}
+        ),
+        "paid": workflow_agent(
+            "codex", "gpt-5.6-high", 20, scores={**WORKFLOW_SCORES, "synthesis": 95}
+        ),
+    }
+    for margin, winner in ((0, "paid"), (5, "cheap")):
+        cfg = ConsultConfig(
+            agents=agents, host=HOST, workflow={"bindings": {}}, score_margin=margin
+        )
+        resolved = WorkflowRouter(cfg, "claude").resolve(
+            "synthesize", StepBinding(), want_web=False
+        )
+        assert [a.agent_id for a in resolved.agents] == [winner]
+
+
 def test_when_nothing_is_eligible_the_refusal_names_every_agent_and_its_reason():
     agents = {
         "codex-sol": workflow_agent(

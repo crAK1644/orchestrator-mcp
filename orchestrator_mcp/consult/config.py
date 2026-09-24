@@ -370,6 +370,10 @@ class ConsultConfig(BaseModel):
     # consultation is ours to enforce: we count assistant turns in the event stream
     # and kill the child when it passes this.
     web_turn_limit: int = Field(default=8, ge=1)
+    # How far below the top score an agent may be and still win on priority. `0` is
+    # the old order, score first. Give a cheap agent a low priority and a margin of 5,
+    # and a 93 it scores stops losing to a paid agent's 95.
+    score_margin: int = Field(default=0, ge=0, le=100)
     agents: dict[str, AgentConfig] = Field(min_length=1)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     # Absent means the review tools are not advertised at all. A server with no

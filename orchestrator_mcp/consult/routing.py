@@ -40,6 +40,20 @@ class RoutingDecision:
     error: tuple[ConsultErrorCode, str] | None = None
 
 
+def pick(eligible: list[AgentConfig], capability: str, margin: int) -> AgentConfig:
+    """Priority first among agents within `margin` of the top score, then score, then id.
+
+    Margin 0 is the plain score order. The id is last purely so that two identically
+    configured agents still resolve the same way twice. Shared with the workflow
+    router, so the two cannot drift apart.
+    """
+    top = max(a.score_for(capability) for a in eligible)
+    return min(
+        (a for a in eligible if a.score_for(capability) >= top - margin),
+        key=lambda a: (a.priority, -a.score_for(capability), a.agent_id),
+    )
+
+
 class SourceModeError(ValueError):
     """A source mode the request cannot support. Caught as a protocol violation."""
 
@@ -91,12 +105,7 @@ class ConsultRouter:
                 ),
             )
 
-        # Score first, then priority ascending, then the id -- the last one purely so
-        # that two identically configured agents still resolve the same way twice.
-        winner = min(
-            eligible,
-            key=lambda a: (-a.score_for(capability), a.priority, a.agent_id),
-        )
+        winner = pick(eligible, capability, self.config.score_margin)
         return self._decision(capability, winner, excluded, explicit=False)
 
     def _explicit(
@@ -146,13 +155,14 @@ class ConsultRouter:
         # One line for the whole funnel: `_explicit` lands here too, so a routing
         # decision is logged once regardless of how it was reached.
         log.debug(
-            "routed %s to %s (%s/%s) score=%d %s, %d excluded",
+            "routed %s to %s (%s/%s) score=%d %s (margin %d), %d excluded",
             capability,
             agent.agent_id,
             agent.runtime,
             agent.model or "default",
             agent.score_for(capability),
             "explicit" if explicit else "by score",
+            self.config.score_margin,
             len(excluded),
         )
         return RoutingDecision(
