@@ -507,8 +507,8 @@ refusal names which side said no.
 | Runtime | `isolated_write` | Why |
 |---|---|---|
 | `codex` | **supported** | `sandbox_mode: workspace-write` with `approval_policy: never` is enforced by the CLI at OS level: a command aimed outside the worktree comes back `Operation not permitted` from the kernel, not from the model declining. Network is off, `/tmp` and `$TMPDIR` are excluded from the writable set. |
-| `opencode` | refused | Its permission set isolates *configuration*, not filesystem effects: an allowed shell command can leave the worktree. |
-| `claude` | refused | No contained executor yet — same bar as OpenCode. |
+| `opencode` | refused | Its permission set isolates *configuration*, not filesystem effects: an allowed shell command can leave the worktree. Will be offered only inside Orchestrator's own OS-level sandbox (seatbelt on macOS), once its write adapter lands; the refusal at startup says which of sandbox, network or adapter is missing on your host. |
+| `claude` | refused | Same bar as OpenCode: its permission modes are requests, not kernel bounds. |
 | `antigravity` | refused | Writing needs `--dangerously-skip-permissions`, the one flag the adapter refuses by construction. |
 
 A root allowlist and a prompt instruction are not containment. An agent that declares

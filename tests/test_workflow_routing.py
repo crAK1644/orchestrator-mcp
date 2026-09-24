@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from orchestrator_mcp.code import sandbox
 from orchestrator_mcp.code.registry import (
     RUNTIME_CAPABILITIES,
     CodeError,
@@ -58,7 +59,15 @@ AGENTS = {
 # --- execution modes: operator trust, intersected with containment ----------
 
 
-def test_declaring_a_mode_a_runtime_cannot_do_is_refused_at_startup():
+@pytest.fixture
+def contained_host(monkeypatch):
+    """A host whose sandbox holds and can grant the network, so the refusal left is
+    the one about the code, not the machine running the test."""
+    monkeypatch.setattr(sandbox, "holds", lambda: True)
+    monkeypatch.setattr(sandbox, "internet_unavailable_reason", lambda: None)
+
+
+def test_declaring_a_mode_a_runtime_cannot_do_is_refused_at_startup(contained_host):
     """`execution_modes:` is operator trust; containment is the code's own statement,
     and the two are reconciled at boot rather than at the step that needed it."""
     agents = {
@@ -72,8 +81,8 @@ def test_declaring_a_mode_a_runtime_cannot_do_is_refused_at_startup():
     with pytest.raises(ValidationError) as raised:
         config(agents)
     # Which side said no: not "you did not ask for it" but "opencode cannot be held to it".
-    assert "`opencode` does not support `isolated_write`" in str(raised.value)
-    assert "permissions isolate configuration" in str(raised.value)
+    assert "`opencode` can be contained on this host" in str(raised.value)
+    assert "no write adapter" in str(raised.value)
 
 
 def test_effective_modes_is_the_intersection_that_does_it():
@@ -95,17 +104,19 @@ def test_a_mode_the_operator_never_granted_refuses_on_the_operator_s_side():
 @pytest.mark.parametrize(
     "runtime,expected",
     [
-        ("opencode", "permissions isolate configuration"),
-        ("claude", "no contained executor yet"),
+        ("opencode", "no write adapter"),
+        ("claude", "no write adapter"),
         ("antigravity", "--dangerously-skip-permissions"),
     ],
 )
-def test_each_runtime_refuses_isolated_write_with_its_own_reason(runtime, expected):
+def test_each_runtime_refuses_isolated_write_with_its_own_reason(
+    contained_host, runtime, expected
+):
     """"Unsupported" reads as "not yet"; for antigravity it is a standing refusal."""
     built = config({"a": workflow_agent(runtime, "some-model-9", 10)})
     with pytest.raises(CodeError) as raised:
         code_adapter_for(built.agents["a"], built)
-    assert f"`{runtime}` does not support `isolated_write`" in str(raised.value)
+    assert f"`{runtime}`" in str(raised.value)
     assert expected in str(raised.value)
     assert raised.value.code == ConsultErrorCode.AGENT_UNAVAILABLE
 
