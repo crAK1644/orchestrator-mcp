@@ -142,6 +142,9 @@ consult:
   review:
     reviewers: [codex-sol]                    # exactly one, for `mode: standard`
     deep_reviewers: [codex-sol, claude-opus]  # 1 to 5, for `mode: deep`
+    recheck_reviewers: all                    # a recheck (`parent_review_id`) asks
+                                              # `all` again, or only those `raised`
+                                              # a finding still open -- at least one
     roots: []                                 # absolute after ~/$VAR expansion, and
                                               # a directory that exists -- a root the
                                               # server cannot find refuses the boot,

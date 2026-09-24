@@ -97,7 +97,9 @@ def add_commands(
                 + (f", against this goal: {goal}" if goal else "")
                 + ".\n\n"
                 "If the user did not say what to review, default to the working branch's diff "
-                "against its merge base and tell them that is what you chose.\n\n"
+                "against its merge base and tell them that is what you chose. If this rechecks "
+                "fixes to an earlier review, pass its id as `parent_review_id` and only the "
+                "fix's diff as material: the server adds the earlier open findings.\n\n"
                 f"1. {material_instruction} A branch diff runs to hundreds of kilobytes; "
                 "the reviewer sees the bytes either way, and a file path is the form that "
                 "fits in one call when roots are enabled.\n"

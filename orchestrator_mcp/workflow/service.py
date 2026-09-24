@@ -321,7 +321,13 @@ class WorkflowService:
             prompt, payload = step_prompt(step, workflow.goal, inputs, material)
         if step == "review":
             # The step's token *is* the review's. One approval, one review.
-            review = await self._plan_review(workflow, binding, step_id, inputs, material)
+            # The previous round's review, so the reviewers get its open findings and
+            # a recheck brief instead of a full review from scratch. Earlier rounds
+            # only: this round's own pending plan is about to be superseded.
+            parent = _review_id([s for s in steps if s.round_index < round_index])
+            review = await self._plan_review(
+                workflow, binding, step_id, inputs, material, parent
+            )
             review_id = str(review.review_id)
             assert review.plan is not None
             token = review.plan.confirm_token
@@ -382,7 +388,13 @@ class WorkflowService:
         ).check_invariants()
 
     async def _plan_review(
-        self, workflow: WorkflowRun, binding: dict, step_id: str, inputs: dict, material: str = ""
+        self,
+        workflow: WorkflowRun,
+        binding: dict,
+        step_id: str,
+        inputs: dict,
+        material: str = "",
+        parent_review_id: str | None = None,
     ) -> Any:
         """Plan the review this step will run, under the workflow's review policy.
 
@@ -418,6 +430,7 @@ class WorkflowService:
             context=context,
             web=False,
             reviewers=[a["agent_id"] for a in binding.get("agents", [])] or None,
+            parent_review_id=parent_review_id,
             workflow_id=workflow.id,
             step_id=step_id,
             excluded_identities=excluded,
@@ -925,7 +938,9 @@ class WorkflowService:
         inputs: dict[str, Any] = {
             name: artifacts[name] for name in STEPS[step].input_artifacts if name in artifacts
         }
-        if step in ("fix", "review"):
+        # Not `review`: a later round's review is a recheck of the last one, and
+        # `ReviewService` appends that review's open findings itself.
+        if step == "fix":
             findings = await self._open_findings(steps)
             if findings:
                 inputs["open_findings"] = findings

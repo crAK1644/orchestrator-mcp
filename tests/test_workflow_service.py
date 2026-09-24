@@ -1494,6 +1494,35 @@ async def test_a_fix_round_is_sent_the_findings_it_is_supposed_to_fix(build, rep
     assert stored["inputs"] == ["implementation_plan", "test_report", "open_findings"]
 
 
+async def test_a_second_round_review_rechecks_the_first(build, repo):
+    """Round one's review is the parent of round two's, so the reviewer is sent the
+    findings still open plus the fix, not the whole step payload again -- and the
+    workflow's own `open_findings` input is not added on top, which would send the
+    list twice."""
+    service = await build()
+    workflow_id = await _to_synthesis(service, repo)
+    first = _review_id(await service.store.steps(workflow_id))
+    ids = await finding_ids(service, workflow_id)
+    await host_step(service, workflow_id, "synthesize", summary_with("open", ids))
+    await host_step(service, workflow_id, "fix", {"summary": "s", "files": [], "patch": PATCH})
+    await host_step(
+        service, workflow_id, "test",
+        {"command": "pytest", "workdir": str(repo), "exit_code": 0, "status": "passed"},
+    )
+
+    response = await service.plan_step(workflow_id, "review")
+
+    assert response.error is None, response.error
+    assert "open_findings" not in response.preview.inputs
+    second = _review_id(await service.store.steps(workflow_id))
+    assert second != first
+    assert (await service.reviews.store.get_review(second)).parent_review_id == first
+    # The link stays inside the workflow, so deleting it still takes both rounds.
+    assert (await service.cancel(workflow_id)).error is None
+    assert await service.delete(workflow_id) == 1
+    assert (await sql(service, "SELECT COUNT(*) FROM reviews")).fetchone()[0] == 0
+
+
 async def test_dropping_a_reviewers_important_finding_is_refused(build, repo):
     service = await build()
     workflow_id = await _to_synthesis(service, repo)
