@@ -27,7 +27,12 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 
 from .commands import add_commands
-from .consult.config import StepBinding, host_runtime, load_consult_config
+from .consult.config import (
+    ConsultConfig,
+    StepBinding,
+    host_runtime,
+    load_consult_config,
+)
 from .consult.contract import (
     ConsultAgentsResponse,
     ConsultationDeleteApproval,
@@ -152,12 +157,14 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
     configure_logging()
     config = config if config is not None else load_config()
     validate_config(config)
-    server = MCPServer("orchestrator", version=_version())
+    consult_config = load_consult_config(config)
+    server = MCPServer(
+        "orchestrator", version=_version(), instructions=_instructions(consult_config)
+    )
 
     # The whole surface hangs off this one branch, because `consult:` is now the
     # only thing there is to configure. `validate_config` has already refused a
     # config without it, so `None` here means a block that parsed to nothing.
-    consult_config = load_consult_config(config)
     if consult_config is not None:
         runtime = host_runtime()
         # A `consult.host.runtime:` that disagrees with the environment is a config
@@ -199,6 +206,41 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
         )
 
     return server
+
+
+def _instructions(consult: ConsultConfig | None) -> str | None:
+    """What the host shows its model before any tool is loaded.
+
+    A host that defers tool loading -- Claude Code does, once enough tools are
+    connected -- lists this server as bare tool names until the model asks for one,
+    and this text is all it reads before deciding whether to. So it says what the
+    server is for and which call opens each flow, gated on the same answers as the
+    tools; the descriptions carry everything else.
+    """
+    if consult is None:
+        return None
+    lines = [
+        "Consult a different coding agent -- Codex, Claude Code, OpenCode or "
+        "Antigravity, signed in on this machine -- and get its answer back as a "
+        "structured envelope. Work is never routed back to the host's own execution "
+        "identity.",
+        "- Second opinion: `orchestrator_consult`. Send the returned "
+        "`consultation_id` back to continue the same conversation; "
+        "`orchestrator_list_consult_agents` shows who can be reached.",
+    ]
+    if consult.review is not None:
+        lines.append(
+            "- Code review by the configured reviewers: `orchestrator_review` previews "
+            "the plan, `orchestrator_review_run` sends it, and "
+            "`orchestrator_finalize_review` synthesizes the findings."
+        )
+    if consult.workflow is not None:
+        lines.append(
+            "- A task in phases (research and plan, implement and test, review and "
+            "fix): `orchestrator_workflow_start`, then `orchestrator_workflow_status` "
+            "names the `next_steps` that can be planned."
+        )
+    return "\n".join(lines)
 
 
 def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:

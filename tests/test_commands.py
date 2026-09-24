@@ -7,6 +7,8 @@ the instructions that are load-bearing, and deliberately not the prose around th
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from orchestrator_mcp.server import build_server
@@ -47,6 +49,17 @@ async def test_every_command_is_advertised_when_everything_is_configured(host_cl
         "workflow",
         "status",
     }
+
+
+async def test_the_instructions_name_only_tools_the_server_offers(host_claude):
+    """The server's `instructions` are what a host that defers tool loading shows before
+    any description, so a tool named there and not advertised sends the model after
+    something that is not there."""
+    for srv in (server(), server(review=REVIEW), server(review=REVIEW, workflow=WORKFLOW)):
+        named = set(re.findall(r"`(orchestrator_\w+)`", srv.instructions))
+        assert named and named <= {t.name for t in await srv.list_tools()}
+    assert "orchestrator_review" not in server().instructions
+    assert "orchestrator_workflow_start" in server(review=REVIEW, workflow=WORKFLOW).instructions
 
 
 async def test_every_argument_is_optional(host_claude):
