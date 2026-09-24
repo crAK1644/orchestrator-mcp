@@ -67,6 +67,12 @@ jobs:
           version: "0.11.26"
           checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
       - run: uv sync --all-extras --dev --upgrade
+      # Same reason as the matrix: without it the suite has no sandbox to test.
+      - name: Install a sandbox mechanism
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - run: uv run pytest -q -n auto
 
   # Separate from the matrix: the rules are the same on every interpreter, so
