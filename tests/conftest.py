@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -75,6 +77,46 @@ def _no_real_worktrees(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "orchestrator_mcp.code.service.WORKTREE_ROOT", tmp_path / "worktrees"
     )
+
+
+@pytest.fixture
+def unmasked_root():
+    """A temporary directory the sandbox will actually agree to confine.
+
+    `tmp_path` lives under the system temp directory, which on Linux is `/tmp` -- one
+    of the directories `sandbox._maskable` covers with an empty filesystem to hide the
+    host's agent and docker sockets. It refuses a worktree beneath a mask rather than
+    dropping the mask, so a tree made under `tmp_path` is one `wrap` declines there.
+    Under the home directory instead, where the module's own verification builds its
+    probe tree too.
+    """
+    root = Path.home() / ".cache" / "orchestrator-sandbox-tests"
+    root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=root) as scratch:
+        yield Path(scratch).resolve()
+
+
+@pytest.fixture
+def secret_dir(tmp_path, monkeypatch):
+    """A credential directory the test owns, planted in a fake home.
+
+    The alternative was whatever the host happened to carry, which made the assertion
+    conditional on the runner having real credentials -- so on CI it skipped, and the
+    masking these tests exist to prove went unproven on the only Linux that runs them.
+
+    Two entries on purpose. The dotfile is the one plain `ls` omits, which is how a
+    listing assertion came to pass on a host confining nothing; the plain file keeps
+    the test failing loudly rather than vacuously if `-A` is ever dropped again.
+    """
+    from orchestrator_mcp.code import sandbox
+
+    home = tmp_path / "home"
+    secret = home / ".ssh"
+    secret.mkdir(parents=True)
+    (secret / ".hidden_token").write_text("shhh")
+    (secret / "id_visible").write_text("shhh")
+    monkeypatch.setattr(sandbox.Path, "home", staticmethod(lambda: home))
+    return secret
 
 
 @pytest.fixture
