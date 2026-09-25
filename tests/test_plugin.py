@@ -40,13 +40,16 @@ def test_the_marketplace_points_at_a_plugin():
     marketplace = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
 
     for entry in marketplace["plugins"]:
-        assert (ROOT / entry["source"] / ".claude-plugin" / "plugin.json").is_file()
+        manifest = ROOT / entry["source"] / ".claude-plugin" / "plugin.json"
+        assert json.loads(manifest.read_text())["name"] == entry["name"]
 
 
 async def test_a_missing_config_starts_a_server_that_says_how_to_write_one(
     tmp_path, monkeypatch, host_claude
 ):
-    """The plugin host spawns the server before anyone has run `init`."""
+    """The plugin host spawns the server before anyone has run `init`. The stub ships
+    in the PyPI package, so a plugin rename that misses it names a command that does
+    not exist until the next release."""
     missing = tmp_path / "absent.yaml"
     monkeypatch.setenv("ORCHESTRATOR_CONFIG", str(missing))
     server = build_server()
@@ -55,6 +58,8 @@ async def test_a_missing_config_starts_a_server_that_says_how_to_write_one(
     text = (await server.call_tool("orchestrator_setup", {})).content[0].text
     assert str(missing) in text
     assert "--host claude" in text
+    plugin = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())["name"]
+    assert f"/{plugin}:setup" in text
 
 
 @pytest.mark.parametrize("configured", [None, "custom dir/config.yaml"], ids=["default", "custom"])

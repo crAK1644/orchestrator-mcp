@@ -22,4 +22,4 @@ Set up the MCP server this plugin registers. Run each command below with Bash an
 
 3. Quote every `FAIL` line with what fixes it: install the CLI it names, log in to it, or edit the config key it names. Do not edit the config yourself unless the user asks.
 
-4. Finish by telling the user to reconnect `plugin:orchestrator:orchestrator` in `/mcp`, or to restart Claude Code. `/reload-plugins` is not enough: it keeps the server that started before the config existed.
+4. Finish by telling the user to reconnect `plugin:orchestrator-mcp:orchestrator` in `/mcp`, or to restart Claude Code. `/reload-plugins` is not enough: it keeps the server that started before the config existed.
