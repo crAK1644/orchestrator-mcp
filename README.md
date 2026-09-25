@@ -1015,6 +1015,7 @@ Live tests make real requests and may use paid capacity. Do not run them in CI u
 | Problem | Fix |
 |---|---|
 | `config not found: config.yaml` | Set `ORCHESTRATOR_CONFIG` to an absolute path. |
+| The server connects, but its only tool is `orchestrator_setup` | There is no file at the config path. The tool's reply names the path it read and the `init --path` command that writes it there; if your config is somewhere else, point `ORCHESTRATOR_CONFIG` at it. Reconnect after either. |
 | `no_agent_available` | Give an enabled, non-host agent a positive score for the requested capability. |
 | `agent_not_installed` | Use an absolute path for `command`; GUI apps often inherit a smaller `PATH`. |
 | `connection_required` | Run the login command returned in `required_action`, then retry. |

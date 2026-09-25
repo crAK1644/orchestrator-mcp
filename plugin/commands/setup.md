@@ -10,9 +10,9 @@ Set up the MCP server this plugin registers. Run each command below with Bash an
    uvx orchestrator-mcp-server@0.7.1 init --host claude
    ```
 
-   On success it ends by printing a `claude mcp add orchestrator ...` command. Do not run it: this plugin already registers the server, and adding it again would run two.
+   On success it ends by printing a `claude mcp add orchestrator ...` command. Do not run it: this plugin already registers the server, and adding it again would run two. A `review: left out` line needs no action: `~/.orchestrator-mcp/agents.yaml` already names the reviewers.
 
-   If it says the file already exists, that is fine; go on to step 2. If it refuses for any other reason -- no reviewer CLI found, or a `review:` that `~/.orchestrator-mcp/agents.yaml` already sets -- quote the refusal and say what fixes it, then go on to step 2 anyway. `init` has no OpenCode template: if OpenCode is the only other agent here, point the user at the `opencode` agent in https://github.com/crAK1644/orchestrator-mcp/blob/main/config.example.yaml to copy into the config by hand.
+   If it says the file already exists, that is fine; go on to step 2. If it refuses for any other reason -- no reviewer CLI found, or a reviewer that `~/.orchestrator-mcp/agents.yaml` names and the starter config does not define -- quote the refusal and say what fixes it, then go on to step 2 anyway. `init` has no OpenCode template: if OpenCode is the only other agent here, point the user at the `opencode` agent in https://github.com/crAK1644/orchestrator-mcp/blob/main/config.example.yaml to copy into the config by hand.
 
 2. Check it with the same environment the plugin gives the server:
 

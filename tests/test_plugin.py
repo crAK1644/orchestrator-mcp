@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import tomllib
 from pathlib import Path
 
@@ -51,6 +52,27 @@ async def test_a_missing_config_starts_a_server_that_says_how_to_write_one(
     text = (await server.call_tool("orchestrator_setup", {})).content[0].text
     assert str(missing) in text
     assert "--host claude" in text
+
+
+@pytest.mark.parametrize("configured", [None, "custom dir/config.yaml"], ids=["default", "custom"])
+async def test_the_stub_names_the_file_the_next_start_reads(
+    tmp_path, monkeypatch, host_claude, configured
+):
+    """`init` writes to its own default unless told where, so the command has to carry
+    the path -- absolute, because `init` runs from some other directory."""
+    monkeypatch.chdir(tmp_path)
+    if configured:
+        monkeypatch.setenv("ORCHESTRATOR_CONFIG", configured)
+    else:
+        monkeypatch.delenv("ORCHESTRATOR_CONFIG", raising=False)
+    text = (await build_server().call_tool("orchestrator_setup", {})).content[0].text
+
+    argv = shlex.split(text.split("`")[1])
+    written = Path(argv[argv.index("--path") + 1])
+    assert written.is_absolute()
+    written.parent.mkdir(exist_ok=True)
+    written.write_text("consult: {}\n")
+    assert load_config() == {"consult": {}}
 
 
 def test_a_config_that_exists_but_is_wrong_still_refuses(tmp_path, monkeypatch):

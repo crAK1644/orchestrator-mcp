@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import shlex
 import sys
 from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
@@ -243,14 +244,19 @@ def _setup_server(path: Path) -> MCPServer:
     # Not `host_runtime()`, which refuses when the variable is unset. This is only a
     # hint, so it falls back to the placeholder `_USAGE` uses.
     runtime = os.environ.get(HOST_RUNTIME_ENV, "RUNTIME")
+    # `init` writes to its own default unless told where, and this server may read
+    # somewhere else. Absolute: `init` runs from another directory than this one.
+    target = path.absolute()
+    command = f"orchestrator-mcp-server init --host {runtime} --path {shlex.quote(str(target))}"
 
     @server.tool(name="orchestrator_setup")
     async def setup() -> str:
         """Say how to finish setting up orchestrator: this server started without a
         config, so none of its other tools exist yet."""
         return (
-            f"No config at {path}. Run /orchestrator:setup, or "
-            f"`orchestrator-mcp-server init --host {runtime}`, then reconnect."
+            f"No config at {target}. If this server came with the Claude Code plugin, run "
+            f"/orchestrator:setup. Otherwise run `{command}`, or point {CONFIG_ENV} at the "
+            "config you already have. Then reconnect."
         )
 
     return server
