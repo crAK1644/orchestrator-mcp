@@ -85,7 +85,7 @@ execution identity.
 
 ## Install
 
-**Claude Code: install as a plugin.** Needs [`uv`](https://docs.astral.sh/uv/) on your `PATH`, and at least one of Codex, Antigravity or OpenCode installed and logged in ([step 1](#1-sign-in-to-the-agent-clis) below). What you consult them about — prompts, diffs, file contents — goes to those providers under your own logins, and the usage is billed to your accounts with them; see the [Security model](#security-model). In Claude Code:
+**Claude Code: install as a plugin.** Needs [`uv`](https://docs.astral.sh/uv/) on your `PATH`, and at least one of Codex, Antigravity or OpenCode installed and logged in ([step 1](#1-sign-in-to-the-agent-clis) below). What you consult them about — prompts, diffs, file contents — goes to those providers under your own logins, and the usage is billed to your accounts with them; see the [privacy policy](PRIVACY.md) and the [Security model](#security-model). In Claude Code:
 
 ```text
 /plugin marketplace add crAK1644/orchestrator-mcp
@@ -1052,6 +1052,6 @@ Keep private configuration, login data, and consultation databases out of commit
 
 ## License
 
-[MIT](LICENSE) · [PyPI](https://pypi.org/project/orchestrator-mcp-server/) · [GitHub issues](https://github.com/crAK1644/orchestrator-mcp/issues)
+[MIT](LICENSE) · [PyPI](https://pypi.org/project/orchestrator-mcp-server/) · [GitHub issues](https://github.com/crAK1644/orchestrator-mcp/issues) · [Privacy](PRIVACY.md) · [Security](SECURITY.md)
 
 Built with [Pydantic](https://docs.pydantic.dev) and the [Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk).
