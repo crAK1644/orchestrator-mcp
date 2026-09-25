@@ -1,7 +1,7 @@
 {
   "name": "orchestrator",
   "displayName": "Orchestrator",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Ask Codex, Antigravity or OpenCode for a second opinion, a code review or a phased workflow, through the CLIs already signed in on this machine.",
   "author": {
     "name": "Ayberk Karataban",
@@ -14,7 +14,7 @@
   "mcpServers": {
     "orchestrator": {
       "command": "uvx",
-      "args": ["orchestrator-mcp-server@0.7.1"],
+      "args": ["orchestrator-mcp-server@0.7.2"],
       "env": {
         "ORCHESTRATOR_CONFIG": "${HOME}/.orchestrator-mcp/config.yaml",
         "ORCHESTRATOR_HOST_RUNTIME": "claude"

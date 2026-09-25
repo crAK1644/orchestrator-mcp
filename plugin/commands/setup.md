@@ -7,7 +7,7 @@ Set up the MCP server this plugin registers. Run each command below with Bash an
 1. Write a starter config at `~/.orchestrator-mcp/config.yaml` from the agent CLIs installed here:
 
    ```
-   uvx orchestrator-mcp-server@0.7.1 init --host claude
+   uvx orchestrator-mcp-server@0.7.2 init --host claude
    ```
 
    On success it ends by printing a `claude mcp add orchestrator ...` command. Do not run it: this plugin already registers the server, and adding it again would run two. A `review: left out` line needs no action: `~/.orchestrator-mcp/agents.yaml` already names the reviewers.
@@ -17,7 +17,7 @@ Set up the MCP server this plugin registers. Run each command below with Bash an
 2. Check it with the same environment the plugin gives the server:
 
    ```
-   ORCHESTRATOR_CONFIG="$HOME/.orchestrator-mcp/config.yaml" ORCHESTRATOR_HOST_RUNTIME=claude uvx orchestrator-mcp-server@0.7.1 doctor
+   ORCHESTRATOR_CONFIG="$HOME/.orchestrator-mcp/config.yaml" ORCHESTRATOR_HOST_RUNTIME=claude uvx orchestrator-mcp-server@0.7.2 doctor
    ```
 
 3. Quote every `FAIL` line with what fixes it: install the CLI it names, log in to it, or edit the config key it names. Do not edit the config yourself unless the user asks.
