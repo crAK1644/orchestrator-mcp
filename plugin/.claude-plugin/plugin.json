@@ -1,5 +1,6 @@
 {
   "name": "orchestrator",
+  "displayName": "Orchestrator",
   "version": "0.7.1",
   "description": "Ask Codex, Antigravity or OpenCode for a second opinion, a code review or a phased workflow, through the CLIs already signed in on this machine.",
   "author": {
@@ -9,6 +10,7 @@
   "homepage": "https://github.com/crAK1644/orchestrator-mcp",
   "repository": "https://github.com/crAK1644/orchestrator-mcp",
   "license": "MIT",
+  "keywords": ["code-review", "second-opinion", "codex", "antigravity", "opencode", "multi-agent", "workflow"],
   "mcpServers": {
     "orchestrator": {
       "command": "uvx",

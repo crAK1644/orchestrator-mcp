@@ -26,6 +26,7 @@ from uuid import UUID
 import yaml
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
+from mcp.types import ToolAnnotations
 
 from . import cli
 from .commands import add_commands
@@ -233,6 +234,32 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
     return server
 
 
+def _hints(
+    title: str,
+    *,
+    read_only: bool = False,
+    destructive: bool = False,
+    idempotent: bool = False,
+    open_world: bool = False,
+) -> ToolAnnotations:
+    """A tool's annotations, every hint spelled out.
+
+    MCP's defaults assume the worst: a tool that leaves `destructiveHint` or
+    `openWorldHint` unset reads as destructive and as reaching off the machine.
+    `read_only` means no record written. A preview that mints a confirm token stores
+    the token, and `orchestrator_workflow_status` reaps expired leases, so neither
+    qualifies. `open_world` marks the tools that send material to another vendor's
+    agent.
+    """
+    return ToolAnnotations(
+        title=title,
+        read_only_hint=read_only,
+        destructive_hint=destructive,
+        idempotent_hint=idempotent,
+        open_world_hint=open_world,
+    )
+
+
 def _setup_server(path: Path) -> MCPServer:
     """The server before there is a config: one tool, and it names the next step.
 
@@ -249,7 +276,10 @@ def _setup_server(path: Path) -> MCPServer:
     target = path.absolute()
     command = f"orchestrator-mcp-server init --host {runtime} --path {shlex.quote(str(target))}"
 
-    @server.tool(name="orchestrator_setup")
+    @server.tool(
+        name="orchestrator_setup",
+        annotations=_hints("Finish orchestrator setup", read_only=True, idempotent=True),
+    )
     async def setup() -> str:
         """Say how to finish setting up orchestrator: this server started without a
         config, so none of its other tools exist yet."""
@@ -332,9 +362,16 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         "error with `required_action` means the agent needs the user to run that "
         "command; nothing else will make it available."
     )
-    server.add_tool(consult, name="orchestrator_consult")
+    server.add_tool(
+        consult,
+        name="orchestrator_consult",
+        annotations=_hints("Consult another coding agent", open_world=True),
+    )
 
-    @server.tool(name="orchestrator_list_consult_agents")
+    @server.tool(
+        name="orchestrator_list_consult_agents",
+        annotations=_hints("List consultable agents", read_only=True, idempotent=True),
+    )
     async def list_consult_agents() -> ConsultAgentsResponse:
         """List consultable agents: runtime, model, capability scores, and whether each
         is installed and logged in. The host's own runtime is listed but never routed
@@ -342,14 +379,20 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         await service.open()
         return await service.list_agents()
 
-    @server.tool(name="orchestrator_get_consultation")
+    @server.tool(
+        name="orchestrator_get_consultation",
+        annotations=_hints("Get a consultation", read_only=True, idempotent=True),
+    )
     async def get_consultation(consultation_id: UUID) -> ConsultationRecord:
         """Retrieve a stored consultation: its turns, usage, and why this agent was
         chosen."""
         await service.open()
         return await service.get_consultation(consultation_id)
 
-    @server.tool(name="orchestrator_delete_consultation")
+    @server.tool(
+        name="orchestrator_delete_consultation",
+        annotations=_hints("Delete a consultation", destructive=True, idempotent=True),
+    )
     async def delete_consultation(consultation_id: UUID) -> ConsultationDeletionResult:
         """Delete one ordinary consultation and all of its locally stored turns.
 
@@ -361,7 +404,10 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
             deleted=await service.delete_consultation(consultation_id)
         )
 
-    @server.tool(name="orchestrator_request_delete_all_consultations")
+    @server.tool(
+        name="orchestrator_request_delete_all_consultations",
+        annotations=_hints("Preview deleting all consultations"),
+    )
     async def request_delete_all_consultations() -> ConsultationDeleteApproval:
         """Preview deletion of all ordinary consultation history. Deletes nothing.
 
@@ -375,7 +421,10 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
             expires_in_s=int(CONSULT_DELETE_CONFIRM_TTL_S),
         )
 
-    @server.tool(name="orchestrator_delete_all_consultations")
+    @server.tool(
+        name="orchestrator_delete_all_consultations",
+        annotations=_hints("Delete all consultations", destructive=True, idempotent=True),
+    )
     async def delete_all_consultations(confirm_token: str) -> ConsultationDeletionResult:
         """Delete the ordinary consultations in the approved snapshot, and only those."""
         return ConsultationDeletionResult(
@@ -397,7 +446,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
     stored record of what was approved against what went out.
     """
 
-    @server.tool(name="orchestrator_review")
+    @server.tool(name="orchestrator_review", annotations=_hints("Plan a code review"))
     async def review(
         goal: str,
         mode: ReviewMode = "standard",
@@ -464,7 +513,10 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             host_model=host_model,
         )
 
-    @server.tool(name="orchestrator_review_run")
+    @server.tool(
+        name="orchestrator_review_run",
+        annotations=_hints("Send a planned review", open_world=True),
+    )
     async def review_run(
         review_id: UUID,
         confirm_token: str,
@@ -506,7 +558,10 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
                 raw=raw.model_dump(mode="json") if raw else None,
             )
 
-    @server.tool(name="orchestrator_retry_review")
+    @server.tool(
+        name="orchestrator_retry_review",
+        annotations=_hints("Retry failed reviewers", open_world=True),
+    )
     async def retry_review(
         review_id: UUID,
         agent_ids: list[str] | None = None,
@@ -526,7 +581,10 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
                 review_id, agent_ids, raw.model_dump(mode="json") if raw else None
             )
 
-    @server.tool(name="orchestrator_finalize_review")
+    @server.tool(
+        name="orchestrator_finalize_review",
+        annotations=_hints("Record a review synthesis"),
+    )
     async def finalize_review(
         review_id: UUID,
         summary: str,
@@ -566,7 +624,10 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             },
         )
 
-    @server.tool(name="orchestrator_apply_fixes")
+    @server.tool(
+        name="orchestrator_apply_fixes",
+        annotations=_hints("Show the findings to fix", read_only=True, idempotent=True),
+    )
     async def apply_fixes(review_id: UUID, finding_ids: list[str]) -> ReviewResponse:
         """Pull up the findings you are about to fix, with the steps around them.
         **Changes nothing** -- no file is edited and no command is run here.
@@ -585,7 +646,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.fix_plan(review_id, finding_ids)
 
-    @server.tool(name="orchestrator_record_fix_round")
+    @server.tool(name="orchestrator_record_fix_round", annotations=_hints("Record a fix round"))
     async def record_fix_round(
         review_id: UUID,
         finding_ids: list[str],
@@ -604,7 +665,10 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.record_fix_round(review_id, finding_ids, outcome, notes)
 
-    @server.tool(name="orchestrator_cancel_review")
+    @server.tool(
+        name="orchestrator_cancel_review",
+        annotations=_hints("Cancel a review", destructive=True, idempotent=True),
+    )
     async def cancel_review(review_id: UUID) -> ReviewResponse:
         """Stop a review. Reviewers that already answered keep their answers.
 
@@ -615,7 +679,10 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.cancel(review_id)
 
-    @server.tool(name="orchestrator_test_reviewers")
+    @server.tool(
+        name="orchestrator_test_reviewers",
+        annotations=_hints("Check reviewer logins", read_only=True, idempotent=True),
+    )
     async def test_reviewers(mode: ReviewMode | None = None) -> ConsultAgentsResponse:
         """Check that the configured reviewers are installed and logged in.
 
@@ -624,7 +691,10 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.test_reviewers(mode)
 
-    @server.tool(name="orchestrator_get_review")
+    @server.tool(
+        name="orchestrator_get_review",
+        annotations=_hints("Get a review", read_only=True, idempotent=True),
+    )
     async def get_review(review_id: UUID) -> ReviewResponse:
         """Retrieve a review: its status, every reviewer's result, and the synthesis
         if one was recorded.
@@ -636,12 +706,18 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         has turned off `store_full_content`."""
         return await service.get(review_id)
 
-    @server.tool(name="orchestrator_list_reviews")
+    @server.tool(
+        name="orchestrator_list_reviews",
+        annotations=_hints("List reviews", read_only=True, idempotent=True),
+    )
     async def list_reviews(limit: int = 20) -> list[ReviewListing]:
         """List recent reviews, newest first. Metadata only -- no material."""
         return await service.list(limit)
 
-    @server.tool(name="orchestrator_delete_review")
+    @server.tool(
+        name="orchestrator_delete_review",
+        annotations=_hints("Delete a review", destructive=True, idempotent=True),
+    )
     async def delete_review(review_id: UUID) -> DeletionResult:
         """Delete a review, its rechecks, and every consultation under either.
 
@@ -649,7 +725,10 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         in any server process. Cancel it and try again."""
         return DeletionResult(deleted=await service.delete(review_id))
 
-    @server.tool(name="orchestrator_request_delete_all")
+    @server.tool(
+        name="orchestrator_request_delete_all",
+        annotations=_hints("Preview deleting all reviews"),
+    )
     async def request_delete_all() -> DeleteApproval:
         """Ask what deleting all review history would remove.
 
@@ -662,7 +741,10 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             reviews=count, confirm_token=token, expires_in_s=int(DELETE_CONFIRM_TTL_S)
         )
 
-    @server.tool(name="orchestrator_delete_all_reviews")
+    @server.tool(
+        name="orchestrator_delete_all_reviews",
+        annotations=_hints("Delete all reviews", destructive=True, idempotent=True),
+    )
     async def delete_all_reviews(confirm_token: str) -> DeletionResult:
         """Delete the reviews `orchestrator_request_delete_all` counted, and only those. Requires
         the token from that call; an expired one is refused rather than silently
@@ -688,7 +770,7 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
     and `record_host_step` is how that work comes back onto the record.
     """
 
-    @server.tool(name="orchestrator_workflow_start")
+    @server.tool(name="orchestrator_workflow_start", annotations=_hints("Start a workflow"))
     async def workflow_start(
         goal: str,
         workdir: str,
@@ -720,7 +802,10 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
             allow_dirty=allow_dirty,
         )
 
-    @server.tool(name="orchestrator_workflow_plan_step")
+    @server.tool(
+        name="orchestrator_workflow_plan_step",
+        annotations=_hints("Plan a workflow step"),
+    )
     async def workflow_plan_step(
         workflow_id: str, step: Step, context: str = ""
     ) -> WorkflowResponse:
@@ -745,7 +830,10 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         """
         return await service.plan_step(workflow_id, step, context)
 
-    @server.tool(name="orchestrator_workflow_run_step")
+    @server.tool(
+        name="orchestrator_workflow_run_step",
+        annotations=_hints("Run a workflow step", open_world=True),
+    )
     async def workflow_run_step(
         workflow_id: str, step_id: str, confirm_token: str, ctx: Context | None = None
     ) -> WorkflowResponse:
@@ -773,7 +861,10 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         async with reporting(ctx, f"workflow step {step_id}"):
             return await service.run_step(workflow_id, step_id, confirm_token)
 
-    @server.tool(name="orchestrator_workflow_record_host_step")
+    @server.tool(
+        name="orchestrator_workflow_record_host_step",
+        annotations=_hints("Record a step you ran"),
+    )
     async def workflow_record_host_step(
         workflow_id: str,
         step_id: str,
@@ -796,7 +887,10 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         """
         return await service.record_host_step(workflow_id, step_id, confirm_token, result)
 
-    @server.tool(name="orchestrator_workflow_status")
+    @server.tool(
+        name="orchestrator_workflow_status",
+        annotations=_hints("Get workflow status", idempotent=True),
+    )
     async def workflow_status(workflow_id: str) -> WorkflowResponse:
         """Where the workflow is: state, artifacts so far, the agents each step
         resolved to, fix rounds used against the cap, and `next_steps` -- the steps
@@ -812,7 +906,10 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         """
         return await service.status(workflow_id)
 
-    @server.tool(name="orchestrator_workflow_plan_replan")
+    @server.tool(
+        name="orchestrator_workflow_plan_replan",
+        annotations=_hints("Preview rerouting a workflow"),
+    )
     async def workflow_plan_replan(
         workflow_id: str, bindings: dict[Step, StepBinding]
     ) -> WorkflowResponse:
@@ -826,13 +923,19 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
             workflow_id, {k: v.model_dump(mode="json") for k, v in bindings.items()}
         )
 
-    @server.tool(name="orchestrator_workflow_replan")
+    @server.tool(
+        name="orchestrator_workflow_replan",
+        annotations=_hints("Reroute a workflow", destructive=True, idempotent=True),
+    )
     async def workflow_replan(workflow_id: str, confirm_token: str) -> WorkflowResponse:
         """Adopt the staged bindings. Steps already run keep the routing they had --
         this changes where the *remaining* steps go, not the record of what happened."""
         return await service.replan(workflow_id, confirm_token)
 
-    @server.tool(name="orchestrator_workflow_cancel")
+    @server.tool(
+        name="orchestrator_workflow_cancel",
+        annotations=_hints("Cancel a workflow", destructive=True, idempotent=True),
+    )
     async def workflow_cancel(workflow_id: str) -> WorkflowResponse:
         """Stop a workflow. Completed steps keep their artifacts.
 
@@ -843,7 +946,10 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         """
         return await service.cancel(workflow_id)
 
-    @server.tool(name="orchestrator_delete_workflow")
+    @server.tool(
+        name="orchestrator_delete_workflow",
+        annotations=_hints("Delete a workflow", destructive=True, idempotent=True),
+    )
     async def delete_workflow(workflow_id: str) -> WorkflowDeletionResult:
         """Delete a workflow with its steps, its consultations and its reviews.
 
@@ -858,7 +964,10 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         process."""
         return WorkflowDeletionResult(deleted=await service.delete(workflow_id))
 
-    @server.tool(name="orchestrator_request_delete_all_workflows")
+    @server.tool(
+        name="orchestrator_request_delete_all_workflows",
+        annotations=_hints("Preview deleting all workflows"),
+    )
     async def request_delete_all_workflows() -> WorkflowDeleteApproval:
         """Ask what deleting all workflow history would remove. **Deletes nothing.**
 
@@ -873,7 +982,10 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
             workflows=count, confirm_token=token, expires_in_s=int(WORKFLOW_DELETE_CONFIRM_TTL_S)
         )
 
-    @server.tool(name="orchestrator_delete_all_workflows")
+    @server.tool(
+        name="orchestrator_delete_all_workflows",
+        annotations=_hints("Delete all workflows", destructive=True, idempotent=True),
+    )
     async def delete_all_workflows(confirm_token: str) -> WorkflowDeletionResult:
         """Delete the workflows `orchestrator_request_delete_all_workflows` counted,
         and only those. Requires the token from that call; an expired one is refused

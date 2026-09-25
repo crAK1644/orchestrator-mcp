@@ -1,4 +1,5 @@
-"""The Claude Code plugin: its manifests, and the server it starts before a config exists.
+"""The Claude Code plugin: its manifests, the server it starts before a config exists,
+and the tool annotations the plugin directory asks for.
 
 The plugin pins the PyPI release it runs, in places `pyproject.toml` knows nothing
 about. A release that bumps one and not the others ships a plugin running the version
@@ -18,6 +19,8 @@ import pytest
 from orchestrator_mcp import cli
 from orchestrator_mcp.contract import ConfigError
 from orchestrator_mcp.server import build_server, load_config
+
+from .conftest import consult_block
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "plugin"
@@ -90,3 +93,31 @@ def test_doctor_still_fails_a_missing_config(tmp_path, monkeypatch, capsys):
 
     assert cli.doctor(load_config) == 1
     assert capsys.readouterr().out.startswith("FAIL config: config not found")
+
+
+async def test_every_tool_carries_every_hint(tmp_path, monkeypatch, host_claude):
+    """The directory requires them, and MCP reads a missing hint as the worst case:
+    destructive, and reaching off the machine."""
+    full = build_server(
+        {
+            "consult": consult_block(
+                review={"reviewers": ["codex-sol"], "deep_reviewers": ["claude-opus"]},
+                workflow={"bindings": {"research": {"agent": "codex-sol"}}},
+            )
+        }
+    )
+    monkeypatch.setenv("ORCHESTRATOR_CONFIG", str(tmp_path / "absent.yaml"))
+    tools = await full.list_tools() + await build_server().list_tools()
+
+    for tool in tools:
+        hints = tool.annotations
+        assert hints and hints.title, tool.name
+        assert None not in (
+            hints.read_only_hint,
+            hints.destructive_hint,
+            hints.idempotent_hint,
+            hints.open_world_hint,
+        ), tool.name
+        # The one mistake a client acts on: a deletion it would run without asking.
+        if "delete" in tool.name and "request_delete" not in tool.name:
+            assert hints.destructive_hint and not hints.read_only_hint, tool.name
