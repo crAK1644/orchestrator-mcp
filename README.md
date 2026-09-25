@@ -85,6 +85,20 @@ execution identity.
 
 ## Install
 
+**Claude Code: install as a plugin.** Needs [`uv`](https://docs.astral.sh/uv/) on your `PATH`, and at least one of Codex, Antigravity or OpenCode installed and logged in ([step 1](#1-sign-in-to-the-agent-clis) below). What you consult them about — prompts, diffs, file contents — goes to those providers under your own logins, and the usage is billed to your accounts with them; see the [Security model](#security-model). In Claude Code:
+
+```text
+/plugin marketplace add crAK1644/orchestrator-mcp
+/plugin install orchestrator@orchestrator-mcp
+/orchestrator:setup
+```
+
+`/orchestrator:setup` writes `~/.orchestrator-mcp/config.yaml` from the agent CLIs it finds, then runs `doctor` on it. It finds Codex and Antigravity; OpenCode goes into the config by hand, from its agent in [`config.example.yaml`](config.example.yaml). Then reconnect `plugin:orchestrator:orchestrator` in `/mcp`, or restart Claude Code: `/reload-plugins` keeps the server that started without a config.
+
+If you added the server earlier with `claude mcp add orchestrator`, remove that entry (`claude mcp remove orchestrator -s <scope>`, with the scope `claude mcp get orchestrator` shows), or two copies of the server run side by side.
+
+Every other host, and Claude Code without the plugin, installs the server itself:
+
 **Homebrew:**
 
 ```bash
@@ -284,7 +298,7 @@ Three independent opt-ins: the consult tools are always advertised, the review t
 
 ### Slash commands
 
-The server also serves MCP prompts, which a client that speaks `prompts/list` renders as slash commands. In Claude Code they appear as `/mcp__<server-name>__<command>`, where the server name is whatever you called it in your MCP client config — `/mcp__orchestrator__review` for the `orchestrator` entry shown above.
+The server also serves MCP prompts, which a client that speaks `prompts/list` renders as slash commands. In Claude Code they appear as `/mcp__<server-name>__<command>`, where the server name is whatever you called it in your MCP client config — `/mcp__orchestrator__review` for the `orchestrator` entry shown above. Installed as the plugin, the server is named `plugin_orchestrator_orchestrator`, so the same command is `/mcp__plugin_orchestrator_orchestrator__review`.
 
 | Command | Arguments | What it expands to |
 |---|---|---|
@@ -1001,6 +1015,7 @@ Live tests make real requests and may use paid capacity. Do not run them in CI u
 | Problem | Fix |
 |---|---|
 | `config not found: config.yaml` | Set `ORCHESTRATOR_CONFIG` to an absolute path. |
+| The server connects, but its only tool is `orchestrator_setup` | There is no file at the config path. The tool's reply names the path it read and the `init --path` command that writes it there; if your config is somewhere else, point `ORCHESTRATOR_CONFIG` at it. Reconnect after either. |
 | `no_agent_available` | Give an enabled, non-host agent a positive score for the requested capability. |
 | `agent_not_installed` | Use an absolute path for `command`; GUI apps often inherit a smaller `PATH`. |
 | `connection_required` | Run the login command returned in `required_action`, then retry. |

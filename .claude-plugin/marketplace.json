@@ -1,0 +1,16 @@
+{
+  "name": "orchestrator-mcp",
+  "owner": {
+    "name": "Ayberk Karataban",
+    "url": "https://github.com/crAK1644"
+  },
+  "description": "Orchestrator MCP as a Claude Code plugin: consult, review and run workflows through the other coding-agent CLIs on this machine.",
+  "plugins": [
+    {
+      "name": "orchestrator",
+      "source": "./plugin",
+      "description": "Ask Codex, Antigravity or OpenCode for a second opinion, a code review or a phased workflow, through the CLIs already signed in on this machine.",
+      "category": "development"
+    }
+  ]
+}

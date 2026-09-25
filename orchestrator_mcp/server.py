@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import shlex
 import sys
 from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
@@ -29,6 +30,7 @@ from mcp.server.mcpserver import Context
 from . import cli
 from .commands import add_commands
 from .consult.config import (
+    HOST_RUNTIME_ENV,
     ConsultConfig,
     StepBinding,
     host_runtime,
@@ -69,15 +71,31 @@ from .workflow.contract import (
 from .workflow.service import WorkflowService
 from .workflow.store import DELETE_CONFIRM_TTL_S as WORKFLOW_DELETE_CONFIRM_TTL_S
 
-__all__ = ["ConfigError", "build_server", "load_config", "main", "validate_config"]
+__all__ = [
+    "ConfigError", "ConfigNotFound", "build_server", "load_config", "main", "validate_config"
+]
 
 CONFIG_ENV = "ORCHESTRATOR_CONFIG"
 DEFAULT_CONFIG = "config.yaml"
 
+
+class ConfigNotFound(ConfigError):
+    """No file at the config path -- the one refusal every fresh install starts with.
+
+    Its own type so `build_server` can tell it apart from a file that exists and is
+    wrong. It is still a `ConfigError`, so everything else that refuses a config
+    (`doctor`, `main`) refuses this one the same way.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"config not found: {path} (set {CONFIG_ENV} or create {DEFAULT_CONFIG})")
+        self.path = path
+
+
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     path = Path(path or os.environ.get(CONFIG_ENV, DEFAULT_CONFIG))
     if not path.exists():
-        raise ConfigError(f"config not found: {path} (set {CONFIG_ENV} or create {DEFAULT_CONFIG})")
+        raise ConfigNotFound(path)
     config = yaml.safe_load(path.read_text())
     if not isinstance(config, dict):
         raise ConfigError(f"config must be a YAML mapping: {path}")
@@ -155,8 +173,14 @@ def _version() -> str:
 def build_server(config: dict[str, Any] | None = None) -> MCPServer:
     # Before anything that can log. stdout is the MCP transport, so the handler this
     # installs is pinned to stderr -- see `log.configure`.
-    configure_logging()
-    config = config if config is not None else load_config()
+    log = configure_logging()
+    if config is None:
+        try:
+            config = load_config()
+        except ConfigNotFound as missing:
+            # ponytail: stub only for a missing file; a bad file must stay loud
+            log.warning("%s; serving only orchestrator_setup until one exists", missing)
+            return _setup_server(missing.path)
     validate_config(config)
     consult_config = load_consult_config(config)
     server = MCPServer(
@@ -204,6 +228,35 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
             review_roots=tuple(
                 str(root) for root in (consult_config.review.roots if reviews else [])
             ),
+        )
+
+    return server
+
+
+def _setup_server(path: Path) -> MCPServer:
+    """The server before there is a config: one tool, and it names the next step.
+
+    A plugin host spawns the server the moment the plugin is installed, which is before
+    anyone has run `init`. Refusing to start there leaves only a failed entry in the
+    host's server list, with the reason in a log the user has to go looking for.
+    """
+    server = MCPServer("orchestrator", version=_version())
+    # Not `host_runtime()`, which refuses when the variable is unset. This is only a
+    # hint, so it falls back to the placeholder `_USAGE` uses.
+    runtime = os.environ.get(HOST_RUNTIME_ENV, "RUNTIME")
+    # `init` writes to its own default unless told where, and this server may read
+    # somewhere else. Absolute: `init` runs from another directory than this one.
+    target = path.absolute()
+    command = f"orchestrator-mcp-server init --host {runtime} --path {shlex.quote(str(target))}"
+
+    @server.tool(name="orchestrator_setup")
+    async def setup() -> str:
+        """Say how to finish setting up orchestrator: this server started without a
+        config, so none of its other tools exist yet."""
+        return (
+            f"No config at {target}. If this server came with the Claude Code plugin, run "
+            f"/orchestrator:setup. Otherwise run `{command}`, or point {CONFIG_ENV} at the "
+            "config you already have. Then reconnect."
         )
 
     return server
