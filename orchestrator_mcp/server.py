@@ -285,7 +285,7 @@ def _setup_server(path: Path) -> MCPServer:
         config, so none of its other tools exist yet."""
         return (
             f"No config at {target}. If this server came with the Claude Code plugin, run "
-            f"/orchestrator:setup. Otherwise run `{command}`, or point {CONFIG_ENV} at the "
+            f"/orchestrator-mcp:setup. Otherwise run `{command}`, or point {CONFIG_ENV} at the "
             "config you already have. Then reconnect."
         )
 

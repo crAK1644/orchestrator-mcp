@@ -1,6 +1,6 @@
 {
-  "name": "orchestrator",
-  "displayName": "Orchestrator",
+  "name": "orchestrator-mcp",
+  "displayName": "Orchestrator MCP",
   "version": "0.7.2",
   "description": "Ask Codex, Antigravity or OpenCode for a second opinion, a code review or a phased workflow, through the CLIs already signed in on this machine.",
   "author": {

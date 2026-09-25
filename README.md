@@ -89,11 +89,11 @@ execution identity.
 
 ```text
 /plugin marketplace add crAK1644/orchestrator-mcp
-/plugin install orchestrator@orchestrator-mcp
-/orchestrator:setup
+/plugin install orchestrator-mcp@orchestrator-mcp
+/orchestrator-mcp:setup
 ```
 
-`/orchestrator:setup` writes `~/.orchestrator-mcp/config.yaml` from the agent CLIs it finds, then runs `doctor` on it. It finds Codex and Antigravity; OpenCode goes into the config by hand, from its agent in [`config.example.yaml`](config.example.yaml). Then reconnect `plugin:orchestrator:orchestrator` in `/mcp`, or restart Claude Code: `/reload-plugins` keeps the server that started without a config.
+`/orchestrator-mcp:setup` writes `~/.orchestrator-mcp/config.yaml` from the agent CLIs it finds, then runs `doctor` on it. It finds Codex and Antigravity; OpenCode goes into the config by hand, from its agent in [`config.example.yaml`](config.example.yaml). Then reconnect `plugin:orchestrator-mcp:orchestrator` in `/mcp`, or restart Claude Code: `/reload-plugins` keeps the server that started without a config.
 
 If you added the server earlier with `claude mcp add orchestrator`, remove that entry (`claude mcp remove orchestrator -s <scope>`, with the scope `claude mcp get orchestrator` shows), or two copies of the server run side by side.
 
@@ -298,7 +298,7 @@ Three independent opt-ins: the consult tools are always advertised, the review t
 
 ### Slash commands
 
-The server also serves MCP prompts, which a client that speaks `prompts/list` renders as slash commands. In Claude Code they appear as `/mcp__<server-name>__<command>`, where the server name is whatever you called it in your MCP client config — `/mcp__orchestrator__review` for the `orchestrator` entry shown above. Installed as the plugin, the server is named `plugin_orchestrator_orchestrator`, so the same command is `/mcp__plugin_orchestrator_orchestrator__review`.
+The server also serves MCP prompts, which a client that speaks `prompts/list` renders as slash commands. In Claude Code they appear as `/mcp__<server-name>__<command>`, where the server name is whatever you called it in your MCP client config — `/mcp__orchestrator__review` for the `orchestrator` entry shown above. Installed as the plugin, the server is named `plugin_orchestrator-mcp_orchestrator`, so the same command is `/mcp__plugin_orchestrator-mcp_orchestrator__review`.
 
 | Command | Arguments | What it expands to |
 |---|---|---|

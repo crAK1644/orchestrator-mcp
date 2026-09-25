@@ -25,13 +25,13 @@ What you send an agent goes to that agent's provider under your login, and the u
 
 ```
 /plugin marketplace add crAK1644/orchestrator-mcp
-/plugin install orchestrator@orchestrator-mcp
-/orchestrator:setup
+/plugin install orchestrator-mcp@orchestrator-mcp
+/orchestrator-mcp:setup
 ```
 
-`/orchestrator:setup` writes a starter config at `~/.orchestrator-mcp/config.yaml` from the Codex and Antigravity CLIs it finds, then checks each one's login. OpenCode goes in by hand: copy its agent from [`config.example.yaml`](https://github.com/crAK1644/orchestrator-mcp/blob/main/config.example.yaml).
+`/orchestrator-mcp:setup` writes a starter config at `~/.orchestrator-mcp/config.yaml` from the Codex and Antigravity CLIs it finds, then checks each one's login. OpenCode goes in by hand: copy its agent from [`config.example.yaml`](https://github.com/crAK1644/orchestrator-mcp/blob/main/config.example.yaml).
 
-When it finishes, reconnect `plugin:orchestrator:orchestrator` in `/mcp`, or restart Claude Code. Until you do, the server offers one tool, `orchestrator_setup`, which tells you the same thing.
+When it finishes, reconnect `plugin:orchestrator-mcp:orchestrator` in `/mcp`, or restart Claude Code. Until you do, the server offers one tool, `orchestrator_setup`, which tells you the same thing.
 
 ## Examples
 
@@ -51,8 +51,8 @@ When it finishes, reconnect `plugin:orchestrator:orchestrator` in `/mcp`, or res
 
 The server also adds prompts:
 
-- always: `/mcp__plugin_orchestrator_orchestrator__consult` and `/mcp__plugin_orchestrator_orchestrator__status`;
-- once configured: `/mcp__plugin_orchestrator_orchestrator__review` and `/mcp__plugin_orchestrator_orchestrator__workflow`.
+- always: `/mcp__plugin_orchestrator-mcp_orchestrator__consult` and `/mcp__plugin_orchestrator-mcp_orchestrator__status`;
+- once configured: `/mcp__plugin_orchestrator-mcp_orchestrator__review` and `/mcp__plugin_orchestrator-mcp_orchestrator__workflow`.
 
 ## Support
 
