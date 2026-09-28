@@ -298,6 +298,48 @@ async def test_deleting_a_parent_removes_its_rechecks_consultations_too(store):
     assert await store.store.get_consultation(uuid.UUID(kept)) is not None
 
 
+
+async def _age(store, review_id: str, days: int = 2) -> None:
+    await store._run(
+        lambda: store._db.execute(
+            "UPDATE reviews SET created_at = ? WHERE id = ?",
+            (f"2020-01-{days:02d}T00:00:00+00:00", review_id),
+        )
+    )
+
+
+async def test_planning_drops_plans_nobody_sent_for_a_day(store):
+    abandoned = await plan(store)
+    await _age(store, abandoned)
+    fresh = await plan(store)
+
+    await plan(store)
+
+    with pytest.raises(StoreError):
+        await store.get_review(abandoned)
+    assert (await store.get_review(fresh)).status == "pending"
+
+
+async def test_the_plan_sweep_leaves_workflow_plans_rechecks_and_results_alone(store):
+    workflow_plan = await plan(store, workflow_id="wf-1", step_id="st-1")
+    parent = await plan(store)
+    child = await plan(store, parent_review_id=parent)
+    reserved = await plan(store)
+    await store.reserve_reviewers(reserved, ["rev"])
+    answered = await plan(store, confirm_token="run")
+    await store.consume_confirm_token(answered, "run")
+    await store.transition(answered, "awaiting_synthesis", ("running",))
+    for review_id in (workflow_plan, parent, child, reserved, answered):
+        await _age(store, review_id)
+
+    await plan(store)
+
+    # Only the recheck itself was abandoned; its parent stays because it has one.
+    with pytest.raises(StoreError):
+        await store.get_review(child)
+    for kept in (workflow_plan, parent, reserved, answered):
+        assert await store.get_review(kept) is not None
+
 async def test_a_workflow_owned_review_is_not_deleted_from_the_review_tool(store):
     """`workflow_steps.review_id` has no `REFERENCES` clause, so nothing else would
     say a word -- and the workflow would not merely look intact, it would run wrong.
