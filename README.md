@@ -402,6 +402,7 @@ The PyPI distribution is named `orchestrator-mcp-server`; the shorter PyPI name 
 | Tool | Purpose |
 |---|---|
 | `orchestrator_consult` | Start or continue a structured consultation. |
+| `orchestrator_consult_many` | Ask 2 to 5 agents the same question at once — named, or the top `count` by score — and get one envelope each for the host to merge. Costs one consultation per agent; each is resumable by its own `consultation_id`, and all share the label `group <group_id>`. |
 | `orchestrator_list_consult_agents` | Show configured agents, routing scores, installation, and login readiness. |
 | `orchestrator_get_consultation` | Retrieve a stored consultation, its turns, usage, and routing decision. |
 | `orchestrator_list_consultations` | Recent ordinary consultations, newest first. Metadata only. |
@@ -1093,11 +1094,11 @@ log line there is a corrupt protocol frame. Credential-shaped text is masked in
 the rendered line before it is written, on the same best-effort basis as the
 database copy.
 
-The four tools that can run for minutes — `orchestrator_consult`,
-`orchestrator_review_run`, `orchestrator_retry_review` and
+The tools that can run for minutes — `orchestrator_consult`,
+`orchestrator_consult_many`, `orchestrator_review_run`, `orchestrator_retry_review` and
 `orchestrator_workflow_run_step` — also emit MCP progress notifications: a
 heartbeat every 15 seconds carrying elapsed time against the configured timeout,
-and reviewer counts as each one answers. Clients that ask for progress see them;
+and agent or reviewer counts as each one answers. Clients that ask for progress see them;
 clients that do not are unaffected.
 
 `consult` is the only top-level section. Configuration from releases before 0.4 containing `capabilities`, `model_list`, `router_settings`, or `limits` is rejected at startup because direct API routing was removed.

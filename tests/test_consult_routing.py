@@ -178,3 +178,19 @@ def test_source_mode_resolution(mode, context, expected):
 def test_document_mode_without_context_is_refused(context):
     with pytest.raises(SourceModeError):
         resolve_source_mode(SourceMode.DOCUMENT, context)
+
+
+def test_a_panel_is_select_repeated_without_each_winner():
+    panel = router(
+        "claude",
+        second=agent("codex", "b", scores={"coding": 80}),
+        top=agent("codex", "a", scores={"coding": 90}),
+        third=agent("codex", "c", scores={"coding": 70}),
+        own=agent("claude", "d", scores={"coding": 99}),
+        off=agent("codex", "e", scores={"coding": 95}, enabled=False),
+        zero=agent("codex", "f", scores={"coding": 0}),
+    )
+    assert panel.select_many("coding", 2) == ["top", "second"]
+    # Fewer than asked when fewer qualify, never padded with the excluded.
+    assert panel.select_many("coding", 5) == ["top", "second", "third"]
+    assert panel.select_many("review", 5) == []

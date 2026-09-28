@@ -47,6 +47,7 @@ from .consult.contract import (
     ConsultationDeletionResult,
     ConsultationListing,
     ConsultationRecord,
+    ConsultManyResponse,
     ConsultResponse,
 )
 from .consult.errors import ConsultErrorCode
@@ -160,6 +161,15 @@ def _tool_signature(request_model: type, return_annotation: type) -> inspect.Sig
         )
     )
     return inspect.Signature(parameters, return_annotation=return_annotation)
+
+
+def _flatten(fn: Callable[..., Any], request_model: type, return_annotation: type) -> None:
+    """Give a `**kwargs` tool the request model's fields as its signature, and the
+    annotations the SDK reads `ctx` from."""
+    fn.__signature__ = _tool_signature(request_model, return_annotation)  # type: ignore[attr-defined]
+    fn.__annotations__ = {
+        p.name: p.annotation for p in fn.__signature__.parameters.values()  # type: ignore[attr-defined]
+    } | {"return": return_annotation}
 
 
 def _version() -> str:
@@ -411,6 +421,7 @@ def _instructions(consult: ConsultConfig) -> str:
         "identity.",
         "- Second opinion: `orchestrator_consult`. Send the returned "
         "`consultation_id` back to continue the same conversation; "
+        "`orchestrator_consult_many` asks several agents at once; "
         "`orchestrator_list_consult_agents` shows who can be reached.",
     ]
     if consult.review is not None:
@@ -442,13 +453,7 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         async with reporting(ctx, "consulting"):
             return await service.consult(**kwargs)
 
-    consult.__name__ = "consult"
-    consult.__signature__ = _tool_signature(  # type: ignore[attr-defined]
-        service.request_model, ConsultResponse
-    )
-    consult.__annotations__ = {
-        p.name: p.annotation for p in consult.__signature__.parameters.values()
-    } | {"return": ConsultResponse}
+    _flatten(consult, service.request_model, ConsultResponse)
     consult.__doc__ = (
         "Consult another vendor's coding agent -- Codex, Claude Code, OpenCode, or "
         "experimental Antigravity -- running under its own account, and get back a "
@@ -468,6 +473,28 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         name="orchestrator_consult",
         annotations=_hints("Consult another coding agent", open_world=True),
     )(consult)
+
+    async def consult_many(**kwargs: Any) -> ConsultManyResponse:
+        async with reporting(kwargs.pop("ctx", None), "consulting"):
+            return await service.consult_many(**kwargs)
+
+    _flatten(consult_many, service.many_request_model, ConsultManyResponse)
+    consult_many.__doc__ = (
+        "Ask several coding agents the same question at once and get every answer "
+        "back, one envelope each. Merging them is yours: say where they agree, and "
+        "above all where they disagree.\n\n"
+        "`target_agents` names the panel; omit it to ask the top `count` agents by "
+        "score for `capability`. Each member costs what one `orchestrator_consult` "
+        "would, so three agents is three times the spend.\n\n"
+        "Every result is an ordinary consultation with its own `consultation_id`: "
+        "continue any one of them with `orchestrator_consult`. They share the label "
+        "`group <group_id>`. Check each result's `ok`; one failing does not fail the rest."
+    )
+    _tool(
+        server,
+        name="orchestrator_consult_many",
+        annotations=_hints("Consult several coding agents", open_world=True),
+    )(consult_many)
 
     @_tool(
         server,

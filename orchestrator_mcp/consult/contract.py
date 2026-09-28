@@ -17,7 +17,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from ..contract import MAX_ERROR_CHARS, Usage
+from ..contract import MAX_ERROR_CHARS, MAX_REVIEWERS, Usage
 from .errors import ConsultErrorCode
 
 # The consultation capabilities are a fixed vocabulary, not the operator's
@@ -218,6 +218,15 @@ class ConsultResponse(BaseModel):
         return self
 
 
+class ConsultManyResponse(BaseModel):
+    """One envelope per agent asked, in the order they were picked."""
+
+    group_id: UUID = Field(
+        description="Recorded on every member as the label `group <group_id>`."
+    )
+    results: list[ConsultResponse]
+
+
 class ConsultAgentInfo(BaseModel):
     """One row of `list_consult_agents`."""
 
@@ -315,6 +324,39 @@ def build_consult_request(agent_ids: list[str]) -> type[ConsultRequest]:
                 default=None,
                 description=ConsultRequest.model_fields["target_agent"].description,
                 json_schema_extra=_agent_enum(agent_ids),
+            ),
+        ),
+    )
+
+
+def build_consult_many_request(agent_ids: list[str]) -> type[BaseModel]:
+    """`ConsultRequest` for a panel: every member starts fresh, under the group's label,
+    so no `consultation_id`, no `conversation_label`, and a list of agents or a count
+    in place of one agent."""
+    shared = {
+        name: (field.annotation, field)
+        for name, field in ConsultRequest.model_fields.items()
+        if name not in ("consultation_id", "target_agent", "conversation_label")
+    }
+    return create_model(  # type: ignore[call-overload]
+        "ConsultManyRequest",
+        __config__=ConfigDict(extra="forbid"),
+        **shared,
+        target_agents=(
+            list[Literal[tuple(agent_ids)]],  # type: ignore[valid-type]
+            Field(
+                default_factory=list,
+                max_length=MAX_REVIEWERS,
+                description="Who to ask. Omit to ask the top `count` by score.",
+            ),
+        ),
+        count=(
+            int,
+            Field(
+                default=3,
+                ge=2,
+                le=MAX_REVIEWERS,
+                description="How many to ask when `target_agents` is empty.",
             ),
         ),
     )

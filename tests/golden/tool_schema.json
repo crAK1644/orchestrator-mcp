@@ -455,6 +455,465 @@
       "type": "object"
     }
   },
+  "orchestrator_consult_many": {
+    "input_schema": {
+      "$defs": {
+        "SourceMode": {
+          "enum": [
+            "auto",
+            "document",
+            "web",
+            "model"
+          ],
+          "title": "SourceMode",
+          "type": "string"
+        }
+      },
+      "properties": {
+        "capability": {
+          "description": "Which capability this consultation needs.",
+          "enum": [
+            "coding",
+            "research",
+            "writing",
+            "reasoning",
+            "review",
+            "planning",
+            "prompt_authoring",
+            "testing",
+            "synthesis"
+          ],
+          "title": "Capability",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "The task or question for the consulted agent.",
+          "maxLength": 100000,
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "maxLength": 1000000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source material. Treated as untrusted evidence, never as instructions.",
+          "title": "Context"
+        },
+        "source_mode": {
+          "$ref": "#/$defs/SourceMode",
+          "default": "auto",
+          "description": "`auto` picks `document` when `context` is set and `model` otherwise. `document` grounds the answer in `context` with every tool disabled. `web` enables only the target runtime's web search. `model` uses neither."
+        },
+        "target_agents": {
+          "description": "Who to ask. Omit to ask the top `count` by score.",
+          "items": {
+            "enum": [
+              "claude-opus",
+              "codex-sol"
+            ],
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Target Agents",
+          "type": "array"
+        },
+        "count": {
+          "default": 3,
+          "description": "How many to ask when `target_agents` is empty.",
+          "maximum": 5,
+          "minimum": 2,
+          "title": "Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "capability",
+        "prompt"
+      ],
+      "title": "consult_manyArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "ConsultError": {
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ConsultErrorCode"
+            },
+            "message": {
+              "maxLength": 500,
+              "title": "Message",
+              "type": "string"
+            },
+            "agent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Agent Id"
+            },
+            "required_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RequiredAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "ConsultError",
+          "type": "object"
+        },
+        "ConsultErrorCode": {
+          "description": "Closed set, so callers branch on a value instead of matching substrings.",
+          "enum": [
+            "agent_not_installed",
+            "connection_required",
+            "configured_model_unavailable",
+            "agent_unavailable",
+            "session_not_found",
+            "session_busy",
+            "session_target_mismatch",
+            "workflow_owned_session",
+            "protocol_validation_failed",
+            "web_search_unavailable",
+            "transport_error",
+            "not_started",
+            "timeout",
+            "invalid_request",
+            "no_agent_available",
+            "spend_limit_reached"
+          ],
+          "title": "ConsultErrorCode",
+          "type": "string"
+        },
+        "ConsultResponse": {
+          "description": "One envelope for every outcome.\n\nInvariants (asserted by `check_invariants`, covered by tests):\n  * `ok is False` iff `error is not None`\n  * when `ok is False`, `content` is None -- a failed consultation never carries\n    text a caller could read as the consulted agent's answer.",
+          "properties": {
+            "ok": {
+              "title": "Ok",
+              "type": "boolean"
+            },
+            "consultation_id": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Consultation Id"
+            },
+            "content": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ConsultationContent"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "capability_requested": {
+              "title": "Capability Requested",
+              "type": "string"
+            },
+            "source_mode_used": {
+              "$ref": "#/$defs/SourceMode"
+            },
+            "route": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ConsultRoute"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "usage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Usage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "latency_ms": {
+              "default": 0,
+              "title": "Latency Ms",
+              "type": "integer"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ConsultError"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "ok",
+            "capability_requested",
+            "source_mode_used"
+          ],
+          "title": "ConsultResponse",
+          "type": "object"
+        },
+        "ConsultRoute": {
+          "description": "Why this agent answered. Recorded, and returned so the caller can see it.",
+          "properties": {
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "runtime": {
+              "enum": [
+                "codex",
+                "claude",
+                "antigravity",
+                "opencode"
+              ],
+              "title": "Runtime",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "capability_score": {
+              "title": "Capability Score",
+              "type": "integer"
+            },
+            "priority": {
+              "title": "Priority",
+              "type": "integer"
+            },
+            "explicitly_selected": {
+              "title": "Explicitly Selected",
+              "type": "boolean"
+            },
+            "model_verified": {
+              "default": false,
+              "title": "Model Verified",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "agent_id",
+            "runtime",
+            "model",
+            "capability_score",
+            "priority",
+            "explicitly_selected"
+          ],
+          "title": "ConsultRoute",
+          "type": "object"
+        },
+        "ConsultSource": {
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "locator": {
+              "title": "Locator",
+              "type": "string"
+            },
+            "source_type": {
+              "enum": [
+                "document",
+                "web",
+                "model"
+              ],
+              "title": "Source Type",
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "locator",
+            "source_type"
+          ],
+          "title": "ConsultSource",
+          "type": "object"
+        },
+        "ConsultationContent": {
+          "additionalProperties": false,
+          "description": "What a consulted agent must return. Every field is required.\n\nArrays may be empty but may never be omitted: \"no assumptions\" is a claim the\nconsulted agent has to make, not one the caller has to infer from a missing key.",
+          "properties": {
+            "answer": {
+              "title": "Answer",
+              "type": "string"
+            },
+            "assumptions": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Assumptions",
+              "type": "array"
+            },
+            "uncertainties": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Uncertainties",
+              "type": "array"
+            },
+            "follow_up_questions": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Follow Up Questions",
+              "type": "array"
+            },
+            "sources": {
+              "items": {
+                "$ref": "#/$defs/ConsultSource"
+              },
+              "title": "Sources",
+              "type": "array"
+            }
+          },
+          "required": [
+            "answer",
+            "assumptions",
+            "uncertainties",
+            "follow_up_questions",
+            "sources"
+          ],
+          "title": "ConsultationContent",
+          "type": "object"
+        },
+        "RequiredAction": {
+          "description": "A command for the *user* to run. Never run by this server, which has no\nbusiness touching another vendor's login flow.",
+          "properties": {
+            "command": {
+              "title": "Command",
+              "type": "string"
+            },
+            "retry_after_connection": {
+              "default": true,
+              "title": "Retry After Connection",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "title": "RequiredAction",
+          "type": "object"
+        },
+        "SourceMode": {
+          "enum": [
+            "auto",
+            "document",
+            "web",
+            "model"
+          ],
+          "title": "SourceMode",
+          "type": "string"
+        },
+        "Usage": {
+          "description": "What one turn cost in tokens, counted the same way whatever runtime answered.\n\n`prompt_tokens` is every input token the answering model was billed for, cache\nreads and writes included -- a cached prompt was still sent. `completion_tokens`\nis every token it generated, reasoning and thinking included. `total_tokens` is\nthe two added together for a turn as it was counted. `cost_usd`, where a runtime\nreports one, may cover the whole invocation rather than the answering model alone.\n\n`counts_incomplete` is empty when those three are a straight measurement, and\notherwise carries every reason they are not: a count the runtime reported\nunreadably and this server substituted a zero for, a rollup that added turns\ncounted under two different definitions of these fields, a rollup whose total is\nnot its own parts because some turn in it predates that rule. A zero that was\ninvented reads exactly like a zero that was measured, so the difference has to be\nsaid rather than inferred.\n\nA list rather than one string, because these accumulate and then get added up. Two\nreasons joined early are indistinguishable from one reason containing a semicolon,\nwhich is what a rollup of rollups would then be de-duplicating against.",
+          "properties": {
+            "prompt_tokens": {
+              "default": 0,
+              "title": "Prompt Tokens",
+              "type": "integer"
+            },
+            "completion_tokens": {
+              "default": 0,
+              "title": "Completion Tokens",
+              "type": "integer"
+            },
+            "total_tokens": {
+              "default": 0,
+              "title": "Total Tokens",
+              "type": "integer"
+            },
+            "cost_usd": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cost Usd"
+            },
+            "counts_incomplete": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Counts Incomplete",
+              "type": "array"
+            }
+          },
+          "title": "Usage",
+          "type": "object"
+        }
+      },
+      "description": "One envelope per agent asked, in the order they were picked.",
+      "properties": {
+        "group_id": {
+          "description": "Recorded on every member as the label `group <group_id>`.",
+          "format": "uuid",
+          "title": "Group Id",
+          "type": "string"
+        },
+        "results": {
+          "items": {
+            "$ref": "#/$defs/ConsultResponse"
+          },
+          "title": "Results",
+          "type": "array"
+        }
+      },
+      "required": [
+        "group_id",
+        "results"
+      ],
+      "title": "ConsultManyResponse",
+      "type": "object"
+    }
+  },
   "orchestrator_list_consult_agents": {
     "input_schema": {
       "properties": {},

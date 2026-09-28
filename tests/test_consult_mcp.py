@@ -1,7 +1,7 @@
 """The MCP surface of the consultation path.
 
 `test_existing_contract.py` guards what a consult-free config advertises. This file
-guards the other half: that configuring `consult:` adds exactly seven tools, that
+guards the other half: that configuring `consult:` adds exactly eight tools, that
 the calling model reads a usable schema off them, and that it cannot name an agent
 nobody configured.
 """
@@ -29,13 +29,14 @@ async def tools(server):
     return {t.name: t for t in await server.list_tools()}
 
 
-async def test_configuring_consult_without_reviewers_adds_exactly_seven_tools(
+async def test_configuring_consult_without_reviewers_adds_exactly_eight_tools(
     tmp_path, host_claude
 ):
     """`review:` is a separate opt-in. A config with agents and no reviewers gets the
     consultation tools and nothing that would refuse every call."""
     assert set(await tools(build_server(config(tmp_path)))) == {
         "orchestrator_consult",
+        "orchestrator_consult_many",
         "orchestrator_list_consult_agents",
         "orchestrator_get_consultation",
         "orchestrator_list_consultations",
@@ -211,3 +212,17 @@ async def test_a_value_error_inside_a_tool_is_a_bad_request_with_its_reason(
 
     assert "limit must be positive" in str(exc.value)
     assert "abcdefghijkl" not in str(exc.value)
+
+
+async def test_a_panel_answers_with_an_envelope_per_agent(tmp_path, host_claude):
+    missing = {"command": "definitely-not-installed-anywhere", "scores": {"coding": 90}}
+    server = build_server(config(tmp_path, agents={
+        "codex-a": {"runtime": "codex", "model": "m", **missing},
+        "codex-b": {"runtime": "codex", "model": "n", **missing},
+    }))
+    result = await server.call_tool(
+        "orchestrator_consult_many", {"capability": "coding", "prompt": "q", "count": 2}
+    )
+
+    codes = [r["error"]["code"] for r in result.structured_content["results"]]
+    assert codes == ["agent_not_installed", "agent_not_installed"]

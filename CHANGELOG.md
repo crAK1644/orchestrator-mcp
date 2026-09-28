@@ -12,6 +12,7 @@ One line per change a user would notice. The full notes for each version are on 
   command no longer asks you for a workflow id.
 - Consultations, reviews and workflows read as `orchestrator://` resources, and prompt
   arguments and resource ids complete from what exists.
+- `orchestrator_consult_many` asks several agents the same question at once.
 - `ORCHESTRATOR_CONFIG` may start with `~`, which GUI hosts pass through unexpanded.
 - Listed in the official MCP registry as `io.github.crAK1644/orchestrator-mcp`.
 - README: a quick start, and config blocks for Claude Desktop, VS Code, Cursor and OpenCode.

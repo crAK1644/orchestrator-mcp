@@ -24,7 +24,7 @@ from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.service import ConsultService
 from orchestrator_mcp.contract import Usage
 
-from .conftest import consult_block
+from .conftest import agent, consult_block
 
 ANSWER = ConsultationContent(
     answer="blue",
@@ -643,3 +643,38 @@ async def test_a_review_or_workflow_ceiling_does_not_bound_a_plain_consultation(
         capability="coding", prompt="q2", consultation_id=first.consultation_id
     )
     assert first.ok and second.ok
+
+
+# --- a panel ------------------------------------------------------------------
+
+PANEL = {
+    "codex-sol": agent("codex", "gpt-5.6-sol", 10),
+    "codex-mini": agent("codex", "gpt-5.6-mini", 20),
+    "claude-opus": agent("claude", "opus", 30),
+}
+
+
+async def test_a_panel_is_one_ordinary_consultation_per_agent(service_factory):
+    service = await service_factory(agents=PANEL)
+    panel = await service.consult_many(capability="coding", prompt="what colour is the sky", count=5)
+
+    # The host's own runtime is left out, as it is for one consultation.
+    assert [r.route.agent_id for r in panel.results] == ["codex-sol", "codex-mini"]
+    assert all(r.ok for r in panel.results)
+    for result in panel.results:
+        record = await service.get_consultation(result.consultation_id)
+        assert record.conversation_label == f"group {panel.group_id}"
+    assert len({r.consultation_id for r in panel.results}) == 2
+
+    named = await service.consult_many(
+        capability="coding", prompt="q", target_agents=["codex-mini", "codex-mini"]
+    )
+    assert [r.route.agent_id for r in named.results] == ["codex-mini"]
+
+
+async def test_a_panel_nobody_can_join_is_one_refusal(service_factory):
+    service = await service_factory(agents={"claude-opus": PANEL["claude-opus"]})
+    panel = await service.consult_many(capability="coding", prompt="q")
+
+    [result] = panel.results
+    assert result.error.code is ConsultErrorCode.NO_AGENT_AVAILABLE

@@ -51,6 +51,7 @@ async def test_the_advertised_schema_has_not_moved(host_claude):
 
 CONSULT_TOOLS = {
     "orchestrator_consult",
+    "orchestrator_consult_many",
     "orchestrator_list_consult_agents",
     "orchestrator_get_consultation",
     "orchestrator_list_consultations",
