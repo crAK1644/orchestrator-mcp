@@ -1016,6 +1016,7 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 | `preflight_ttl_s` | `300` | How long a *ready* login check is reused before the CLI is probed again. Only a ready answer is cached; `0` probes once per turn. |
 | `web_turn_limit` | `8` | Assistant turns allowed in web mode. Enforced by the Claude runtime only. |
 | `store_full_content` | `true` | Set false to keep metadata and routing only — except a review's goal and context, which are stored either way. Reviews cannot be finalized under it — see below. |
+| `retention_days` | absent | Days of no activity after which finished history is deleted, once at each server start: workflows that are completed, failed, cancelled or `needs_attention`; reviews not running; ordinary consultations. A running or leased record stays. Absent keeps everything. |
 | `review` | absent | Configured reviewers; absent means no review tools. |
 | `workflow` | absent | The three-phase workflow; absent means no workflow tools. Requires `store_full_content: true`. |
 | `host` | runtime from the environment | Asserted host runtime, and the host model that makes same-runtime routing possible. |
