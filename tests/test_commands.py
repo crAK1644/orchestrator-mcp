@@ -141,11 +141,9 @@ async def test_the_workflow_command_does_not_let_a_claimed_test_pass_for_a_resul
     assert "record the exit code you observed" in text
 
 
-async def test_the_status_command_admits_workflows_cannot_be_listed(host_claude):
-    """There is no `orchestrator_list_workflows`. Saying so beats a host inventing an
-    id or reporting that there are none."""
+async def test_the_status_command_lists_workflows_when_no_id_is_given(host_claude):
     text = await expand(server(review=REVIEW, workflow=WORKFLOW), "status")
-    assert "no tool that lists them" in text
+    assert "orchestrator_list_workflows" in text
     assert "wf-7" in await expand(
         server(review=REVIEW, workflow=WORKFLOW), "status", {"workflow_id": "wf-7"}
     )

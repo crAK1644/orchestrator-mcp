@@ -550,6 +550,18 @@ class WorkflowDeletionResult(BaseModel):
     )
 
 
+class WorkflowListing(BaseModel):
+    """One row of `orchestrator_list_workflows`. Metadata only -- no steps."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_id: str
+    goal: str = Field(description="Cut at 200 characters; the full goal is in the status.")
+    status: WorkflowState
+    created_at: str
+    updated_at: str
+
+
 ARTIFACT_MODELS: dict[ArtifactType, type[BaseModel]] = {
     "research_brief": ResearchBrief,
     "implementation_plan": ImplementationPlan,

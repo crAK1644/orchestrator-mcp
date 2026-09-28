@@ -71,6 +71,7 @@ from .contract import (
     SynthesisRecord,
     TestReport,
     WorkflowError,
+    WorkflowListing,
     WorkflowResponse,
     WorkflowState,
     WorkflowView,
@@ -1277,6 +1278,22 @@ class WorkflowService:
             return await self._view_response(workflow_id, started)
         except (WorkflowError, StoreError) as exc:
             return _failed(workflow_id, await self._status(workflow_id), exc.code, str(exc), started)
+
+    async def list(self, limit: int = 20) -> list[WorkflowListing]:
+        """Newest first. Reaps nothing, unlike `status`, so listing writes no row."""
+        await self.open()
+        return [
+            WorkflowListing(
+                workflow_id=w.id,
+                # ponytail: a goal is unbounded, and a hundred of them would crowd out the
+                # context the list is meant to help navigate
+                goal=w.goal if len(w.goal) <= 200 else w.goal[:199] + "…",
+                status=w.status,  # type: ignore[arg-type]
+                created_at=w.created_at,
+                updated_at=w.updated_at,
+            )
+            for w in await self.store.list_workflows(limit)
+        ]
 
     # --- deletion ---------------------------------------------------------------
 

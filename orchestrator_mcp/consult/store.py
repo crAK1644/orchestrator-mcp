@@ -424,6 +424,14 @@ DELETE_CONFIRM_TTL_S = 300.0
 _T = TypeVar("_T")
 
 
+# A consultation neither a review nor a workflow owns: what the consultation tools list
+# and delete. The owned ones go with their owner.
+_ORDINARY_SQL = (
+    "c.workflow_id IS NULL AND NOT EXISTS "
+    "(SELECT 1 FROM review_consultations r WHERE r.consultation_id = c.id)"
+)
+
+
 class StoreError(CodedFailure):
     """A refusal with a code the caller's envelope can carry."""
 
@@ -1101,6 +1109,19 @@ class ConsultStore:
 
         return await self._run(work)
 
+    async def list_consultations(self, limit: int = 20) -> list[Consultation]:
+        """The ordinary consultations, newest first -- the ones the consultation tools own."""
+
+        def work() -> list[Consultation]:
+            rows = self._db.execute(
+                f"SELECT c.* FROM consultations c WHERE {_ORDINARY_SQL} "
+                "ORDER BY c.created_at DESC, c.id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [Consultation(**dict(row)) for row in rows]
+
+        return await self._run(work)
+
     # --- deletion ----------------------------------------------------------
 
     async def delete_consultation(self, consultation_id: UUID | str) -> int:
@@ -1126,10 +1147,7 @@ class ConsultStore:
             ids = [
                 row[0]
                 for row in self._db.execute(
-                    "SELECT c.id FROM consultations c WHERE c.workflow_id IS NULL "
-                    "AND NOT EXISTS ("
-                    "SELECT 1 FROM review_consultations r WHERE r.consultation_id = c.id"
-                    ") ORDER BY c.id"
+                    f"SELECT c.id FROM consultations c WHERE {_ORDINARY_SQL} ORDER BY c.id"
                 )
             ]
             token = secrets.token_urlsafe(32)
