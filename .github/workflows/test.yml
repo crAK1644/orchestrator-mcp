@@ -87,3 +87,28 @@ jobs:
           checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
       - run: uv sync --all-extras --dev
       - run: uv run ruff check .
+
+  # Every job above is Linux, so the suite only ever proved bubblewrap. Homebrew and
+  # most users are on macOS, where the sandbox is `sandbox-exec` -- a different
+  # profile, different escapes. Same guard as the Linux jobs: refuse to run rather
+  # than let the escape suite skip itself green.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          version: "0.11.26"
+          # The aarch64-apple-darwin tarball, which is what macos-latest pulls.
+          checksum: "8f7fbf1708399b921857bce71e1d60f0d3ccf52a30caebc1c1a2f175dce13ab6"
+      - run: uv sync --all-extras --dev
+      - name: Refuse to test without a sandbox
+        run: |
+          uv run python -c "
+          from orchestrator_mcp.code import sandbox
+          if not sandbox.holds():
+              raise SystemExit(f'no sandbox on this runner: {sandbox.unavailable_reason()}')
+          print(f'sandbox: {sandbox.mechanism()}')
+          "
+      - run: uv run pytest -q -n auto
