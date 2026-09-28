@@ -32,13 +32,17 @@ from typing import Any
 from uuid import UUID
 
 from ..consult.errors import ConsultErrorCode
-from ..consult.store import ConsultStore, StoreError, _renewing_lease
+from ..consult.store import (
+    DELETE_CONFIRM_TTL_S,
+    ConsultStore,
+    StoreError,
+    _renewing_lease,
+)
 from ..contract import scrub_json
 
 # Long enough to outlive a whole reviewer batch. They run in parallel, so the bound
 # is the slowest one plus its preflight, not the sum of all of them.
 REVIEW_LEASE_SLACK_S = 60.0
-DELETE_CONFIRM_TTL_S = 300.0
 # A plan nobody sent. It holds no reviewer output, so dropping it loses nothing but a
 # preview, and a day is long past any host still deciding whether to run it.
 PENDING_PLAN_TTL_S = 24 * 60 * 60

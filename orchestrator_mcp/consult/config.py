@@ -607,8 +607,8 @@ class ConsultConfig(BaseModel):
 def load_consult_config(config: dict[str, Any]) -> ConsultConfig | None:
     """Parse the `consult:` block, or return None when there is none.
 
-    A config without the block is the 0.1.2 config, and must keep starting a server
-    that behaves exactly as it did.
+    The server refuses a config without one in `validate_config`; None is for the
+    callers that read a config without serving it.
     """
     block = config.get("consult")
     if block is None:

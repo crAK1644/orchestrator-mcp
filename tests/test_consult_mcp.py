@@ -175,3 +175,38 @@ async def test_the_store_is_not_created_until_a_consultation_happens(tmp_path, h
     """A configured-but-unused consult path should not leave a database behind."""
     build_server(config(tmp_path))
     assert not (tmp_path / "consultations.sqlite3").exists()
+
+
+async def test_a_crash_inside_a_tool_names_its_type_and_nothing_else(
+    tmp_path, host_claude, monkeypatch
+):
+    """What escapes a service still arrives as a `ToolError` -- the only kind whose text
+    reaches the model -- and carries the exception's type, never its message, which
+    can quote whatever was in scope."""
+    from orchestrator_mcp.consult.service import ConsultService
+
+    async def crash(self):
+        raise RuntimeError("database is locked; token=sk-live-abcdefghijkl")
+
+    monkeypatch.setattr(ConsultService, "list_agents", crash)
+    with pytest.raises(ToolError) as exc:
+        await build_server(config(tmp_path)).call_tool("orchestrator_list_consult_agents", {})
+
+    assert "failed inside the orchestrator (RuntimeError)" in str(exc.value)
+    assert "sk-live" not in str(exc.value) and "locked" not in str(exc.value)
+
+
+async def test_a_value_error_inside_a_tool_is_a_bad_request_with_its_reason(
+    tmp_path, host_claude, monkeypatch
+):
+    from orchestrator_mcp.consult.service import ConsultService
+
+    async def refuse(self):
+        raise ValueError("limit must be positive; api_key=abcdefghijkl")
+
+    monkeypatch.setattr(ConsultService, "list_agents", refuse)
+    with pytest.raises(ToolError) as exc:
+        await build_server(config(tmp_path)).call_tool("orchestrator_list_consult_agents", {})
+
+    assert "limit must be positive" in str(exc.value)
+    assert "abcdefghijkl" not in str(exc.value)
