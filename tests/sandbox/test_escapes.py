@@ -253,7 +253,7 @@ def test_credential_files_are_not_readable(
     mechanisms reach the same promise by routes that differ in exactly that. macOS
     denies the read and `cat` fails; Linux binds `/dev/null` over the file, so `cat`
     succeeds and prints nothing. Requiring a nonzero status made the secure Linux
-    behaviour a test failure -- never seen, because CI's Linux runner has no `bwrap`.
+    behaviour a test failure -- missed while CI's Linux runner had no `bwrap`.
     `attempt` already refuses to return a result whose command did not run, so the
     absence below is a read that happened and found nothing.
     """

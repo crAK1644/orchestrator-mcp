@@ -13,11 +13,12 @@ here is reached through a CLI the user has already logged into.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import os
 import shlex
 import sys
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -26,7 +27,10 @@ from uuid import UUID
 import yaml
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from . import cli
 from .commands import add_commands
@@ -44,11 +48,12 @@ from .consult.contract import (
     ConsultationRecord,
     ConsultResponse,
 )
+from .consult.errors import ConsultErrorCode
 from .consult.service import ConsultService
-from .consult.store import DELETE_CONFIRM_TTL_S as CONSULT_DELETE_CONFIRM_TTL_S
-from .consult.store import ConsultStore
-from .contract import ConfigError
+from .consult.store import DELETE_CONFIRM_TTL_S, ConsultStore
+from .contract import MAX_ERROR_CHARS, CodedFailure, ConfigError, redact
 from .log import configure as configure_logging
+from .log import get_logger
 from .progress import reporting
 from .review.contract import (
     CombinedFinding,
@@ -62,7 +67,6 @@ from .review.contract import (
     ReviewResponse,
 )
 from .review.service import ReviewService
-from .review.store import DELETE_CONFIRM_TTL_S
 from .workflow.contract import (
     Step,
     WorkflowDeleteApproval,
@@ -70,11 +74,12 @@ from .workflow.contract import (
     WorkflowResponse,
 )
 from .workflow.service import WorkflowService
-from .workflow.store import DELETE_CONFIRM_TTL_S as WORKFLOW_DELETE_CONFIRM_TTL_S
 
 __all__ = [
     "ConfigError", "ConfigNotFound", "build_server", "load_config", "main", "validate_config"
 ]
+
+log = get_logger(__name__)
 
 CONFIG_ENV = "ORCHESTRATOR_CONFIG"
 DEFAULT_CONFIG = "config.yaml"
@@ -121,9 +126,7 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ConfigError("nothing is configured: give the server a `consult:` block")
 
 
-def _tool_signature(
-    request_model: type, return_annotation: type, context: bool = False
-) -> inspect.Signature:
+def _tool_signature(request_model: type, return_annotation: type) -> inspect.Signature:
     """Expose the request model's fields as flat keyword arguments.
 
     Nesting the model under one `request` parameter is what the SDK does by default;
@@ -131,7 +134,7 @@ def _tool_signature(
     where it will actually read them. Derived from the model so there is one source
     of truth for the contract.
 
-    `context=True` appends a `ctx: Context` parameter. The SDK finds it by annotation
+    A `ctx: Context` parameter is appended. The SDK finds it by annotation
     -- through `__annotations__`, which the caller sets from this signature -- and
     both injects it at call time and leaves it out of the published schema, so a
     hand-built signature gets the same treatment as an ordinary `def`.
@@ -145,19 +148,14 @@ def _tool_signature(
         )
         for name, field in request_model.model_fields.items()
     ]
-    if context:
-        parameters.append(
-            # Optional, matching the three hand-written tools: the SDK injects it,
-            # but a direct call or a test invoking the function must not fail on a
-            # missing keyword argument for something the body already treats as
-            # absent-able.
-            inspect.Parameter(
-                "ctx",
-                inspect.Parameter.KEYWORD_ONLY,
-                default=None,
-                annotation=Context | None,
-            )
+    # Optional, matching the three hand-written tools: the SDK injects it, but a direct
+    # call or a test invoking the function must not fail on a missing keyword argument
+    # for something the body already treats as absent-able.
+    parameters.append(
+        inspect.Parameter(
+            "ctx", inspect.Parameter.KEYWORD_ONLY, default=None, annotation=Context | None
         )
+    )
     return inspect.Signature(parameters, return_annotation=return_annotation)
 
 
@@ -184,52 +182,50 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
             return _setup_server(missing.path)
     validate_config(config)
     consult_config = load_consult_config(config)
+    # `validate_config` has already refused a config without `consult:`.
+    assert consult_config is not None
     server = MCPServer(
         "orchestrator", version=_version(), instructions=_instructions(consult_config)
     )
 
-    # The whole surface hangs off this one branch, because `consult:` is now the
-    # only thing there is to configure. `validate_config` has already refused a
-    # config without it, so `None` here means a block that parsed to nothing.
-    if consult_config is not None:
-        runtime = host_runtime()
-        # A `consult.host.runtime:` that disagrees with the environment is a config
-        # that has drifted, and every exclusion downstream would be computed against
-        # the wrong identity. Checked here because this is the first place that holds
-        # both answers.
-        consult_config.check_host_runtime(runtime)
-        # One store for both layers, not one each: a review and the consultations
-        # under it are then written by the same serialized worker, and a deletion can
-        # remove them in one transaction instead of hoping two connections agree.
-        store = ConsultStore(consult_config.database_path, consult_config.store_full_content)
-        _add_consult_tools(server, ConsultService(consult_config, runtime, store=store))
-        # Advertised only when reviewers are configured. A server with none should
-        # not offer an `orchestrator_review` tool that can do nothing but refuse.
-        reviews = (
-            ReviewService(consult_config, runtime, store=store)
-            if consult_config.review is not None
-            else None
+    runtime = host_runtime()
+    # A `consult.host.runtime:` that disagrees with the environment is a config
+    # that has drifted, and every exclusion downstream would be computed against
+    # the wrong identity. Checked here because this is the first place that holds
+    # both answers.
+    consult_config.check_host_runtime(runtime)
+    # One store for both layers, not one each: a review and the consultations
+    # under it are then written by the same serialized worker, and a deletion can
+    # remove them in one transaction instead of hoping two connections agree.
+    store = ConsultStore(consult_config.database_path, consult_config.store_full_content)
+    _add_consult_tools(server, ConsultService(consult_config, runtime, store=store))
+    # Advertised only when reviewers are configured. A server with none should
+    # not offer an `orchestrator_review` tool that can do nothing but refuse.
+    reviews = (
+        ReviewService(consult_config, runtime, store=store)
+        if consult_config.review is not None
+        else None
+    )
+    if reviews is not None:
+        _add_review_tools(server, reviews)
+    # Same rule for the workflow, and the same `ReviewService` rather than a
+    # second one: a workflow's review step and `orchestrator_cancel_review` have
+    # to be talking about the same in-flight children, or cancelling from one
+    # side would leave the other waiting on processes it cannot see.
+    if consult_config.workflow is not None:
+        _add_workflow_tools(
+            server, WorkflowService(consult_config, runtime, store=store, reviews=reviews)
         )
-        if reviews is not None:
-            _add_review_tools(server, reviews)
-        # Same rule for the workflow, and the same `ReviewService` rather than a
-        # second one: a workflow's review step and `orchestrator_cancel_review` have
-        # to be talking about the same in-flight children, or cancelling from one
-        # side would leave the other waiting on processes it cannot see.
-        if consult_config.workflow is not None:
-            _add_workflow_tools(
-                server, WorkflowService(consult_config, runtime, store=store, reviews=reviews)
-            )
-        # The slash commands, gated on the same two answers as the tools they drive.
-        # Last, so the `if`s above have already decided what exists.
-        add_commands(
-            server,
-            reviews=reviews is not None,
-            workflow=consult_config.workflow is not None,
-            review_roots=tuple(
-                str(root) for root in (consult_config.review.roots if reviews else [])
-            ),
-        )
+    # The slash commands, gated on the same two answers as the tools they drive.
+    # Last, so the `if`s above have already decided what exists.
+    add_commands(
+        server,
+        reviews=reviews is not None,
+        workflow=consult_config.workflow is not None,
+        review_roots=tuple(
+            str(root) for root in (consult_config.review.roots if reviews else [])
+        ),
+    )
 
     return server
 
@@ -260,6 +256,49 @@ def _hints(
     )
 
 
+def _tool(
+    server: MCPServer, *, name: str, annotations: ToolAnnotations
+) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
+    """Register a tool behind the one error boundary every tool shares.
+
+    Since mcp 2.1 only a `ToolError` reaches the caller as written; anything else
+    arrives as `Error executing tool <name>`, which tells a model nothing about whether
+    to fix its arguments or stop. The services wrap most of their own failures, and
+    this catches what escapes them -- a locked database under a read-only tool, say.
+
+    A `ValueError` is a bad argument and says why, redacted. Anything else is a crash
+    and gives its type only, the same rule the consult envelope keeps: an exception's
+    text can quote whatever was in scope when it was raised.
+    """
+
+    def register(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+        @functools.wraps(fn)
+        async def guarded(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await fn(*args, **kwargs)
+            except (ToolError, MCPError):
+                raise
+            except ValueError as exc:
+                raise CodedFailure(
+                    ConsultErrorCode.INVALID_REQUEST, redact(str(exc))[:MAX_ERROR_CHARS]
+                ) from exc
+            except Exception as exc:
+                log.exception("%s failed", name)
+                raise CodedFailure(
+                    ConsultErrorCode.TRANSPORT_ERROR,
+                    f"{name} failed inside the orchestrator ({type(exc).__name__})",
+                ) from exc
+
+        # The SDK reads parameters through `__wrapped__` but type hints off the wrapper
+        # itself. On 3.14 `wraps` copies `__annotate__` rather than this, which misses
+        # the annotations `consult` sets by hand and publishes its `ctx` in the schema.
+        guarded.__annotations__ = fn.__annotations__
+        server.add_tool(guarded, name=name, annotations=annotations)
+        return fn
+
+    return register
+
+
 def _setup_server(path: Path) -> MCPServer:
     """The server before there is a config: one tool, and it names the next step.
 
@@ -276,7 +315,8 @@ def _setup_server(path: Path) -> MCPServer:
     target = path.absolute()
     command = f"orchestrator-mcp-server init --host {runtime} --path {shlex.quote(str(target))}"
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_setup",
         annotations=_hints("Finish orchestrator setup", read_only=True, idempotent=True),
     )
@@ -292,7 +332,7 @@ def _setup_server(path: Path) -> MCPServer:
     return server
 
 
-def _instructions(consult: ConsultConfig | None) -> str | None:
+def _instructions(consult: ConsultConfig) -> str:
     """What the host shows its model before any tool is loaded.
 
     A host that defers tool loading -- Claude Code does, once enough tools are
@@ -301,8 +341,6 @@ def _instructions(consult: ConsultConfig | None) -> str | None:
     server is for and which call opens each flow, gated on the same answers as the
     tools; the descriptions carry everything else.
     """
-    if consult is None:
-        return None
     lines = [
         "Consult a different coding agent -- Codex, Claude Code, OpenCode or "
         "Antigravity, signed in on this machine -- and get its answer back as a "
@@ -343,7 +381,7 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
 
     consult.__name__ = "consult"
     consult.__signature__ = _tool_signature(  # type: ignore[attr-defined]
-        service.request_model, ConsultResponse, context=True
+        service.request_model, ConsultResponse
     )
     consult.__annotations__ = {
         p.name: p.annotation for p in consult.__signature__.parameters.values()
@@ -362,13 +400,14 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         "error with `required_action` means the agent needs the user to run that "
         "command; nothing else will make it available."
     )
-    server.add_tool(
-        consult,
+    _tool(
+        server,
         name="orchestrator_consult",
         annotations=_hints("Consult another coding agent", open_world=True),
-    )
+    )(consult)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_list_consult_agents",
         annotations=_hints("List consultable agents", read_only=True, idempotent=True),
     )
@@ -379,7 +418,8 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         await service.open()
         return await service.list_agents()
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_get_consultation",
         annotations=_hints("Get a consultation", read_only=True, idempotent=True),
     )
@@ -389,7 +429,8 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         await service.open()
         return await service.get_consultation(consultation_id)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_delete_consultation",
         annotations=_hints("Delete a consultation", destructive=True, idempotent=True),
     )
@@ -404,7 +445,8 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
             deleted=await service.delete_consultation(consultation_id)
         )
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_request_delete_all_consultations",
         annotations=_hints("Preview deleting all consultations"),
     )
@@ -418,10 +460,11 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         return ConsultationDeleteApproval(
             consultations=count,
             confirm_token=token,
-            expires_in_s=int(CONSULT_DELETE_CONFIRM_TTL_S),
+            expires_in_s=int(DELETE_CONFIRM_TTL_S),
         )
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_delete_all_consultations",
         annotations=_hints("Delete all consultations", destructive=True, idempotent=True),
     )
@@ -446,7 +489,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
     stored record of what was approved against what went out.
     """
 
-    @server.tool(name="orchestrator_review", annotations=_hints("Plan a code review"))
+    @_tool(server, name="orchestrator_review", annotations=_hints("Plan a code review"))
     async def review(
         goal: str,
         mode: ReviewMode = "standard",
@@ -513,7 +556,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             host_model=host_model,
         )
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_review_run",
         annotations=_hints("Send a planned review", open_world=True),
     )
@@ -558,7 +602,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
                 raw=raw.model_dump(mode="json") if raw else None,
             )
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_retry_review",
         annotations=_hints("Retry failed reviewers", open_world=True),
     )
@@ -581,7 +626,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
                 review_id, agent_ids, raw.model_dump(mode="json") if raw else None
             )
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_finalize_review",
         annotations=_hints("Record a review synthesis"),
     )
@@ -624,7 +670,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             },
         )
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_apply_fixes",
         annotations=_hints("Show the findings to fix", read_only=True, idempotent=True),
     )
@@ -646,7 +693,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.fix_plan(review_id, finding_ids)
 
-    @server.tool(name="orchestrator_record_fix_round", annotations=_hints("Record a fix round"))
+    @_tool(server, name="orchestrator_record_fix_round", annotations=_hints("Record a fix round"))
     async def record_fix_round(
         review_id: UUID,
         finding_ids: list[str],
@@ -665,7 +712,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.record_fix_round(review_id, finding_ids, outcome, notes)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_cancel_review",
         annotations=_hints("Cancel a review", destructive=True, idempotent=True),
     )
@@ -679,7 +727,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.cancel(review_id)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_test_reviewers",
         annotations=_hints("Check reviewer logins", read_only=True, idempotent=True),
     )
@@ -691,7 +740,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """
         return await service.test_reviewers(mode)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_get_review",
         annotations=_hints("Get a review", read_only=True, idempotent=True),
     )
@@ -706,15 +756,19 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         has turned off `store_full_content`."""
         return await service.get(review_id)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_list_reviews",
         annotations=_hints("List reviews", read_only=True, idempotent=True),
     )
-    async def list_reviews(limit: int = 20) -> list[ReviewListing]:
+    async def list_reviews(
+        limit: Annotated[int, Field(ge=1, le=100)] = 20,
+    ) -> list[ReviewListing]:
         """List recent reviews, newest first. Metadata only -- no material."""
         return await service.list(limit)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_delete_review",
         annotations=_hints("Delete a review", destructive=True, idempotent=True),
     )
@@ -725,7 +779,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         in any server process. Cancel it and try again."""
         return DeletionResult(deleted=await service.delete(review_id))
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_request_delete_all",
         annotations=_hints("Preview deleting all reviews"),
     )
@@ -741,7 +796,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             reviews=count, confirm_token=token, expires_in_s=int(DELETE_CONFIRM_TTL_S)
         )
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_delete_all_reviews",
         annotations=_hints("Delete all reviews", destructive=True, idempotent=True),
     )
@@ -770,7 +826,7 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
     and `record_host_step` is how that work comes back onto the record.
     """
 
-    @server.tool(name="orchestrator_workflow_start", annotations=_hints("Start a workflow"))
+    @_tool(server, name="orchestrator_workflow_start", annotations=_hints("Start a workflow"))
     async def workflow_start(
         goal: str,
         workdir: str,
@@ -802,7 +858,8 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
             allow_dirty=allow_dirty,
         )
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_workflow_plan_step",
         annotations=_hints("Plan a workflow step"),
     )
@@ -830,7 +887,8 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         """
         return await service.plan_step(workflow_id, step, context)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_workflow_run_step",
         annotations=_hints("Run a workflow step", open_world=True),
     )
@@ -861,7 +919,8 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         async with reporting(ctx, f"workflow step {step_id}"):
             return await service.run_step(workflow_id, step_id, confirm_token)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_workflow_record_host_step",
         annotations=_hints("Record a step you ran"),
     )
@@ -887,7 +946,8 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         """
         return await service.record_host_step(workflow_id, step_id, confirm_token, result)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_workflow_status",
         annotations=_hints("Get workflow status", idempotent=True),
     )
@@ -906,7 +966,8 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         """
         return await service.status(workflow_id)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_workflow_plan_replan",
         annotations=_hints("Preview rerouting a workflow"),
     )
@@ -923,7 +984,8 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
             workflow_id, {k: v.model_dump(mode="json") for k, v in bindings.items()}
         )
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_workflow_replan",
         annotations=_hints("Reroute a workflow", destructive=True, idempotent=True),
     )
@@ -932,7 +994,8 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         this changes where the *remaining* steps go, not the record of what happened."""
         return await service.replan(workflow_id, confirm_token)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_workflow_cancel",
         annotations=_hints("Cancel a workflow", destructive=True, idempotent=True),
     )
@@ -946,7 +1009,8 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         """
         return await service.cancel(workflow_id)
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_delete_workflow",
         annotations=_hints("Delete a workflow", destructive=True, idempotent=True),
     )
@@ -964,7 +1028,8 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         process."""
         return WorkflowDeletionResult(deleted=await service.delete(workflow_id))
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_request_delete_all_workflows",
         annotations=_hints("Preview deleting all workflows"),
     )
@@ -979,10 +1044,11 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         presented as the whole history."""
         token, count = await service.request_delete_all()
         return WorkflowDeleteApproval(
-            workflows=count, confirm_token=token, expires_in_s=int(WORKFLOW_DELETE_CONFIRM_TTL_S)
+            workflows=count, confirm_token=token, expires_in_s=int(DELETE_CONFIRM_TTL_S)
         )
 
-    @server.tool(
+    @_tool(
+        server,
         name="orchestrator_delete_all_workflows",
         annotations=_hints("Delete all workflows", destructive=True, idempotent=True),
     )

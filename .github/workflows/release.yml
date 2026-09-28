@@ -34,7 +34,8 @@ jobs:
 
       # A release that fails its own tests should not reach PyPI, and a version
       # is not withdrawable once uploaded.
-      - run: uv sync --all-extras --dev
+      - run: uv sync --dev
+      - run: uv run ruff check .
       # Same step as test.yml: the suite asserts the sandbox holds, so a runner
       # without bubblewrap fails it rather than skipping past it.
       - name: Install a sandbox mechanism

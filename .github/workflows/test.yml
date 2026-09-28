@@ -22,7 +22,7 @@ jobs:
           # under the uv that will build it. Checksum is the x86_64 linux tarball.
           version: "0.11.26"
           checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
-      - run: uv sync --all-extras --dev
+      - run: uv sync --dev
 
       # Without a confinement mechanism, `sandbox.mechanism()` is None on this host and
       # the escape suite skips itself -- so CI would report green having proven nothing
@@ -66,13 +66,21 @@ jobs:
           python-version: "3.14"
           version: "0.11.26"
           checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
-      - run: uv sync --all-extras --dev --upgrade
+      - run: uv sync --dev --upgrade
       # Same reason as the matrix: without it the suite has no sandbox to test.
       - name: Install a sandbox mechanism
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Refuse to test without one
+        run: |
+          uv run python -c "
+          from orchestrator_mcp.code import sandbox
+          if not sandbox.holds():
+              raise SystemExit(f'no sandbox on this runner: {sandbox.unavailable_reason()}')
+          print(f'sandbox: {sandbox.mechanism()}')
+          "
       - run: uv run pytest -q -n auto
 
   # Separate from the matrix: the rules are the same on every interpreter, so
@@ -85,7 +93,7 @@ jobs:
         with:
           version: "0.11.26"
           checksum: "6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0"
-      - run: uv sync --all-extras --dev
+      - run: uv sync --dev
       - run: uv run ruff check .
 
   # Every job above is Linux, so the suite only ever proved bubblewrap. Homebrew and
@@ -102,7 +110,7 @@ jobs:
           version: "0.11.26"
           # The aarch64-apple-darwin tarball, which is what macos-latest pulls.
           checksum: "8f7fbf1708399b921857bce71e1d60f0d3ccf52a30caebc1c1a2f175dce13ab6"
-      - run: uv sync --all-extras --dev
+      - run: uv sync --dev
       - name: Refuse to test without a sandbox
         run: |
           uv run python -c "

@@ -66,7 +66,7 @@ loopback_confined = pytest.mark.skipif(
     # bubblewrap contains filesystem writes perfectly well -- `holds()` is true there --
     # and refuses loopback by design, so `@confined` alone let these run on a Linux host
     # with bubblewrap installed and fail on the `SandboxUnavailable` the module raises
-    # on purpose. Never seen, because CI's Linux runner has no `bwrap`.
+    # on purpose. Missed while CI's Linux runner had no `bwrap`.
     reason=f"no loopback bound holds on this host: {sandbox.loopback_unavailable_reason()}",
 )
 

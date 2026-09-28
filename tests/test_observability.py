@@ -314,7 +314,7 @@ def test_the_context_parameter_is_still_injectable():
     from orchestrator_mcp.consult.contract import ConsultRequest, ConsultResponse
     from orchestrator_mcp.server import _tool_signature
 
-    ctx = _tool_signature(ConsultRequest, ConsultResponse, context=True).parameters["ctx"]
+    ctx = _tool_signature(ConsultRequest, ConsultResponse).parameters["ctx"]
 
     assert _is_context_annotation(ctx.annotation)
     assert ctx.default is None
