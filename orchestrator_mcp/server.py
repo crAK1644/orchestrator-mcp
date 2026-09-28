@@ -20,12 +20,14 @@ import shlex
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 from importlib.metadata import PackageNotFoundError, version
+from importlib.resources import files
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import yaml
 from mcp.server import MCPServer
+from mcp.server.apps import Apps
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp.shared.exceptions import MCPError
@@ -198,7 +200,11 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
     # `validate_config` has already refused a config without `consult:`.
     assert consult_config is not None
     server = MCPServer(
-        "orchestrator", version=_version(), instructions=_instructions(consult_config)
+        "orchestrator",
+        version=_version(),
+        instructions=_instructions(consult_config),
+        # Only something to show when there is a review or a workflow to show.
+        extensions=[_view()] if consult_config.review or consult_config.workflow else [],
     )
 
     runtime = host_runtime()
@@ -321,8 +327,29 @@ def _hints(
     )
 
 
+VIEW_URI = "ui://orchestrator/view.html"
+# What points a tool at the view. A host without MCP Apps ignores `_meta` and shows
+# the text result, which the tool returns either way.
+VIEW = {"ui": {"resourceUri": VIEW_URI}}
+
+
+def _view() -> Apps:
+    apps = Apps()
+    apps.add_html_resource(
+        VIEW_URI,
+        (files("orchestrator_mcp") / "ui" / "view.html").read_text(),
+        title="Review and workflow view",
+        prefers_border=True,
+    )
+    return apps
+
+
 def _tool(
-    server: MCPServer, *, name: str, annotations: ToolAnnotations
+    server: MCPServer,
+    *,
+    name: str,
+    annotations: ToolAnnotations,
+    meta: dict[str, Any] | None = None,
 ) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
     """Register a tool behind the one error boundary every tool shares.
 
@@ -358,7 +385,7 @@ def _tool(
         # itself. On 3.14 `wraps` copies `__annotate__` rather than this, which misses
         # the annotations `consult` sets by hand and publishes its `ctx` in the schema.
         guarded.__annotations__ = fn.__annotations__
-        server.add_tool(guarded, name=name, annotations=annotations)
+        server.add_tool(guarded, name=name, annotations=annotations, meta=meta)
         return fn
 
     return register
@@ -756,6 +783,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         server,
         name="orchestrator_finalize_review",
         annotations=_hints("Record a review synthesis"),
+        meta=VIEW,
     )
     async def finalize_review(
         review_id: UUID,
@@ -870,6 +898,7 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         server,
         name="orchestrator_get_review",
         annotations=_hints("Get a review", read_only=True, idempotent=True),
+        meta=VIEW,
     )
     async def get_review(review_id: UUID) -> ReviewResponse:
         """Retrieve a review: its status, every reviewer's result, and the synthesis
@@ -1090,6 +1119,7 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         server,
         name="orchestrator_workflow_status",
         annotations=_hints("Get workflow status", idempotent=True),
+        meta=VIEW,
     )
     async def workflow_status(workflow_id: str) -> WorkflowResponse:
         """Where the workflow is: state, artifacts so far, the agents each step

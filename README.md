@@ -433,6 +433,10 @@ Two things worth being clear about. **Nothing is installed.** These arrive over 
 
 Each record is also a resource template, for a client that attaches resources rather than calling tools: `orchestrator://consultation/{consultation_id}`, `orchestrator://review/{review_id}` and `orchestrator://workflow/{workflow_id}` read as the JSON the matching get tool returns, and the id completes from recent history. Templates list no instances; the list tools are how you find an id. Each is advertised on the same opt-in as its tools.
 
+### The review and workflow view
+
+In a host that renders MCP Apps, such as Claude Desktop, `orchestrator_get_review`, `orchestrator_finalize_review` and `orchestrator_workflow_status` show their result as a table: findings by severity, reviewer and location, or a workflow's steps and what can run next. The page ships in the package as `ui://orchestrator/view.html`, loads nothing from the network, and puts reviewer text on the page as text, never as markup. Other hosts get the same text result as before.
+
 ## How consultation works
 
 `orchestrator_consult` selects the eligible agent with the highest capability score. Lower `priority` wins a score tie; agent ID breaks the final tie. Set `consult.score_margin` to let priority decide among agents within that many points of the top score: give a cheap or free agent a low priority and a margin of 5, and its 92 beats a paid agent's 95. The default `0` keeps the plain score order. A missing capability or a score of `0` makes an agent ineligible.

@@ -1,0 +1,127 @@
+<!doctype html>
+<!--
+  The MCP Apps view for a review or a workflow (ext-apps 2026-01-26). The host renders
+  it in a sandboxed iframe and posts the tool result in; nothing here fetches anything.
+
+  Reviewer text is another model's output about someone's code: it reaches the page
+  through `textContent` only, never as markup.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orchestrator</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0;
+    padding: 12px;
+    font: 13px/1.45 var(--font-sans, system-ui, sans-serif);
+    color: var(--color-text-primary, CanvasText);
+    background: var(--color-background-primary, Canvas);
+  }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  p { margin: 0 0 8px; white-space: pre-wrap; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 4px 8px 4px 0;
+    border-top: 1px solid var(--color-border-primary, #8884);
+  }
+  th, .muted { color: var(--color-text-secondary, GrayText); font-weight: normal; }
+  .critical, .failed { color: #d33; font-weight: 600; }
+  .important, .needs_attention { color: #c80; }
+</style>
+</head>
+<body>
+<main id="out" class="muted">Waiting for the result…</main>
+<script>
+  const out = document.getElementById("out");
+  const send = (message) => parent.postMessage({ jsonrpc: "2.0", ...message }, "*");
+
+  function el(tag, text, cls) {
+    const node = document.createElement(tag);
+    if (text != null) node.textContent = String(text);
+    if (cls) node.className = cls;
+    return node;
+  }
+
+  // `rows` holds cells; a cell's own value doubles as its class, which is how a
+  // severity or a status gets its colour.
+  function table(headers, rows) {
+    const t = el("table");
+    const head = t.insertRow();
+    for (const h of headers) head.appendChild(el("th", h));
+    for (const row of rows) {
+      const tr = t.insertRow();
+      row.forEach((cell, i) => tr.appendChild(el("td", cell, i === 0 ? cell : null)));
+    }
+    return t;
+  }
+
+  function review(r) {
+    const parts = [el("h1", `Review ${r.status}` + (r.outcome ? ` — ${r.outcome}` : ""))];
+    if (r.summary) parts.push(el("p", r.summary.summary), el("p", r.summary.recommendation));
+    const rows = r.summary
+      ? r.summary.combined_findings.map((f) => [f.severity, f.agreed_by.join(", "), f.location, f.problem])
+      : r.results.flatMap((x) => x.findings.map((f) => [f.severity, f.agent_id, f.location, f.why]));
+    parts.push(rows.length ? table(["Severity", "Reviewer", "Where", "Finding"], rows) : el("p", "No findings.", "muted"));
+    return parts;
+  }
+
+  function workflow(w) {
+    const parts = [el("h1", `Workflow ${w.status}`), el("p", w.goal)];
+    if (w.reason) parts.push(el("p", w.reason, "muted"));
+    parts.push(table(["Status", "Step", "Round", "By"],
+      w.steps.map((s) => [s.status, s.step, s.round_index, s.agent_id || s.executor])));
+    if (w.next_steps.length) parts.push(el("p", "Next: " + w.next_steps.join(", ")));
+    return parts;
+  }
+
+  function render(result) {
+    const data = result.structuredContent || {};
+    const parts = [];
+    if (result.isError) parts.push(el("p", (result.content || []).map((c) => c.text).join("\n"), "failed"));
+    if (data.error) parts.push(el("p", data.error.message, "failed"));
+    if (data.review_id) parts.push(...review(data));
+    else if (data.workflow) parts.push(...workflow(data.workflow));
+    out.className = "";
+    out.replaceChildren(...(parts.length ? parts : [el("p", "Nothing to show.", "muted")]));
+  }
+
+  function theme(context) {
+    const variables = (context && context.styles && context.styles.variables) || {};
+    for (const [name, value] of Object.entries(variables)) {
+      document.documentElement.style.setProperty(name, value);
+    }
+    if (context && context.theme) document.documentElement.style.colorScheme = context.theme;
+  }
+
+  addEventListener("message", (event) => {
+    if (event.source !== parent) return;
+    const m = event.data || {};
+    if (m.id === 1 && m.result) {
+      theme(m.result.hostContext);
+      send({ method: "ui/notifications/initialized" });
+    } else if (m.method === "ui/notifications/tool-result") render(m.params);
+    else if (m.method === "ui/notifications/host-context-changed") theme(m.params);
+    // `ui/resource-teardown`, and anything else the host asks: nothing to clean up.
+    else if (m.method && m.id != null) send({ id: m.id, result: {} });
+  });
+
+  // The element's own box, not `scrollHeight`, which never reports less than the
+  // iframe it sits in and so would never let the host shrink it.
+  new ResizeObserver(() => {
+    const box = document.documentElement.getBoundingClientRect();
+    send({ method: "ui/notifications/size-changed", params: { width: Math.ceil(box.width), height: Math.ceil(box.height) } });
+  }).observe(document.documentElement);
+
+  send({
+    id: 1,
+    method: "ui/initialize",
+    params: { protocolVersion: "2026-01-26", appInfo: { name: "orchestrator", version: "1" }, appCapabilities: {} },
+  });
+</script>
+</body>
+</html>
