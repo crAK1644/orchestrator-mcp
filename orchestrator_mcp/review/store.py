@@ -27,7 +27,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -39,6 +39,9 @@ from ..contract import scrub_json
 # is the slowest one plus its preflight, not the sum of all of them.
 REVIEW_LEASE_SLACK_S = 60.0
 DELETE_CONFIRM_TTL_S = 300.0
+# A plan nobody sent. It holds no reviewer output, so dropping it loses nothing but a
+# preview, and a day is long past any host still deciding whether to run it.
+PENDING_PLAN_TTL_S = 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -150,7 +153,8 @@ class ReviewStore:
         workflow_id: str | None = None,
         step_id: str | None = None,
     ) -> str:
-        """Write the `pending` row. Returns nothing the caller does not already have.
+        """Write the `pending` row, after dropping plans nobody sent for a day. Returns
+        nothing the caller does not already have.
 
         `goal` and `context` are stored redacted and are *not* subject to
         `store_full_content`: the second half of the handshake reads them back to
@@ -161,6 +165,21 @@ class ReviewStore:
 
         def work() -> None:
             now = _now()
+            # Swept here rather than on a timer: planning is the moment a new preview
+            # would otherwise pile up beside the abandoned ones. Left alone: a workflow's
+            # plan (the workflow's to remove), a plan with a recheck under it, and any
+            # row a reviewer was ever reserved on.
+            cutoff = (datetime.now(UTC) - timedelta(seconds=PENDING_PLAN_TTL_S)).isoformat(
+                timespec="seconds"
+            )
+            self._db.execute(
+                "DELETE FROM reviews WHERE status = 'pending' AND workflow_id IS NULL "
+                "AND created_at < ? "
+                "AND id NOT IN (SELECT parent_review_id FROM reviews "
+                "WHERE parent_review_id IS NOT NULL) "
+                "AND id NOT IN (SELECT review_id FROM review_consultations)",
+                (cutoff,),
+            )
             self._db.execute(
                 "INSERT INTO reviews (id, parent_review_id, mode, status, outcome, goal, context, "
                 "material_json, material_sha256, raw_sha256, reviewer_snapshot_json, "

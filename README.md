@@ -407,7 +407,7 @@ and failing the first `context_paths` call -- which is a reviewer's turn later.
 
 The workflow is deliberately split:
 
-1. `orchestrator_review` creates a plan and **sends nothing**. The plan shows reviewers, material size, web access, request count, and locations of credential-shaped text.
+1. `orchestrator_review` creates a plan and **sends nothing**. The plan shows reviewers, material size, web access, request count, and locations of credential-shaped text. A plan nobody runs within a day is dropped the next time a review is planned.
 2. Show that plan to the user. `orchestrator_review_run` spends its one-time token and asks reviewers in parallel.
 3. Read every result and call `orchestrator_finalize_review`. Reviewer replies alone leave the review at `awaiting_synthesis`.
 
