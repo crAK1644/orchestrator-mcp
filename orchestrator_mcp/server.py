@@ -99,7 +99,8 @@ class ConfigNotFound(ConfigError):
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
-    path = Path(path or os.environ.get(CONFIG_ENV, DEFAULT_CONFIG))
+    # `~` because a GUI host's JSON config passes the value through no shell.
+    path = Path(path or os.environ.get(CONFIG_ENV, DEFAULT_CONFIG)).expanduser()
     if not path.exists():
         raise ConfigNotFound(path)
     config = yaml.safe_load(path.read_text())

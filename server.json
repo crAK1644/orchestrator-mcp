@@ -1,0 +1,41 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.crAK1644/orchestrator-mcp",
+  "title": "Orchestrator",
+  "description": "Let one coding-agent CLI consult another through Codex, Claude Code, OpenCode, or Antigravity.",
+  "repository": {
+    "url": "https://github.com/crAK1644/orchestrator-mcp",
+    "source": "github"
+  },
+  "version": "0.7.4",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "orchestrator-mcp-server",
+      "version": "0.7.4",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "ORCHESTRATOR_HOST_RUNTIME",
+          "description": "The coding agent this server runs inside, so work is never routed back to it",
+          "isRequired": true,
+          "choices": [
+            "claude",
+            "codex",
+            "opencode",
+            "antigravity"
+          ]
+        },
+        {
+          "name": "ORCHESTRATOR_CONFIG",
+          "description": "Path to the config `orchestrator-mcp-server init` writes, ~/.orchestrator-mcp/config.yaml by default",
+          "format": "filepath",
+          "isRequired": true
+        }
+      ]
+    }
+  ]
+}
