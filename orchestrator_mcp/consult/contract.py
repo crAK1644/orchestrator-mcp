@@ -257,6 +257,20 @@ class ConsultationRecord(BaseModel):
     routing: list[dict[str, Any]]
 
 
+class ConsultationListing(BaseModel):
+    """One row of `orchestrator_list_consultations`. Metadata only -- no turns."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    consultation_id: str
+    target_agent_id: str
+    capability: str
+    conversation_label: str | None = None
+    status: str
+    created_at: str
+    updated_at: str
+
+
 class ConsultationDeleteApproval(BaseModel):
     """An exact snapshot of ordinary consultation history offered for deletion."""
 

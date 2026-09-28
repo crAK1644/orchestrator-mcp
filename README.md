@@ -404,6 +404,7 @@ The PyPI distribution is named `orchestrator-mcp-server`; the shorter PyPI name 
 | `orchestrator_consult` | Start or continue a structured consultation. |
 | `orchestrator_list_consult_agents` | Show configured agents, routing scores, installation, and login readiness. |
 | `orchestrator_get_consultation` | Retrieve a stored consultation, its turns, usage, and routing decision. |
+| `orchestrator_list_consultations` | Recent ordinary consultations, newest first. Metadata only. |
 | `orchestrator_delete_consultation` | Delete one ordinary consultation and its local turns. |
 | `orchestrator_request_delete_all_consultations` / `orchestrator_delete_all_consultations` | Preview and confirm deletion of an exact ordinary-history snapshot. |
 
@@ -423,9 +424,13 @@ The server also serves MCP prompts, which a client that speaks `prompts/list` re
 | `workflow` | `goal`, `workdir` | Start the workflow, then plan-step, stop, run-step, check status, one step at a time. |
 | `status` | `workflow_id` | Report which reviews and workflows are unfinished and what each is waiting on. |
 
-Every argument is optional; a command with none expands into an instruction to ask you for the missing part. `review` and `workflow` are advertised only when their tools are, on the same two answers — a command that could only reply "no reviewers are configured" costs a round trip and reads like a bug.
+Every argument is optional; a command with none expands into an instruction to ask you for the missing part. A client that speaks `completion/complete` offers the configured agents for `agent` and recent ids for `workflow_id`. `review` and `workflow` are advertised only when their tools are, on the same two answers — a command that could only reply "no reviewers are configured" costs a round trip and reads like a bug.
 
 Two things worth being clear about. **Nothing is installed.** These arrive over the same stdio connection as the tools: no command directory, no generated markdown, nothing written to your machine, and a client that does not speak `prompts/list` is unaffected. **A prompt is text, not an action.** Expanding one consults nobody, sends nothing, and starts no workflow — it reaches the host's conversation as if you had typed it, and the host then calls the tools, checkpoints and all. They exist because the flows worth having here are handshakes, and a host driving them from tool descriptions alone tends to skip the checkpoint that makes them worth having.
+
+### Resources
+
+Each record is also a resource template, for a client that attaches resources rather than calling tools: `orchestrator://consultation/{consultation_id}`, `orchestrator://review/{review_id}` and `orchestrator://workflow/{workflow_id}` read as the JSON the matching get tool returns, and the id completes from recent history. Templates list no instances; the list tools are how you find an id. Each is advertised on the same opt-in as its tools.
 
 ## How consultation works
 
@@ -846,6 +851,7 @@ useful than overclaiming.
 | `orchestrator_workflow_run_step` | Spend the token and run the step through its bound agent. |
 | `orchestrator_workflow_record_host_step` | Record work the host did itself. The token is consumed as the host's attestation. |
 | `orchestrator_workflow_status` | State, artifacts, selected agents, round count, spend, and what may happen next. |
+| `orchestrator_list_workflows` | Recent workflows, newest first: id, goal, state. |
 | `orchestrator_workflow_plan_replan` / `orchestrator_workflow_replan` | Change the binding snapshot under the same preview-and-approve handshake. |
 | `orchestrator_workflow_cancel` | Cancel pending work and terminate a child this process owns, with the same caveat `orchestrator_cancel_review` carries about another process's children. |
 | `orchestrator_delete_workflow` | Delete one workflow with its steps, consultations and reviews. Refused while the workflow is open or a step's lease is live. |

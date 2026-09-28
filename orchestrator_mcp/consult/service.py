@@ -34,6 +34,7 @@ from .config import AgentConfig, ConsultConfig
 from .contract import (
     ConsultAgentInfo,
     ConsultAgentsResponse,
+    ConsultationListing,
     ConsultationRecord,
     ConsultError,
     ConsultResponse,
@@ -808,6 +809,21 @@ class ConsultService:
             ],
             routing=await self.store.routing_for(consultation_id),
         )
+
+    async def list_consultations(self, limit: int = 20) -> list[ConsultationListing]:
+        await self.open()
+        return [
+            ConsultationListing(
+                consultation_id=c.id,
+                target_agent_id=c.target_agent_id,
+                capability=c.capability,
+                conversation_label=c.conversation_label,
+                status=c.status,
+                created_at=c.created_at,
+                updated_at=c.updated_at,
+            )
+            for c in await self.store.list_consultations(limit)
+        ]
 
     async def delete_consultation(self, consultation_id: UUID | str) -> int:
         await self.open()

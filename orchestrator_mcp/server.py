@@ -27,9 +27,9 @@ from uuid import UUID
 import yaml
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp.shared.exceptions import MCPError
-from mcp.types import ToolAnnotations
+from mcp.types import Completion, CompletionArgument, ToolAnnotations
 from pydantic import Field
 
 from . import cli
@@ -45,12 +45,13 @@ from .consult.contract import (
     ConsultAgentsResponse,
     ConsultationDeleteApproval,
     ConsultationDeletionResult,
+    ConsultationListing,
     ConsultationRecord,
     ConsultResponse,
 )
 from .consult.errors import ConsultErrorCode
 from .consult.service import ConsultService
-from .consult.store import DELETE_CONFIRM_TTL_S, ConsultStore
+from .consult.store import DELETE_CONFIRM_TTL_S, ConsultStore, StoreError
 from .contract import MAX_ERROR_CHARS, CodedFailure, ConfigError, redact
 from .log import configure as configure_logging
 from .log import get_logger
@@ -71,6 +72,7 @@ from .workflow.contract import (
     Step,
     WorkflowDeleteApproval,
     WorkflowDeletionResult,
+    WorkflowListing,
     WorkflowResponse,
 )
 from .workflow.service import WorkflowService
@@ -199,7 +201,8 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
     # under it are then written by the same serialized worker, and a deletion can
     # remove them in one transaction instead of hoping two connections agree.
     store = ConsultStore(consult_config.database_path, consult_config.store_full_content)
-    _add_consult_tools(server, ConsultService(consult_config, runtime, store=store))
+    consults = ConsultService(consult_config, runtime, store=store)
+    _add_consult_tools(server, consults)
     # Advertised only when reviewers are configured. A server with none should
     # not offer an `orchestrator_review` tool that can do nothing but refuse.
     reviews = (
@@ -213,10 +216,13 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
     # second one: a workflow's review step and `orchestrator_cancel_review` have
     # to be talking about the same in-flight children, or cancelling from one
     # side would leave the other waiting on processes it cannot see.
-    if consult_config.workflow is not None:
-        _add_workflow_tools(
-            server, WorkflowService(consult_config, runtime, store=store, reviews=reviews)
-        )
+    workflows = (
+        WorkflowService(consult_config, runtime, store=store, reviews=reviews)
+        if consult_config.workflow is not None
+        else None
+    )
+    if workflows is not None:
+        _add_workflow_tools(server, workflows)
     # The slash commands, gated on the same two answers as the tools they drive.
     # Last, so the `if`s above have already decided what exists.
     add_commands(
@@ -227,8 +233,52 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
             str(root) for root in (consult_config.review.roots if reviews else [])
         ),
     )
+    _add_completions(server, consults, reviews, workflows)
 
     return server
+
+
+def _add_completions(
+    server: MCPServer,
+    consults: ConsultService,
+    reviews: ReviewService | None,
+    workflows: WorkflowService | None,
+) -> None:
+    """Complete the ids the prompts and resource templates take, from what exists.
+
+    Keyed by argument name alone: each name means the same thing wherever it appears,
+    so which prompt or template asked does not change the answer.
+    """
+
+    async def agents() -> list[str]:
+        # From the config, not `list_agents`: that preflights each agent in a
+        # subprocess, and this runs on every keystroke.
+        return [
+            agent_id
+            for agent_id, agent in sorted(consults.config.agents.items())
+            if agent.enabled and agent.runtime != consults.host_runtime
+        ]
+
+    async def ids(rows: Awaitable[list[Any]], key: str) -> list[str]:
+        return [getattr(row, key) for row in await rows]
+
+    sources: dict[str, Callable[[], Awaitable[list[str]]]] = {
+        "agent": agents,
+        "consultation_id": lambda: ids(consults.list_consultations(100), "consultation_id"),
+    }
+    if reviews is not None:
+        sources["review_id"] = lambda: ids(reviews.list(100), "review_id")
+    if workflows is not None:
+        sources["workflow_id"] = lambda: ids(workflows.list(100), "workflow_id")
+
+    @server.completion()
+    async def complete(ref: Any, argument: CompletionArgument, context: Any) -> Completion | None:
+        source = sources.get(argument.name)
+        if source is None:
+            return None
+        values = [v for v in await source() if v.startswith(argument.value)]
+        # 100 is the protocol's cap on one response, and the lists are already cut there.
+        return Completion(values=values[:100], has_more=False)
 
 
 def _hints(
@@ -298,6 +348,18 @@ def _tool(
         return fn
 
     return register
+
+
+def _found(response: Any) -> Any:
+    """An id this store never issued is a missing resource, not a record.
+
+    The tools answer it with an envelope, which a resource read would hand back as if it
+    were the thing asked for. Any other failure envelope -- a failed review, say -- is
+    still a record, and reads as one.
+    """
+    if response.error is not None and response.error.code == ConsultErrorCode.SESSION_NOT_FOUND:
+        raise ResourceNotFoundError(response.error.message)
+    return response
 
 
 def _setup_server(path: Path) -> MCPServer:
@@ -429,6 +491,38 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         chosen."""
         await service.open()
         return await service.get_consultation(consultation_id)
+
+    @_tool(
+        server,
+        name="orchestrator_list_consultations",
+        annotations=_hints("List consultations", read_only=True, idempotent=True),
+    )
+    async def list_consultations(
+        limit: Annotated[int, Field(ge=1, le=100)] = 20,
+    ) -> list[ConsultationListing]:
+        """List recent consultations, newest first. Metadata only -- no turns.
+
+        Only the ones started with `orchestrator_consult`: a review's or a workflow's
+        consultations are read through that review or workflow."""
+        return await service.list_consultations(limit)
+
+    @server.resource(
+        "orchestrator://consultation/{consultation_id}",
+        name="consultation",
+        title="Consultation",
+        description="What `orchestrator_get_consultation` returns, as JSON.",
+        mime_type="application/json",
+    )
+    async def consultation_resource(consultation_id: str) -> ConsultationRecord:
+        try:
+            await service.open()
+            return await service.get_consultation(UUID(consultation_id))
+        except ValueError:
+            raise ResourceNotFoundError(f"no consultation `{consultation_id}`") from None
+        except StoreError as exc:
+            if exc.code != ConsultErrorCode.SESSION_NOT_FOUND:
+                raise
+            raise ResourceNotFoundError(str(exc)) from None
 
     @_tool(
         server,
@@ -768,6 +862,20 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         """List recent reviews, newest first. Metadata only -- no material."""
         return await service.list(limit)
 
+    @server.resource(
+        "orchestrator://review/{review_id}",
+        name="review",
+        title="Review",
+        description="What `orchestrator_get_review` returns, as JSON.",
+        mime_type="application/json",
+    )
+    async def review_resource(review_id: str) -> ReviewResponse:
+        try:
+            uuid = UUID(review_id)
+        except ValueError:
+            raise ResourceNotFoundError(f"no review `{review_id}`") from None
+        return _found(await service.get(uuid))
+
     @_tool(
         server,
         name="orchestrator_delete_review",
@@ -966,6 +1074,28 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         workflow wedged in a status that outlived its process.
         """
         return await service.status(workflow_id)
+
+    @_tool(
+        server,
+        name="orchestrator_list_workflows",
+        annotations=_hints("List workflows", read_only=True, idempotent=True),
+    )
+    async def list_workflows(
+        limit: Annotated[int, Field(ge=1, le=100)] = 20,
+    ) -> list[WorkflowListing]:
+        """List recent workflows, newest first: id, goal, state. Metadata only --
+        `orchestrator_workflow_status` has the steps."""
+        return await service.list(limit)
+
+    @server.resource(
+        "orchestrator://workflow/{workflow_id}",
+        name="workflow",
+        title="Workflow",
+        description="What `orchestrator_workflow_status` returns, as JSON.",
+        mime_type="application/json",
+    )
+    async def workflow_resource(workflow_id: str) -> WorkflowResponse:
+        return _found(await service.status(workflow_id))
 
     @_tool(
         server,

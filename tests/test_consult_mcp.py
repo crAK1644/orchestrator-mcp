@@ -1,7 +1,7 @@
 """The MCP surface of the consultation path.
 
 `test_existing_contract.py` guards what a consult-free config advertises. This file
-guards the other half: that configuring `consult:` adds exactly six tools, that
+guards the other half: that configuring `consult:` adds exactly seven tools, that
 the calling model reads a usable schema off them, and that it cannot name an agent
 nobody configured.
 """
@@ -29,7 +29,7 @@ async def tools(server):
     return {t.name: t for t in await server.list_tools()}
 
 
-async def test_configuring_consult_without_reviewers_adds_exactly_six_tools(
+async def test_configuring_consult_without_reviewers_adds_exactly_seven_tools(
     tmp_path, host_claude
 ):
     """`review:` is a separate opt-in. A config with agents and no reviewers gets the
@@ -38,6 +38,7 @@ async def test_configuring_consult_without_reviewers_adds_exactly_six_tools(
         "orchestrator_consult",
         "orchestrator_list_consult_agents",
         "orchestrator_get_consultation",
+        "orchestrator_list_consultations",
         "orchestrator_delete_consultation",
         "orchestrator_request_delete_all_consultations",
         "orchestrator_delete_all_consultations",

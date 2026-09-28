@@ -8,6 +8,10 @@ One line per change a user would notice. The full notes for each version are on 
 - A failure no service anticipated now reaches the model as a coded refusal naming the
   exception type, not an opaque "Error executing tool".
 - `orchestrator_list_reviews` takes `limit` between 1 and 100.
+- `orchestrator_list_workflows` and `orchestrator_list_consultations`; the status
+  command no longer asks you for a workflow id.
+- Consultations, reviews and workflows read as `orchestrator://` resources, and prompt
+  arguments and resource ids complete from what exists.
 - `ORCHESTRATOR_CONFIG` may start with `~`, which GUI hosts pass through unexpanded.
 - Listed in the official MCP registry as `io.github.crAK1644/orchestrator-mcp`.
 - README: a quick start, and config blocks for Claude Desktop, VS Code, Cursor and OpenCode.

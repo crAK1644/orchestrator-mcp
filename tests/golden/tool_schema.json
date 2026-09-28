@@ -700,6 +700,91 @@
       "type": "object"
     }
   },
+  "orchestrator_list_consultations": {
+    "input_schema": {
+      "properties": {
+        "limit": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "title": "list_consultationsArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "ConsultationListing": {
+          "additionalProperties": false,
+          "description": "One row of `orchestrator_list_consultations`. Metadata only -- no turns.",
+          "properties": {
+            "consultation_id": {
+              "title": "Consultation Id",
+              "type": "string"
+            },
+            "target_agent_id": {
+              "title": "Target Agent Id",
+              "type": "string"
+            },
+            "capability": {
+              "title": "Capability",
+              "type": "string"
+            },
+            "conversation_label": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Conversation Label"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "created_at": {
+              "title": "Created At",
+              "type": "string"
+            },
+            "updated_at": {
+              "title": "Updated At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "consultation_id",
+            "target_agent_id",
+            "capability",
+            "status",
+            "created_at",
+            "updated_at"
+          ],
+          "title": "ConsultationListing",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "result": {
+          "items": {
+            "$ref": "#/$defs/ConsultationListing"
+          },
+          "title": "Result",
+          "type": "array"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "title": "list_consultationsOutput",
+      "type": "object"
+    }
+  },
   "orchestrator_delete_consultation": {
     "input_schema": {
       "properties": {
@@ -14097,6 +14182,90 @@
         "status"
       ],
       "title": "WorkflowResponse",
+      "type": "object"
+    }
+  },
+  "orchestrator_list_workflows": {
+    "input_schema": {
+      "properties": {
+        "limit": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "title": "list_workflowsArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "WorkflowListing": {
+          "additionalProperties": false,
+          "description": "One row of `orchestrator_list_workflows`. Metadata only -- no steps.",
+          "properties": {
+            "workflow_id": {
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "goal": {
+              "description": "Cut at 200 characters; the full goal is in the status.",
+              "title": "Goal",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "created",
+                "planning",
+                "prompt_ready",
+                "coding",
+                "awaiting_host_apply",
+                "testing",
+                "reviewing",
+                "synthesizing",
+                "fixing",
+                "completed",
+                "needs_attention",
+                "failed",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "created_at": {
+              "title": "Created At",
+              "type": "string"
+            },
+            "updated_at": {
+              "title": "Updated At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "goal",
+            "status",
+            "created_at",
+            "updated_at"
+          ],
+          "title": "WorkflowListing",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "result": {
+          "items": {
+            "$ref": "#/$defs/WorkflowListing"
+          },
+          "title": "Result",
+          "type": "array"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "title": "list_workflowsOutput",
       "type": "object"
     }
   },

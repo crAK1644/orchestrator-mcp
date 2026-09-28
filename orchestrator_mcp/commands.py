@@ -161,9 +161,8 @@ def add_commands(
             lines.append(
                 f"- `orchestrator_workflow_status` for workflow `{workflow_id}`."
                 if workflow_id
-                else "- `orchestrator_workflow_status` takes a workflow id and there is no tool "
-                "that lists them, so ask the user for the id if they want one and did not say "
-                "which."
+                else "- `orchestrator_list_workflows` for workflows, and "
+                "`orchestrator_workflow_status` for any that is unfinished."
             )
         lines.append(
             "\nSummarize as state and what it is waiting on. An unfinished review or workflow is "
