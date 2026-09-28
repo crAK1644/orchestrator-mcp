@@ -3,7 +3,7 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
-## Unreleased
+## 0.8.0 — 2026-09-28
 
 - A failure no service anticipated now reaches the model as a coded refusal naming the
   exception type, not an opaque "Error executing tool".
