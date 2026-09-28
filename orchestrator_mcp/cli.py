@@ -31,8 +31,13 @@ DEFAULT_PATH = "~/.orchestrator-mcp/config.yaml"
 # stale; add one by hand from `opencode models` (config.example.yaml shows how).
 _TEMPLATES: dict[str, tuple[list[str], str, dict[str, Any]]] = {
     "codex": (
-        # The ChatGPT desktop app bundles the CLI and does not put it on PATH.
-        ["codex", "/Applications/ChatGPT.app/Contents/Resources/codex"],
+        # The ChatGPT desktop app bundles the CLI and does not put it on PATH. Newer
+        # app builds moved it under `codex-cli/bin`; the old path is kept for older ones.
+        [
+            "codex",
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+        ],
         "codex-sol",
         {
             "runtime": "codex",

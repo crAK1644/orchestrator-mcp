@@ -64,7 +64,8 @@ consult:
       runtime: codex        # codex | claude | opencode | antigravity
       command: codex        # resolved on PATH; an absolute path works too, which is
                             # what the ChatGPT desktop app needs -- it bundles the CLI
-                            # at /Applications/ChatGPT.app/Contents/Resources/codex
+                            # at /Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex
+                            # (older app builds: .../Resources/codex)
                             # and never puts it on PATH
       model: gpt-5.6-sol    # verified against what the CLI reports it used
       reasoning_effort: xhigh   # codex only: low|medium|high|xhigh|max. Not
