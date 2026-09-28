@@ -20,6 +20,7 @@
 
 <p align="center">
   <a href="#before--after">See it</a> ·
+  <a href="#how-it-compares">Compare</a> ·
   <a href="#install">Install</a> ·
   <a href="#what-you-get">What you get</a> ·
   <a href="#reviews-with-a-checkpoint">Reviews</a> ·
@@ -82,6 +83,27 @@ Reviews and workflows use the narrower `(runtime, model)` execution identity; wh
 `consult.host.model` names the host precisely, they may route to a provably different,
 versioned model on the same runtime. The host can never route work back to its own
 execution identity.
+
+## How it compares
+
+If Claude Code asking Codex is all you need, OpenAI's
+[codex-plugin-cc](https://github.com/openai/codex-plugin-cc) does that, with background
+jobs. [PAL MCP](https://github.com/BeehiveInnovations/pal-mcp-server) reaches many
+models through provider API keys. Orchestrator is for the rest:
+
+| | Orchestrator MCP | codex-plugin-cc | PAL MCP |
+|---|---|---|---|
+| Direction | Either way: Claude Code asks Codex, **Codex asks Claude Code**, and either asks OpenCode or Antigravity | Claude Code asks Codex | Any MCP host asks API models; `clink` launches agent CLIs |
+| Credentials | Each CLI's own login, no keys | The Codex CLI's login | Provider API keys (OpenRouter, Gemini, OpenAI, …) |
+| Review | A [panel of reviewers](#reviews-with-a-checkpoint) from different vendors, answered in parallel, then one synthesis | Codex review and adversarial review | `codereview` and multi-model `consensus` |
+| Delegated edits | In a [disposable worktree under an OS sandbox](#execution-modes-and-what-each-one-can-reach); the host applies the diff | `/codex:rescue` hands the task to Codex | — |
+| Record | Every turn in a local database, with [cost estimates](#spending-ceilings) and a [dashboard](#local-dashboard) | Job status and result | Conversation threads across models |
+
+Calls block the turn that makes them, often for minutes. To keep working meanwhile in
+Claude Code, have a background subagent make the call.
+
+Google's Gemini CLI stopped serving free and Google AI Pro/Ultra accounts on June 18,
+2026; Google models are reached here through its successor, Antigravity CLI.
 
 ## Install
 
