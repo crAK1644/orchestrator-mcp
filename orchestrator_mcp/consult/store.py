@@ -32,7 +32,8 @@ import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 from uuid import UUID
@@ -508,9 +509,12 @@ def _set_wal(connection: sqlite3.Connection, deadline_s: float = 5.0) -> None:
 class ConsultStore:
     """Every method is async and does its SQLite work in a worker thread."""
 
-    def __init__(self, path: Path, store_full_content: bool = True) -> None:
+    def __init__(
+        self, path: Path, store_full_content: bool = True, retention_days: int | None = None
+    ) -> None:
         self.path = Path(path)
         self.store_full_content = store_full_content
+        self.retention_days = retention_days
         self._connection: sqlite3.Connection | None = None
         # One connection shared by every worker thread, so one lock decides who is
         # using it. Without this, two `to_thread` workers can interleave inside a
@@ -537,6 +541,10 @@ class ConsultStore:
                     # from the outside. Cancelled, the connection it built is simply
                     # never taken, and goes when the discarded result does.
                     self._connection = await asyncio.to_thread(self._open)
+                    # ponytail: once per process, so history lives up to the setting
+                    # plus the server's uptime. A timer when a long-lived server needs it.
+                    if self.retention_days:
+                        await self._sweep(self.retention_days)
         return self
 
     def _open(self) -> sqlite3.Connection:
@@ -1265,6 +1273,51 @@ class ConsultStore:
             raise
         db.execute("COMMIT")
         return deleted
+
+    # --- retention ----------------------------------------------------------
+
+    async def _sweep(self, days: int) -> None:
+        """Delete finished history untouched for `days`, through the same deletes the
+        tools use and so under the same refusals: a running review, a leased step or
+        a turn in flight stays. One record at a time, so one refusal skips one record.
+
+        Never raises. A store that cannot sweep still opens, and tries again at the
+        next start."""
+        # Imported here: both modules import this one.
+        from ..review.store import ReviewStore
+        from ..workflow.store import _TERMINAL_SQL, WorkflowStore
+
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat(timespec="seconds")
+        sweeps = {
+            "workflows": (
+                f"SELECT id FROM workflow_runs WHERE status IN ({_TERMINAL_SQL}) "
+                "AND updated_at < ?",
+                WorkflowStore(self)._delete,
+            ),
+            # A workflow's reviews and consultations went with it above.
+            "reviews": (
+                "SELECT id FROM reviews WHERE workflow_id IS NULL AND status != 'running' "
+                "AND updated_at < ?",
+                partial(ReviewStore(self)._delete, expand=False),
+            ),
+            "consultations": (
+                f"SELECT c.id FROM consultations c WHERE {_ORDINARY_SQL} AND c.updated_at < ?",
+                self._delete_consultations,
+            ),
+        }
+        removed = dict.fromkeys(sweeps, 0)
+        try:
+            for kind, (query, delete) in sweeps.items():
+                rows = await self._run(lambda: self._db.execute(query, (cutoff,)).fetchall())
+                for (row_id,) in rows:
+                    try:
+                        removed[kind] += await self._run(partial(delete, [row_id]))
+                    except StoreError:
+                        pass  # refused -- still busy, or owned; the next start retries
+        except Exception:
+            log.warning("retention sweep stopped early", exc_info=True)
+        if any(removed.values()):
+            log.info("retention: removed %s untouched for %d days", removed, days)
 
     # --- diagnostics --------------------------------------------------------
 

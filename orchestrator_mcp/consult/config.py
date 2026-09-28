@@ -369,6 +369,9 @@ class ConsultConfig(BaseModel):
     preflight_ttl_s: int = Field(default=300, ge=0)
     protocol_version: str = PROTOCOL_VERSION
     store_full_content: bool = True
+    # Days of no activity after which finished history is deleted, swept once at startup.
+    # `None` keeps everything.
+    retention_days: int | None = Field(default=None, ge=1)
     # Claude Code 2.1.220 has no `--max-turns`, so the bound on a web-mode
     # consultation is ours to enforce: we count assistant turns in the event stream
     # and kill the child when it passes this.

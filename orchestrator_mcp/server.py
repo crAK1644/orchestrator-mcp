@@ -210,7 +210,11 @@ def build_server(config: dict[str, Any] | None = None) -> MCPServer:
     # One store for both layers, not one each: a review and the consultations
     # under it are then written by the same serialized worker, and a deletion can
     # remove them in one transaction instead of hoping two connections agree.
-    store = ConsultStore(consult_config.database_path, consult_config.store_full_content)
+    store = ConsultStore(
+        consult_config.database_path,
+        consult_config.store_full_content,
+        consult_config.retention_days,
+    )
     consults = ConsultService(consult_config, runtime, store=store)
     _add_consult_tools(server, consults)
     # Advertised only when reviewers are configured. A server with none should
