@@ -40,6 +40,7 @@ from ..consult.store import (
     ConsultStore,
     StoreError,
     _renewing_lease,
+    still_stale,
 )
 from ..contract import scrub_json
 from ..review.store import delete_tree
@@ -800,7 +801,13 @@ class WorkflowStore:
         """Delete the approved snapshot, and nothing that arrived after it."""
         return await self._run(lambda: self._delete([], confirmation_sha=_sha256(token)))
 
-    def _delete(self, roots: list[str], *, confirmation_sha: str | None = None) -> int:
+    def _delete(
+        self,
+        roots: list[str],
+        *,
+        confirmation_sha: str | None = None,
+        stale_before: str | None = None,
+    ) -> int:
         """Refuse what is still moving, then remove the tree in one transaction.
 
         Order is `PRAGMA foreign_keys=ON` order, outside in: the reviews and their
@@ -817,6 +824,7 @@ class WorkflowStore:
         try:
             if confirmation_sha is not None:
                 roots = _approved(db, confirmation_sha)
+            roots = still_stale(db, "workflow_runs", roots, stale_before)
             if not roots:
                 db.execute("COMMIT")
                 return 0

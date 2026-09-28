@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from functools import partial
 from uuid import uuid4
 
 import pytest
@@ -74,6 +75,50 @@ async def test_the_sweep_takes_finished_history_and_leaves_what_is_live(tmp_path
     assert await sql("SELECT id FROM reviews") == [(running,)]
     # The finished workflow's consultation went with it.
     assert sorted(await sql("SELECT id FROM consultations")) == sorted([(leased,), (fresh,)])
+    await store.close()
+
+
+async def test_a_record_touched_after_the_sweep_picked_it_stays(tmp_path):
+    """The sweep picks its ids before each delete's transaction opens, so the delete
+    checks the age again: another server may have resumed the record in between."""
+    store = await ConsultStore(tmp_path / "consultations.sqlite3").open()
+    workflows, reviews = WorkflowStore(store), ReviewStore(store)
+    workflow_id, review_id, consultation_id = str(uuid4()), uuid4(), uuid4()
+    await workflows.create_workflow(
+        workflow_id, "goal", str(tmp_path), "claude", None, {}, {}, "hash", None
+    )
+    await store._run(lambda: store._db.execute("UPDATE workflow_runs SET status = 'completed'"))
+    await reviews.create_review(
+        review_id, "quick", "goal", None, [], "", "", [], "token", [], False
+    )
+    await store.create_consultation(
+        consultation_id=consultation_id,
+        origin_runtime="claude",
+        route=ROUTE,
+        capability="research",
+        protocol_version="consult-v1",
+        config_hash="abc123",
+    )
+
+    async def dated(table: str, row_id: str, updated_at: str) -> None:
+        await store._run(
+            lambda: store._db.execute(
+                f"UPDATE {table} SET updated_at = ? WHERE id = ?", (updated_at, row_id)
+            )
+        )
+
+    cutoff = "2026-02-01T00:00:00+00:00"
+    for table, delete, row_id in [
+        ("workflow_runs", workflows._delete, workflow_id),
+        ("reviews", reviews._delete, str(review_id)),
+        ("consultations", store._delete_consultations, str(consultation_id)),
+    ]:
+        sweep = partial(delete, [row_id], stale_before=cutoff)
+        # Stale when the sweep picked it, then resumed before the delete ran.
+        await dated(table, row_id, "2026-03-01T00:00:00+00:00")
+        assert await store._run(sweep) == 0
+        await dated(table, row_id, "2026-01-01T00:00:00+00:00")
+        assert await store._run(sweep) == 1
     await store.close()
 
 
