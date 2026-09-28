@@ -108,6 +108,20 @@ class ConsultRouter:
         winner = pick(eligible, capability, self.config.score_margin)
         return self._decision(capability, winner, excluded, explicit=False)
 
+    def select_many(self, capability: str, count: int) -> list[str]:
+        """Up to `count` agents, in the order `select` would pick them one at a time.
+
+        Eligibility is `select`'s, host exclusion included; fewer come back when fewer
+        qualify, and none when none do.
+        """
+        eligible = [a for a in self.config.agents.values() if not self._ineligible(a, capability)]
+        chosen: list[str] = []
+        while eligible and len(chosen) < count:
+            winner = pick(eligible, capability, self.config.score_margin)
+            chosen.append(winner.agent_id)
+            eligible.remove(winner)
+        return chosen
+
     def _explicit(
         self, capability: str, target_agent: str, excluded: list[ExcludedCandidate]
     ) -> RoutingDecision:

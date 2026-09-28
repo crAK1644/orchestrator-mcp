@@ -17,6 +17,7 @@ written by this server rather than by the consulted agent.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from typing import Any
@@ -24,6 +25,7 @@ from uuid import UUID, uuid4
 
 from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json
 from ..log import get_logger
+from ..progress import step as progress_step
 from ..spend import refusal as spend_refusal
 from ..workflow.contract import StepSnapshot
 from ..workflow.identity import host_identity_conflict
@@ -37,11 +39,13 @@ from .contract import (
     ConsultationListing,
     ConsultationRecord,
     ConsultError,
+    ConsultManyResponse,
     ConsultResponse,
     ConsultRoute,
     RequiredAction,
     Runtime,
     SourceMode,
+    build_consult_many_request,
     build_consult_request,
 )
 from .errors import ConsultErrorCode
@@ -81,6 +85,7 @@ class ConsultService:
         self.router = ConsultRouter(config, host_runtime)
         self.store = store or ConsultStore(config.database_path, config.store_full_content)
         self.request_model = build_consult_request(sorted(config.agents))
+        self.many_request_model = build_consult_many_request(sorted(config.agents))
         # What every turn is passed through on its way into the database, and only
         # there -- the adapter is still handed the caller's own text, because a
         # consultation answering a redacted question is not the same consultation.
@@ -147,6 +152,42 @@ class ConsultService:
                 f"the consultation failed inside the orchestrator ({type(exc).__name__})",
                 started,
             )
+
+    async def consult_many(
+        self, *, target_agents: list[str] | None = None, count: int = 3, **kwargs: Any
+    ) -> ConsultManyResponse:
+        """The same question to several agents at once, each an ordinary consultation.
+
+        No group table: the members share a label, and each stays resumable on its own
+        through `consult`. Nobody eligible is `consult`'s own refusal, as one envelope.
+        """
+        group_id = uuid4()
+        kwargs["conversation_label"] = f"group {group_id}"
+        agents = list(dict.fromkeys(target_agents or [])) or self.router.select_many(
+            str(kwargs.get("capability")), count
+        )
+        if not agents:
+            return ConsultManyResponse(group_id=group_id, results=[await self.consult(**kwargs)])
+
+        answered = 0
+
+        async def one(agent_id: str) -> ConsultResponse:
+            nonlocal answered
+            # `consult` returns an envelope for every failure, so one agent failing
+            # cannot take the others' answers down with it.
+            result = await self.consult(target_agent=agent_id, **kwargs)
+            answered += 1
+            await progress_step(
+                f"{answered} of {len(agents)} agents answered",
+                float(answered),
+                float(len(agents)),
+            )
+            return result
+
+        await progress_step(f"asking {len(agents)} agents", 0, float(len(agents)))
+        return ConsultManyResponse(
+            group_id=group_id, results=list(await asyncio.gather(*map(one, agents)))
+        )
 
     async def consult_review(
         self, review_id: UUID | str, reviewer_id: str, **kwargs: Any
