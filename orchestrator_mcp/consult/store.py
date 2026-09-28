@@ -433,6 +433,24 @@ _ORDINARY_SQL = (
 )
 
 
+def still_stale(
+    db: sqlite3.Connection, table: str, ids: list[str], before: str | None
+) -> list[str]:
+    """The retention sweep's age check, repeated inside the delete's own transaction.
+
+    The sweep picks its ids before that transaction opens, and another server can
+    resume one of them in between; a row touched since is no longer stale."""
+    if before is None or not ids:
+        return ids
+    marks = ",".join("?" * len(ids))
+    return [
+        row[0]
+        for row in db.execute(
+            f"SELECT id FROM {table} WHERE id IN ({marks}) AND updated_at < ?", [*ids, before]
+        )
+    ]
+
+
 class StoreError(CodedFailure):
     """A refusal with a code the caller's envelope can carry."""
 
@@ -1177,7 +1195,10 @@ class ConsultStore:
         )
 
     def _delete_consultations(
-        self, ids: list[str], confirmation_sha: str | None = None
+        self,
+        ids: list[str],
+        confirmation_sha: str | None = None,
+        stale_before: str | None = None,
     ) -> int:
         db = self._db
         db.execute("BEGIN IMMEDIATE")
@@ -1215,6 +1236,7 @@ class ConsultStore:
                         "that confirmation was already spent; request a new count",
                     )
 
+            ids = still_stale(db, "consultations", ids, stale_before)
             if not ids:
                 db.execute("COMMIT")
                 return 0
@@ -1311,7 +1333,9 @@ class ConsultStore:
                 rows = await self._run(lambda: self._db.execute(query, (cutoff,)).fetchall())
                 for (row_id,) in rows:
                     try:
-                        removed[kind] += await self._run(partial(delete, [row_id]))
+                        removed[kind] += await self._run(
+                            partial(delete, [row_id], stale_before=cutoff)
+                        )
                     except StoreError:
                         pass  # refused -- still busy, or owned; the next start retries
         except Exception:

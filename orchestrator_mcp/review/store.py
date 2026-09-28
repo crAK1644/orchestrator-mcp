@@ -37,6 +37,7 @@ from ..consult.store import (
     ConsultStore,
     StoreError,
     _renewing_lease,
+    still_stale,
 )
 from ..contract import scrub_json
 
@@ -621,6 +622,7 @@ class ReviewStore:
         *,
         expand: bool = True,
         confirmation_sha: str | None = None,
+        stale_before: str | None = None,
     ) -> int:
         """Resolve what the caller approved, refuse what is not theirs, then remove it.
 
@@ -660,6 +662,7 @@ class ReviewStore:
                         "that confirmation was already spent; request a new count",
                     )
 
+            roots = still_stale(db, "reviews", roots, stale_before)
             if expand:
                 tree = self._descendants(roots)
             elif roots:
