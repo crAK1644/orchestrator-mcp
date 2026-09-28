@@ -100,14 +100,25 @@ async def test_a_record_touched_after_the_sweep_picked_it_stays(tmp_path):
         config_hash="abc123",
     )
 
-    for delete, row_id in [
-        (workflows._delete, workflow_id),
-        (reviews._delete, str(review_id)),
-        (store._delete_consultations, str(consultation_id)),
+    async def dated(table: str, row_id: str, updated_at: str) -> None:
+        await store._run(
+            lambda: store._db.execute(
+                f"UPDATE {table} SET updated_at = ? WHERE id = ?", (updated_at, row_id)
+            )
+        )
+
+    cutoff = "2026-02-01T00:00:00+00:00"
+    for table, delete, row_id in [
+        ("workflow_runs", workflows._delete, workflow_id),
+        ("reviews", reviews._delete, str(review_id)),
+        ("consultations", store._delete_consultations, str(consultation_id)),
     ]:
-        picked = partial(delete, [row_id], stale_before="2026-01-01T00:00:00+00:00")
-        assert await store._run(picked) == 0
-        assert await store._run(partial(delete, [row_id])) == 1
+        sweep = partial(delete, [row_id], stale_before=cutoff)
+        # Stale when the sweep picked it, then resumed before the delete ran.
+        await dated(table, row_id, "2026-03-01T00:00:00+00:00")
+        assert await store._run(sweep) == 0
+        await dated(table, row_id, "2026-01-01T00:00:00+00:00")
+        assert await store._run(sweep) == 1
     await store.close()
 
 
