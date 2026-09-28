@@ -118,3 +118,28 @@ jobs:
       # `always` fails loudly if OIDC is unavailable, rather than falling back
       # to prompting for a password in a non-interactive runner.
       - run: uv publish --trusted-publishing always
+
+  # The official MCP registry lists what PyPI already holds, so this runs after the
+  # upload: the registry checks the version exists there and that its description --
+  # the README -- carries `mcp-name:` for this server. A failure here leaves PyPI
+  # untouched; re-run this job alone once the cause is fixed.
+  registry:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      # GitHub OIDC is how the registry grants `io.github.crAK1644/*`. No secret.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Pinned and checksummed for the same reason as uv above: this binary runs
+      # holding an identity token.
+      - name: Install mcp-publisher
+        run: |
+          curl -sSfL -o mcp-publisher.tar.gz \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
+          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz" \
+            | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+      - run: ./mcp-publisher login github-oidc
+      - run: ./mcp-publisher publish

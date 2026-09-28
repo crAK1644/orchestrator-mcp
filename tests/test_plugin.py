@@ -36,6 +36,17 @@ def test_every_pin_follows_the_package_version():
     assert set(re.findall(r"orchestrator-mcp-server@([\w.]+)", setup)) == {version}
 
 
+def test_the_registry_entry_follows_the_package():
+    """The MCP registry reads `server.json` at publish and checks ownership against the
+    PyPI description, which is the README -- so the marker has to name the same server
+    and the entry has to name the version being uploaded."""
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    entry = json.loads((ROOT / "server.json").read_text())
+
+    assert entry["version"] == entry["packages"][0]["version"] == version
+    assert f"<!-- mcp-name: {entry['name']} -->" in (ROOT / "README.md").read_text()
+
+
 def test_the_marketplace_points_at_a_plugin():
     marketplace = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
 
@@ -91,6 +102,15 @@ def test_a_config_that_exists_but_is_wrong_still_refuses(tmp_path, monkeypatch):
 
     with pytest.raises(ConfigError, match="mapping"):
         build_server()
+
+
+def test_a_config_path_under_home_is_expanded(tmp_path, monkeypatch):
+    """A GUI host's JSON config reaches no shell, so `~` arrives literally."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("consult: {}\n")
+    monkeypatch.setenv("ORCHESTRATOR_CONFIG", "~/config.yaml")
+
+    assert load_config() == {"consult": {}}
 
 
 def test_doctor_still_fails_a_missing_config(tmp_path, monkeypatch, capsys):

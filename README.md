@@ -35,6 +35,20 @@ Orchestrator MCP is a local [Model Context Protocol](https://modelcontextprotoco
 
 It does not ask for a provider key, proxy provider traffic, or silently switch models. Authentication remains inside each vendor's CLI.
 
+<!-- mcp-name: io.github.crAK1644/orchestrator-mcp -->
+
+**Quick start** from Claude Code, with Codex already logged in (other hosts: [Install](#install)):
+
+```bash
+uv tool install orchestrator-mcp-server              # or pipx, pip, or brew
+orchestrator-mcp-server init --host claude           # writes ~/.orchestrator-mcp/config.yaml
+claude mcp add orchestrator \
+  --env ORCHESTRATOR_CONFIG=$HOME/.orchestrator-mcp/config.yaml \
+  --env ORCHESTRATOR_HOST_RUNTIME=claude -- orchestrator-mcp-server
+```
+
+Then ask Claude Code for a second opinion from Codex.
+
 ## Before / After
 
 <table>
@@ -130,6 +144,8 @@ brew install orchestrator-mcp-server
 
 Apple Silicon uses a prebuilt package. Intel macOS and Linux build dependencies from source; use the [`uvx` option](#run-with-uvx-instead) if you want a faster, temporary install.
 
+**uv, pipx or pip:** `uv tool install orchestrator-mcp-server`, `pipx install orchestrator-mcp-server`, or `pip install orchestrator-mcp-server` into a virtualenv. Python 3.11 or newer.
+
 ### 1. Sign in to the agent CLIs
 
 Sign in to each agent you want Orchestrator to use:
@@ -206,7 +222,7 @@ an OpenCode agent, and an experimental Antigravity example.
 
 ```bash
 claude mcp add orchestrator \
-  --env ORCHESTRATOR_CONFIG=$PWD/config.yaml \
+  --env ORCHESTRATOR_CONFIG=$HOME/.orchestrator-mcp/config.yaml \
   --env ORCHESTRATOR_HOST_RUNTIME=claude \
   -- orchestrator-mcp-server
 ```
@@ -223,7 +239,85 @@ Add this to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.orchestrator]
 command = "orchestrator-mcp-server"
-env = { ORCHESTRATOR_CONFIG = "/absolute/path/to/config.yaml", ORCHESTRATOR_HOST_RUNTIME = "codex" }
+env = { ORCHESTRATOR_CONFIG = "~/.orchestrator-mcp/config.yaml", ORCHESTRATOR_HOST_RUNTIME = "codex" }
+```
+
+</details>
+
+<details>
+<summary><strong>Claude Desktop</strong></summary>
+
+<br>
+
+Add this to `claude_desktop_config.json` (Settings → Developer → Edit Config), with the
+`command` that `which orchestrator-mcp-server` prints: Desktop does not read your shell's
+`PATH`.
+
+```json
+{
+  "mcpServers": {
+    "orchestrator": {
+      "command": "/opt/homebrew/bin/orchestrator-mcp-server",
+      "env": {
+        "ORCHESTRATOR_CONFIG": "~/.orchestrator-mcp/config.yaml",
+        "ORCHESTRATOR_HOST_RUNTIME": "claude"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>VS Code, Cursor</strong></summary>
+
+<br>
+
+VS Code reads `.vscode/mcp.json` in the workspace; Cursor reads `~/.cursor/mcp.json`
+with the same entry under `"mcpServers"` instead of `"servers"`.
+
+```json
+{
+  "servers": {
+    "orchestrator": {
+      "type": "stdio",
+      "command": "orchestrator-mcp-server",
+      "env": {
+        "ORCHESTRATOR_CONFIG": "~/.orchestrator-mcp/config.yaml",
+        "ORCHESTRATOR_HOST_RUNTIME": "claude"
+      }
+    }
+  }
+}
+```
+
+Neither editor is one of the four runtimes, so name the one whose models its chat runs:
+`claude` for Claude, `codex` for GPT. That agent is then left out of the routing, and a
+question is never handed back to the model that asked it.
+
+</details>
+
+<details>
+<summary><strong>OpenCode</strong></summary>
+
+<br>
+
+In `opencode.json`:
+
+```json
+{
+  "mcp": {
+    "orchestrator": {
+      "type": "local",
+      "command": ["orchestrator-mcp-server"],
+      "environment": {
+        "ORCHESTRATOR_CONFIG": "~/.orchestrator-mcp/config.yaml",
+        "ORCHESTRATOR_HOST_RUNTIME": "opencode"
+      }
+    }
+  }
+}
 ```
 
 </details>
@@ -231,7 +325,7 @@ env = { ORCHESTRATOR_CONFIG = "/absolute/path/to/config.yaml", ORCHESTRATOR_HOST
 Restart the MCP client after changing its configuration.
 
 > [!TIP]
-> Use an absolute `ORCHESTRATOR_CONFIG` path. GUI-launched clients often start in a different working directory and inherit a smaller `PATH` than your terminal.
+> Give `ORCHESTRATOR_CONFIG` an absolute path or one under `~`. GUI-launched clients often start in a different working directory and inherit a smaller `PATH` than your terminal.
 
 ### 4. Check it
 
@@ -271,7 +365,7 @@ No permanent server install is required:
 
 ```bash
 claude mcp add orchestrator \
-  --env ORCHESTRATOR_CONFIG=$PWD/config.yaml \
+  --env ORCHESTRATOR_CONFIG=$HOME/.orchestrator-mcp/config.yaml \
   --env ORCHESTRATOR_HOST_RUNTIME=claude \
   -- uvx orchestrator-mcp-server
 ```
@@ -282,7 +376,7 @@ For Codex:
 [mcp_servers.orchestrator]
 command = "uvx"
 args = ["orchestrator-mcp-server"]
-env = { ORCHESTRATOR_CONFIG = "/absolute/path/to/config.yaml", ORCHESTRATOR_HOST_RUNTIME = "codex" }
+env = { ORCHESTRATOR_CONFIG = "~/.orchestrator-mcp/config.yaml", ORCHESTRATOR_HOST_RUNTIME = "codex" }
 ```
 
 The PyPI distribution is named `orchestrator-mcp-server`; the shorter PyPI name belongs to another project.
