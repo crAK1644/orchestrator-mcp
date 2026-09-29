@@ -238,6 +238,14 @@ def doctor(load_config) -> int:
         else:
             ready = bool(agent.installed and agent.authenticated)
             line(ready, f"agent {agent.agent_id}", "" if ready else agent.detail or "not ready")
+            # Informational, and not fixable here: `agy` reads no stdin, so the prompt is
+            # an argument. Said once per agent so it is seen before the first turn.
+            if consult.agents[agent.agent_id].runtime == "antigravity":
+                print(
+                    f"--   agent {agent.agent_id}: antigravity takes the prompt on its command "
+                    "line, so other users on this machine can read it in the process list "
+                    "while a turn runs"
+                )
 
     from .code import sandbox
 

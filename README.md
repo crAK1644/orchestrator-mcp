@@ -911,6 +911,7 @@ storage or request latency.
 |---|---|
 | **Credentials** | No provider key setting exists. Orchestrator never reads, stores, returns, or refreshes a CLI's own credential. A credential you put in a prompt is material, not a credential here — see the warning below. |
 | **Process launch** | Commands are executed as argument lists, never through a shell. |
+| **Prompt visibility** | Codex, Claude Code and OpenCode read the prompt from stdin. Antigravity's CLI reads none, so its prompt is a command-line argument that other users on the machine can read in the process list while a turn runs. `doctor` says so for each such agent; do not send it material you would not put in `ps` output on a shared machine. |
 | **Self-consultation** | `ORCHESTRATOR_HOST_RUNTIME` comes from the environment and cannot be overridden by a tool call. |
 | **Agent permissions** | Consulted agents are answer-only, except for the target CLI's bounded search in explicit web mode. |
 | **Model identity** | A detected mismatch fails with `configured_model_unavailable`. Missing CLI metadata is reported as unverified, not invented. |
