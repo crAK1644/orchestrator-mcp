@@ -62,19 +62,42 @@ MAX_REVIEWERS = 5
 # some providers echo the request they rejected, headers included. The environment
 # variable name reaching a caller is a documented cost of useful diagnostics; the
 # value it held is not.
+#
+# This is a verbose pattern, so a bare space in it is dropped: `PRIVATE KEY` compiled to
+# `PRIVATEKEY` and no real key header ever matched. Write a literal space as `[ ]`.
+#
+# `(?<![A-Za-z0-9])` rather than `\b` where a token or a name may follow `_` or `-`:
+# `DB_PASSWORD=` has no word boundary before `PASSWORD`, and `risk-assessment` has none
+# before `sk-` either, so the boundary is what tells a name from the middle of a word.
 _SECRETS = re.compile(
     r"""(?xi)
-    (?: sk-ant-|sk-|rk-|xai-|gsk_|ghp_|github_pat_|AIza|AKIA|ASIA|xox[abposr]-|
+    (?<![A-Za-z0-9])
+    (?: sk-ant-|sk-|rk-|xai-|gsk_|gh[pousr]_|github_pat_|AIza|AKIA|ASIA|xox[abposr]-|
         eyJ[A-Za-z0-9_-]{6,}\. )[A-Za-z0-9._\-]{8,}
+    # Case-sensitive, and long enough that an environment variable name such as
+    # `NPM_CONFIG_REGISTRY` or a word such as `hf_home` is not mistaken for one.
+    | (?<![A-Za-z0-9]) (?-i:
+          npm_[A-Za-z0-9]{30,} | hf_[A-Za-z0-9]{30,} | glpat-[A-Za-z0-9_\-]{20,}
+        | dop_v1_[a-f0-9]{64} | shpat_[a-f0-9]{32} | [sr]k_live_[A-Za-z0-9]{24,}
+        | SG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,} )
     | \b(?:bearer|basic)\s+[A-Za-z0-9._\-+/=]{12,}
     # Group 1 is put back verbatim, so only the value is replaced. Swallowing the name
     # and the separator along with it would turn `{"apiKey": "..."}` into `{"..."}` --
     # still valid Python, a set literal rather than a dict, and no longer the text it
     # was masking. A reviewer reading that reports a defect nobody wrote.
-    | (\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret)
+    #
+    # A bare `token` is not a name here: `token = self.next_token()` would lose its call.
+    | ((?<![A-Za-z0-9])(?:api[_-]?key|access[_-]?(?:token|key)|refresh[_-]?token|auth[_-]?token
+          |github[_-]?token|authorization|password|passwd|secret(?:[_-]?(?:access[_-]?)?key)?
+          |account[_-]?key)
       # The optional quote is what a JSON body looks like: `"api_key": "..."`.
       \b["']?\s*[:=]\s*["']?)[A-Za-z0-9._\-+/=]{8,}
-    | -{5}BEGIN[ A-Z]*PRIVATE KEY-{5}.*?-{5}END[ A-Z]*PRIVATE KEY-{5}
+    # Group 2: `scheme://user:` is put back and only the password goes, for the same reason.
+    | (\b[a-z][a-z0-9+.\-]*://[^\s/:@"']+:)[^\s/@"']{3,}(?=@)
+    # A key with no footer -- context cut short, a PEM pasted without its last line -- has
+    # its body masked up to a bound instead of being left whole.
+    | -{5}BEGIN[ A-Z]*PRIVATE[ ]KEY-{5}
+      (?: .{0,16384}?-{5}END[ A-Z]*PRIVATE[ ]KEY-{5} | [\w+/=:,.\s\-]{0,8192} )
     """,
     re.DOTALL,
 )
@@ -93,11 +116,12 @@ def redact(text: str) -> str:
 def redact_counted(text: str) -> tuple[str, int]:
     """`redact`, and how many matches it replaced.
 
-    `\\g<1>` is the key and separator of the named-key alternative, put back so the
-    masked text keeps the shape it had. The other alternatives have no group 1, and a
-    group that did not participate substitutes as empty.
+    `\\g<1>` is the key and separator of the named-key alternative, and `\\g<2>` the
+    `scheme://user:` of a URL credential, each put back so the masked text keeps the
+    shape it had. The other alternatives have neither, and a group that did not
+    participate substitutes as empty.
     """
-    return _SECRETS.subn(r"\g<1>[redacted]", text)
+    return _SECRETS.subn(r"\g<1>\g<2>[redacted]", text)
 
 
 def secret_lines(text: str) -> list[int]:

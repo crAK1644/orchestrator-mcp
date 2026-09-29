@@ -19,7 +19,7 @@ import pytest
 from orchestrator_mcp.consult.adapters.base import AdapterResult, AgentStatus
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import ConsultationContent
-from orchestrator_mcp.contract import Usage, redact, scrub_json
+from orchestrator_mcp.contract import Usage, redact, scrub_json, secret_lines
 from orchestrator_mcp.review.service import ReviewService
 
 from .conftest import agent
@@ -56,6 +56,98 @@ def test_masking_a_value_leaves_the_text_around_it_alone(source, masked):
     `{"apiKey": "..."}` into `{"[redacted]"}` -- a set literal, and a real reviewer
     duly reported that the dict it was meant to be would not serialize."""
     assert redact(source) == masked
+
+
+@pytest.mark.parametrize(
+    "source, masked",
+    [
+        pytest.param("DB_PASSWORD=hunter2hunter2", "DB_PASSWORD=[redacted]", id="prefixed password"),
+        pytest.param("db_password: hunter2hunter2", "db_password: [redacted]", id="lowercase colon"),
+        pytest.param("client_secret=abcdefghijklmnop", "client_secret=[redacted]", id="client secret"),
+        pytest.param(
+            "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "AWS_SECRET_ACCESS_KEY=[redacted]",
+            id="aws secret access key",
+        ),
+        pytest.param(
+            "SECRET_KEY = 'django-insecure-abcdefgh'",
+            "SECRET_KEY = '[redacted]'",
+            id="a quoted secret key",
+        ),
+        pytest.param("GITHUB_TOKEN=abcdefghijklmnop1234", "GITHUB_TOKEN=[redacted]", id="github token"),
+        pytest.param("OPENAI_API_KEY=abcdefghijklmnop1234", "OPENAI_API_KEY=[redacted]", id="prefixed api key"),
+        pytest.param("AccountKey=abc123abc123abc123==", "AccountKey=[redacted]", id="azure account key"),
+        pytest.param("ghs_" + "a" * 36, "[redacted]", id="github app token"),
+        pytest.param("glpat-" + "a" * 20, "[redacted]", id="gitlab token"),
+        pytest.param("hf_" + "a" * 34, "[redacted]", id="hugging face token"),
+        pytest.param("npm_" + "a" * 36, "[redacted]", id="npm token"),
+        pytest.param("dop_v1_" + "a" * 64, "[redacted]", id="digitalocean token"),
+        pytest.param("shpat_" + "a" * 32, "[redacted]", id="shopify token"),
+        pytest.param("sk_live_" + "a" * 24, "[redacted]", id="stripe secret key"),
+        pytest.param("SG." + "a" * 22 + "." + "b" * 43, "[redacted]", id="sendgrid key"),
+        pytest.param(
+            "postgres://user:hunter2pass@db.example.com:5432/app",
+            "postgres://user:[redacted]@db.example.com:5432/app",
+            id="a URL password, and only the password",
+        ),
+    ],
+)
+def test_credential_shapes_beyond_the_first_few_are_masked(source, masked):
+    assert redact(source) == masked
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("risk-assessment-framework", id="risk-"),
+        pytest.param("task-management-system", id="task-"),
+        pytest.param("disk-usage-monitor", id="disk-"),
+        pytest.param("NPM_CONFIG_REGISTRY=x", id="an npm environment variable name"),
+        pytest.param("HF_HUB_ENABLE_HF_TRANSFER=1", id="a hugging face environment variable name"),
+        pytest.param("https://github.com/org/repo", id="a URL with no credential"),
+        pytest.param("https://example.com:8080/path@x", id="a port is not a password"),
+        pytest.param("ssh://git@host:22/repo", id="a user with no password"),
+        pytest.param("max_tokens: 4096", id="a token count is not a token"),
+        pytest.param("token = self.next_token()", id="a bare token name is left to the code"),
+        pytest.param("SG.short.short", id="too short to be a sendgrid key"),
+        pytest.param("hf_home", id="too short to be a hugging face token"),
+    ],
+)
+def test_text_that_only_resembles_a_credential_is_left_alone(text):
+    """Every row here was either masked before, corrupting what a reviewer read, or is a
+    shape the wider patterns above must not start to swallow."""
+    assert redact(text) == text
+
+
+@pytest.mark.parametrize("kind", ["", "RSA ", "OPENSSH ", "EC "])
+def test_a_private_key_is_masked_whole_and_the_text_after_it_is_not(kind):
+    """The pattern once compiled `PRIVATE KEY` to `PRIVATEKEY`, because it is a verbose
+    pattern and drops a bare space, so no real key header ever matched."""
+    key = f"-----BEGIN {kind}PRIVATE KEY-----\nb3BlbnNzaC1rZXk\nAAAAAA==\n-----END {kind}PRIVATE KEY-----"
+
+    assert redact(f"before\n{key}\nafter") == "before\n[redacted]\nafter"
+
+
+def test_an_unterminated_private_key_still_loses_its_body():
+    """Context cut short, or a PEM pasted without its footer: the body is masked up to
+    the first character a key cannot contain, rather than left whole for want of an END."""
+    text = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nAAAA\n(prose)"
+
+    assert redact(text) == "[redacted](prose)"
+
+
+def test_two_private_keys_are_two_matches():
+    key = "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----"
+
+    assert redact(f"{key}\nbetween\n{key}") == "[redacted]\nbetween\n[redacted]"
+
+
+def test_the_preview_reports_the_line_a_credential_starts_on():
+    """What `secret_hits` is built from: positions, never values."""
+    key = "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----"
+
+    assert secret_lines(f"a\nb\n{key}") == [3]
+    assert secret_lines("a\nDB_PASSWORD=hunter2hunter2") == [2]
 
 
 def test_scrubbing_covers_mapping_keys_and_non_list_collections():
@@ -332,6 +424,22 @@ async def test_a_credential_read_off_disk_is_caught_and_never_stored(build, tmp_
     assert run.status == "awaiting_synthesis"
     await service.close()
     assert_absent(build.path, SECRET, OTHER)
+
+
+async def test_a_private_key_in_the_context_is_flagged_and_never_stored(build, tmp_path):
+    """The preview is what warns before anything is sent, and it warned about no key at
+    all while the pattern could not match a real header."""
+    body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+    path = tmp_path / "deploy.pem"
+    path.write_text(f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n")
+    service = await build()
+
+    plan = await service.plan(goal="review this deploy", context_paths=[str(path)])
+
+    assert [h.field for h in plan.plan.secret_hits] == ["context"]
+    assert body not in plan.model_dump_json()
+    await service.close()
+    assert_absent(build.path, body)
 
 
 async def test_a_credential_in_an_error_message_is_scrubbed(build):
