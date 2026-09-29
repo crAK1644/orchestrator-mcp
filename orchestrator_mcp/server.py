@@ -800,12 +800,13 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
     ) -> ReviewResponse:
         """Record your synthesis. The only path to `complete`.
 
-        Every Critical finding any reviewer raised must be referenced by some
-        combined finding through `source_finding_ids`, **including one only a single
-        reviewer raised while the others disagree**. That is the point of asking more
-        than one: disagree with it in `disagreed_by`, never drop it. The call verifies
-        this only when every reviewer produced parseable, retained findings; otherwise
-        it refuses finalization instead of treating an empty finding set as proof.
+        Every Critical and Important finding any reviewer raised must be referenced
+        by some combined finding through `source_finding_ids`, **including one only a
+        single reviewer raised while the others disagree**. That is the point of
+        asking more than one: disagree with it in `disagreed_by`, never drop it. The
+        call verifies this only when every reviewer produced parseable, retained
+        findings; otherwise it refuses finalization instead of treating an empty
+        finding set as proof.
 
         `checked` and `not_checked` are both required, so the scope of the review is
         stated rather than inferred from silence.

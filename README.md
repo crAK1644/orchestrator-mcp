@@ -505,7 +505,7 @@ A consultation asks one agent. A review asks one or more configured reviewers th
  plan review          approve + run          synthesize
  sends nothing   ──►  reviewers answer  ──►  host records conclusion
       │                    in parallel                │
-      └─ scope              one-time token            └─ every Critical kept
+      └─ scope              one-time token            └─ every Critical and Important kept
          reviewers
          secret hits
          request count
@@ -542,7 +542,7 @@ MCP gives the server no separate human channel, so it cannot prove who saw the p
 Human approval depends on the calling client's tool-confirmation experience or an
 external gate.
 
-Finalization must preserve every machine-readable Critical finding, even when other reviewers disagree with it. Deep mode also requires the host agent to record its own findings before seeing the reviewers' answers.
+Finalization must preserve every machine-readable Critical and Important finding, even when other reviewers disagree with it. Deep mode also requires the host agent to record its own findings before seeing the reviewers' answers.
 
 > [!IMPORTANT]
 > Material sent to a reviewer may remain in that vendor CLI's own history. Orchestrator cannot erase Codex, Claude Code, OpenCode, or Antigravity session logs.
@@ -574,7 +574,7 @@ A reviewer's prose comes back once, with the call that ran it, and its `findings
 
 Credential-shaped values are masked before storage. `secrets="send_as_is"` is an explicit escape hatch for a false positive: it requires the exact original goal and context again, sends those originals to the reviewers, and still stores only the redacted copy.
 
-`store_full_content: false` does not apply here in full. A review's goal and context are stored either way — the second half of the approval handshake reads them back to send what was approved — and reviewer answers and findings are not. That leaves nothing to prove every Critical survived synthesis, so `orchestrator_finalize_review` refuses, and the review stays at `awaiting_synthesis`. Finalization is refused on the same grounds when a reviewer answered only in unparseable prose, or when its findings were truncated.
+`store_full_content: false` does not apply here in full. A review's goal and context are stored either way — the second half of the approval handshake reads them back to send what was approved — and reviewer answers and findings are not. That leaves nothing to prove every Critical and Important survived synthesis, so `orchestrator_finalize_review` refuses, and the review stays at `awaiting_synthesis`. Finalization is refused on the same grounds when a reviewer answered only in unparseable prose, or when its findings were truncated.
 
 </details>
 
@@ -917,7 +917,7 @@ storage or request latency.
 | **Storage** | SQLite directory permissions are `0700`; the database and managed agent file are `0600`. |
 | **Dashboard** | Loopback only, with host-header checks and a per-process token. |
 | **Review checkpoint** | Plans bind the scope to a one-time token before reviewer requests are made. The server cannot independently verify human approval. |
-| **Workflow write surface** | No delegated agent writes to your working tree. `patch` mode returns a diff over the read-only consult path; `isolated_write` runs codex inside its own OS-level sandbox, in a disposable worktree outside your repository, with the network off. Both end in `awaiting_host_apply`: the host owns application. |
+| **Workflow write surface** | No delegated agent writes to your working tree. `patch` mode returns a diff over the read-only consult path; `isolated_write` runs in a disposable worktree outside your repository, inside an OS-level sandbox: Codex's own, with the network off, or Orchestrator's for OpenCode, whose network stays open. Both end in `awaiting_host_apply`: the host owns application. |
 | **Workflow checkpoints** | One token per side-effecting step, spent in the statement that starts it. There is no workflow-level token, and a token proves snapshot integrity rather than human approval. |
 | **Workflow identity** | The host execution identity comes from startup configuration only. A candidate that cannot be *proven* a different model from the host is refused. |
 | **Workflow scope** | A workdir must resolve beneath a configured root; `/` is refused and nothing is inferred from the working directory. A dirty tree needs explicit acknowledgement. |
@@ -1160,7 +1160,7 @@ Live tests make real requests and may use paid capacity. Do not run them in CI u
 - No file edits, shell commands, MCP tools, or subagents for ordinary consulted agents;
   explicit web mode enables only the target runtime's web-search facility.
 - No automatic fixes; the host agent owns edits and tests. A workflow records and validates the phases, it does not run the job unattended.
-- No delegated write to your actual working tree. `isolated_write` runs in a throwaway worktree and is codex-only; every other runtime refuses it, and the host applies every patch.
+- No delegated write to your actual working tree. `isolated_write` runs in a throwaway worktree, and only where the runtime can be contained: Codex, and OpenCode where Orchestrator's OS-level sandbox holds. Claude Code and Antigravity refuse it. The host applies every patch.
 - No streaming; each consultation returns one complete envelope.
 - No dashboard-initiated consultations.
 - No automatic configuration reload.
