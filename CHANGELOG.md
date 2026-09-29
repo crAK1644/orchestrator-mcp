@@ -10,6 +10,7 @@ One line per change a user would notice. The full notes for each version are on 
   are read-only: they never migrate the database (a WAL database may gain `-wal` and
   `-shm` sidecar files while they read). A price nobody reported prints as `unknown`,
   never `$0`.
+- The dashboard has a `/scorecard` page: the same per-reviewer numbers as `scorecard`.
 
 ## 0.8.1 — 2026-09-29
 

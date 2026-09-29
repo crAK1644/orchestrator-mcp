@@ -117,7 +117,7 @@ def _spend_fields(spend: Spend) -> dict[str, Any]:
     }
 
 
-def _cost(fields: dict[str, Any]) -> str:
+def cost_text(fields: dict[str, Any]) -> str:
     if fields["cost_usd"] is not None:
         return f"${fields['cost_usd']:.4f}"
     known = fields["known_cost_usd"]
@@ -190,12 +190,12 @@ def render_usage(report: dict[str, Any]) -> str:
     total = report["total"]
     rows = [
         (g["agent_id"], g["model"], g["turns"], g["errors"], f"{g['total_tokens']:,}",
-         _cost(g), f"{g['avg_latency_ms']} ms")
+         cost_text(g), f"{g['avg_latency_ms']} ms")
         for g in report["groups"]
     ]
     rows.append(
         ("total", "", total["turns"], total["errors"], f"{total['total_tokens']:,}",
-         _cost(total), "")
+         cost_text(total), "")
     )
     return (
         f"Last {report['days']} days\n"
@@ -370,43 +370,58 @@ SCORECARD_NOTE = (
 )
 
 
-def render_scorecard(report: dict[str, Any]) -> str:
-    if not report["reviewers"]:
-        return f"No reviews in the last {report['days']} days."
+SCORECARD_HEADERS = (
+    "reviewer", "model", "asked", "answered", "errored", "kept", "rejected", "open",
+    "hit rate", "avg latency", "cost",
+)  # fmt: skip
+
+
+def scorecard_cells(entry: dict[str, Any]) -> tuple[str, ...]:
+    """One reviewer's row as text, so the terminal and the dashboard print the same."""
 
     def count(value: int | None) -> str:
         return "-" if value is None else str(value)
 
-    def precision(entry: dict[str, Any]) -> str:
-        if entry["precision"] is not None:
-            return f"{entry['precision']:.0%}"
-        return "-" if entry["decided"] is None else f"n<{MIN_DECIDED}"
-
-    rows = [
-        (r["agent_id"], r["model"], r["asked"], r["answered"], r["errored"], count(r["kept"]),
-         count(r["rejected"]), count(r["open"]), precision(r),
-         "-" if r["avg_latency_ms"] is None else f"{r['avg_latency_ms']} ms",
-         _cost(r) if "known_cost_usd" in r else "-")
-        for r in report["reviewers"]
-    ]
-    text = (
-        f"Last {report['days']} days\n"
-        + _table(
-            ("reviewer", "model", "asked", "answered", "errored", "kept", "rejected", "open",
-             "hit rate", "avg latency", "cost"),
-            rows,
-        )
-        + "\n\n"
-        + textwrap.fill(SCORECARD_NOTE, 100)
+    if entry["precision"] is not None:
+        rate = f"{entry['precision']:.0%}"
+    else:
+        rate = "-" if entry["decided"] is None else f"n<{MIN_DECIDED}"
+    return (
+        entry["agent_id"],
+        entry["model"],
+        str(entry["asked"]),
+        str(entry["answered"]),
+        str(entry["errored"]),
+        count(entry["kept"]),
+        count(entry["rejected"]),
+        count(entry["open"]),
+        rate,
+        "-" if entry["avg_latency_ms"] is None else f"{entry['avg_latency_ms']} ms",
+        cost_text(entry) if "known_cost_usd" in entry else "-",
     )
+
+
+def scorecard_footnotes(report: dict[str, Any]) -> list[str]:
+    notes = [SCORECARD_NOTE]
     if report["unsynthesised_reviews"]:
-        text += "\n" + textwrap.fill(
+        notes.append(
             f"Reviews with no synthesis on record: {report['unsynthesised_reviews']}. Not "
             "finalized yet, or `store_full_content: false`, under which none is kept; "
-            "their findings are not counted.",
-            100,
+            "their findings are not counted."
         )
-    return text + _notes(report["caveats"])
+    return notes
+
+
+def render_scorecard(report: dict[str, Any]) -> str:
+    if not report["reviewers"]:
+        return f"No reviews in the last {report['days']} days."
+    return (
+        f"Last {report['days']} days\n"
+        + _table(SCORECARD_HEADERS, [scorecard_cells(r) for r in report["reviewers"]])
+        + "\n\n"
+        + "\n".join(textwrap.fill(note, 100) for note in scorecard_footnotes(report))
+        + _notes(report["caveats"])
+    )
 
 
 # --- export -------------------------------------------------------------------

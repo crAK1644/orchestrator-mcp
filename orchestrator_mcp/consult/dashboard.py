@@ -30,6 +30,7 @@ import sqlite3
 import sys
 import threading
 from collections.abc import Callable
+from contextlib import closing
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -42,6 +43,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 import yaml
 from pydantic import ValidationError
 
+from .. import reports
 from ..contract import ConfigError
 from ..review.contract import Severity
 from ..workflow.contract import TERMINAL_STATES
@@ -414,6 +416,8 @@ class ConsultDashboard:
             return self.workflow(unquote(path.removeprefix("/workflows/")))
         if path == "/reviews":
             return HTTPStatus.OK, self.reviews_page()
+        if path == "/scorecard":
+            return HTTPStatus.OK, self.scorecard_page(query)
         if path == "/reviewers":
             return self._if_editable(lambda: (HTTPStatus.OK, self.reviewers_page(query)))
         if path.startswith("/reviews/"):
@@ -837,6 +841,67 @@ class ConsultDashboard:
             "Reviews", head + self._reviews_table(self._review_rows(200)),
             editable=self.config.dashboard.editable,
         )
+
+    def scorecard_page(self, query: str = "") -> str:
+        """`reports.scorecard` on this dashboard's own read-only connection.
+
+        The same numbers and the same footnotes as the terminal command, and the same
+        refusal for a database this version has not migrated. Not gated on `editable`:
+        it shows what the reviews page shows, only added up.
+        """
+        try:
+            days = min(max(int(parse_qs(query).get("days", ["30"])[0]), 1), 3650)
+        except ValueError:
+            days = 30
+        windows = " &middot; ".join(
+            f"<a href='/scorecard?days={n}'{' aria-current=page' if n == days else ''}>{n} days</a>"
+            for n in (30, 90, 365)
+        )
+        head = (
+            "<a class=back-link href='/'>&larr; Operations monitor</a>"
+            "<header class=page-heading><div class=page-heading-copy>"
+            "<p class=eyebrow>Independent review</p><h1>Scorecard</h1>"
+            "<p class=context-line><span>How each reviewer answered, and what became of "
+            f"its findings</span></p></div></header><p class=meta>{windows}</p>"
+        )
+        editable = self.config.dashboard.editable
+        if not Path(self.config.database_path).exists():
+            return _document(
+                "Scorecard", f"{head}<div class=empty-state>No reviews recorded yet.</div>",
+                editable=editable,
+            )
+        with closing(self._connect()) as connection:
+            problem = reports.ledger_problem(connection)
+            result = None if problem else reports.scorecard(connection, days)
+        if result is None:
+            return _document(
+                "Scorecard", f"{head}<div class=empty-state>{_e(problem)}</div>",
+                editable=editable,
+            )
+        if not result["reviewers"]:
+            body = f"<div class=empty-state>No reviews in the last {days} days.</div>"
+        else:
+            rows = "".join(
+                "<tr>"
+                + "".join(
+                    f"<td{' class=primary-cell' if not i else ''} data-label='{_e(label)}'>{_e(cell)}</td>"
+                    for i, (label, cell) in enumerate(
+                        zip(reports.SCORECARD_HEADERS, reports.scorecard_cells(r), strict=True)
+                    )
+                )
+                + "</tr>"
+                for r in result["reviewers"]
+            )
+            header = "".join(f"<th>{_e(label)}" for label in reports.SCORECARD_HEADERS)
+            body = (
+                "<div class='table-shell table-shell--cards'><table class=data-table>"
+                f"<thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table></div>"
+            )
+        notes = "".join(
+            f"<p class=meta>{_e(note)}</p>"
+            for note in [*reports.scorecard_footnotes(result), *result["caveats"]]
+        )
+        return _document("Scorecard", head + body + notes, editable=editable)
 
     def review(self, review_id: str) -> tuple[int, str]:
         missing = self._reviews_missing()
@@ -2475,6 +2540,7 @@ def _reviewer_summary(review: ReviewConfig) -> str:
 def _navigation(title: str, editable: bool = False) -> str:
     section = (
         "reviewers" if title == "Reviewers"
+        else "scorecard" if title == "Scorecard"
         else "workflows" if title.startswith("Workflow")
         else "reviews" if title.startswith("Review")
         else "agents" if "agent" in title.lower()
@@ -2487,6 +2553,7 @@ def _navigation(title: str, editable: bool = False) -> str:
         ("monitor", "/", "Monitor"),
         ("workflows", "/workflows", "Workflows"),
         ("reviews", "/reviews", "Reviews"),
+        ("scorecard", "/scorecard", "Scorecard"),
     ]
     if show_admin:
         items.extend(

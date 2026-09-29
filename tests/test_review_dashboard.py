@@ -604,3 +604,80 @@ async def test_reviewers_written_in_the_operators_own_file_are_shown_not_edited(
 
     assert status == 200 and str(config_path) in body
     assert posted == 409 and "Delete it there first" in refusal
+
+
+# --- the scorecard ----------------------------------------------------------
+
+
+async def test_the_scorecard_renders_a_row_per_reviewer_with_its_footnote(serve, review_config):
+    get, consult_config = serve(review_config())
+    await make_review(consult_config)
+
+    status, body = get("/scorecard")
+
+    assert status == 200
+    assert "codex-sol" in body and "gemini-x" in body
+    assert "this server checks none of them" in body
+
+
+async def test_the_scorecard_never_writes_the_database(serve, review_config):
+    get, consult_config = serve(review_config())
+    await make_review(consult_config)
+    before = open(consult_config.database_path, "rb").read()
+
+    get("/scorecard")
+    get("/scorecard?days=90")
+
+    assert open(consult_config.database_path, "rb").read() == before
+
+
+async def test_the_scorecard_asks_for_a_restart_on_an_unmigrated_database(serve, review_config):
+    consult_config = review_config()
+    old_database(consult_config.database_path)
+    get, _ = serve(consult_config)
+
+    status, body = get("/scorecard")
+
+    assert status == 200
+    assert "start the MCP server once" in body
+    assert "no such table" not in body
+
+
+async def test_the_scorecard_says_so_before_anything_has_been_reviewed(serve, review_config):
+    get, _ = serve(review_config())
+
+    status, body = get("/scorecard")
+
+    assert status == 200
+    assert "No reviews recorded yet." in body
+
+
+async def test_a_bad_days_value_falls_back_rather_than_failing(serve, review_config):
+    get, consult_config = serve(review_config())
+    await make_review(consult_config)
+
+    assert get("/scorecard?days=lots")[0] == 200
+    assert "codex-sol" in get("/scorecard?days=-5")[1]
+
+
+async def test_the_scorecard_is_in_the_navigation_and_ungated(serve, review_config):
+    """`/reviewers` is behind `dashboard.editable`; the scorecard only reads."""
+    consult_config = review_config()
+    assert consult_config.dashboard.editable is False
+    get, _ = serve(consult_config)
+
+    _, body = get("/scorecard")
+
+    assert "<a href='/scorecard' aria-current=page>Scorecard</a>" in body
+    assert "aria-current=page>Reviews" not in body
+
+
+async def test_a_planted_credential_reaches_no_scorecard(serve, review_config):
+    get, consult_config = serve(review_config())
+    await make_review(
+        consult_config,
+        goal=f"review this, the key is {SECRET}",
+        answer=f"the key {SECRET} is hardcoded\n\n{FINDINGS}",
+    )
+
+    assert SECRET not in get("/scorecard")[1]

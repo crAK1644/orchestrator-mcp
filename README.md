@@ -1037,6 +1037,8 @@ Open [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
 `/workflows` lists every workflow; a workflow's page shows its state, fix rounds against the cap, the bindings frozen at start, and the step timeline in the order it happened, with each step linking to its consultation and its review. Those consultations are reachable nowhere else. The workflow pages are read-only: deletion stays on the MCP tools, where the confirmation token is.
 
+`/scorecard` adds up each reviewer's answers and what became of its findings, the same numbers as `orchestrator-mcp-server scorecard` (`?days=90` widens the window from 30). It only reads, so `editable` does not gate it.
+
 Set `editable: true` to manage consult agents and reviewer selection in the browser. Browser-managed agents are written to `~/.orchestrator-mcp/agents.yaml`; the dashboard never rewrites `config.yaml`, runs login commands, or starts consultations.
 
 Both the MCP server and dashboard read configuration at startup. Restart them to pick up changes.
