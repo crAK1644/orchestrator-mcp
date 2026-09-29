@@ -40,10 +40,9 @@ NOT_MIGRATED = (
 # Below this many decided findings a reviewer's hit rate is anecdote, not a rate.
 MIN_DECIDED = 10
 MIN_PREFIX = 8
-
-# Not a review anyone got an answer from: still going, or stopped by the host.
-_UNSETTLED = "('pending', 'running', 'cancelled')"
-
+# The dashboard's own cap on `days`; a `timedelta` overflows a `datetime` far beyond it.
+MAX_DAYS = 3650
+MAX_LIMIT = 1000
 
 def fail(message: str) -> NoReturn:
     raise SystemExit(f"orchestrator-mcp-server: {message}")
@@ -274,11 +273,14 @@ def render_history(items: list[dict]) -> str:
 
 # --- scorecard ----------------------------------------------------------------
 
-# Reviews that reached their reviewers and are not a recheck of another review (which
-# would raise the same findings again). A reviewer that never started was not asked.
+# Reviewers that ran, in reviews that are not a recheck of another review (which would
+# raise the same findings again). The review's own status is no filter: a cancel keeps
+# the rows of reviewers that had already answered, and their turns are in `usage`. One
+# that never started, which is what every reviewer of a review still going looks like
+# until it answers, was not asked.
 _SCORED = (
     "r.parent_review_id IS NULL AND r.created_at >= ? "
-    f"AND r.status NOT IN {_UNSETTLED} AND rc.error_code IS NOT '{ConsultErrorCode.NOT_STARTED.value}'"
+    f"AND rc.error_code IS NOT '{ConsultErrorCode.NOT_STARTED.value}'"
 )
 
 
@@ -313,7 +315,7 @@ def scorecard(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
             # Answered, and no synthesis on disk: the host has not finalized it yet, or
             # `store_full_content: false`, under which a review cannot be finalized.
             unsynthesised += (
-                row["review_status"] in ("awaiting_synthesis", "complete")
+                row["review_status"] in ("awaiting_synthesis", "complete", "cancelled")
                 and row["summary_json"] is None
             )
         if row["summary_json"] is not None:
@@ -545,11 +547,17 @@ _NOT_KEPT = (
 # --- the command line ---------------------------------------------------------
 
 
-def _count(text: str) -> int:
-    value = int(text)
-    if value < 1:
-        raise argparse.ArgumentTypeError("must be at least 1")
-    return value
+def _count(top: int):
+    """An integer argument from 1 to `top`, so it cannot overflow a date or an SQLite integer."""
+
+    def parse(text: str) -> int:
+        value = int(text)
+        if not 1 <= value <= top:
+            raise argparse.ArgumentTypeError(f"must be from 1 to {top}")
+        return value
+
+    parse.__name__ = "count"
+    return parse
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -567,13 +575,13 @@ def _parser() -> argparse.ArgumentParser:
         return sub
 
     command("usage", "tokens and cost per agent and model").add_argument(
-        "--days", type=_count, default=30, help="how far back to look (default 30)"
+        "--days", type=_count(MAX_DAYS), default=30, help="how far back to look (default 30)"
     )
     log = command("history", "recent consultations, reviews and workflows, with their ids")
-    log.add_argument("--limit", type=_count, default=20, help="how many to show (default 20)")
+    log.add_argument("--limit", type=_count(MAX_LIMIT), default=20, help="how many to show (default 20)")
     log.add_argument("--kind", choices=KINDS, help="only this kind")
     command("scorecard", "how each reviewer answered and what became of its findings").add_argument(
-        "--days", type=_count, default=30, help="how far back to look (default 30)"
+        "--days", type=_count(MAX_DAYS), default=30, help="how far back to look (default 30)"
     )
     command("export", "one record and everything it owns, as JSON", json_flag=False).add_argument(
         "id", help=f"a full id or a prefix of at least {MIN_PREFIX} characters, from `history`"

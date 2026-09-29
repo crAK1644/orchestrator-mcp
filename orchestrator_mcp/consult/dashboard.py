@@ -850,7 +850,7 @@ class ConsultDashboard:
         it shows what the reviews page shows, only added up.
         """
         try:
-            days = min(max(int(parse_qs(query).get("days", ["30"])[0]), 1), 3650)
+            days = min(max(int(parse_qs(query).get("days", ["30"])[0]), 1), reports.MAX_DAYS)
         except ValueError:
             days = 30
         windows = " &middot; ".join(

@@ -623,12 +623,18 @@ async def test_the_scorecard_renders_a_row_per_reviewer_with_its_footnote(serve,
 async def test_the_scorecard_never_writes_the_database(serve, review_config):
     get, consult_config = serve(review_config())
     await make_review(consult_config)
-    before = open(consult_config.database_path, "rb").read()
 
-    get("/scorecard")
-    get("/scorecard?days=90")
+    def contents() -> tuple[bytes, list[str]]:
+        # The bytes alone miss a write still sitting in the WAL; the dump does not.
+        with sqlite3.connect(f"file:{consult_config.database_path}?mode=ro", uri=True) as db:
+            return open(consult_config.database_path, "rb").read(), list(db.iterdump())
 
-    assert open(consult_config.database_path, "rb").read() == before
+    before = contents()
+
+    assert get("/scorecard")[0] == 200  # a missing route would leave both unchanged
+    assert get("/scorecard?days=90")[0] == 200
+
+    assert contents() == before
 
 
 async def test_the_scorecard_asks_for_a_restart_on_an_unmigrated_database(serve, review_config):

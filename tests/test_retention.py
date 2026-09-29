@@ -265,3 +265,20 @@ async def test_opening_twice_starts_one_task(tmp_path):
 
     assert store._retention_task is task
     await store.close()
+
+
+async def test_an_open_that_overlaps_a_close_waits_for_it_and_leaves_a_working_store(tmp_path):
+    """`close` yields while the cancelled task unwinds. An `open` in that gap used to
+    take the old connection, which `close` then shut, or start a task `close` never saw."""
+    store, _ = await opened_with_ticks(tmp_path)
+    closing = asyncio.create_task(store.close())
+    await asyncio.sleep(0)  # close has cancelled the task and is waiting for it
+
+    await store.open()
+    await closing
+
+    assert store._connection is not None
+    assert await consultation_ids(store) == set()  # usable, not merely non-None
+    assert not store._retention_task.done()
+    await store.close()
+    assert store._retention_task.done()

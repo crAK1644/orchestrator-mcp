@@ -20,6 +20,7 @@ import yaml
 from orchestrator_mcp.consult.store import MIGRATIONS
 from orchestrator_mcp.reports import (
     NOT_MIGRATED,
+    _parser,
     connect,
     export,
     history,
@@ -358,10 +359,37 @@ async def test_a_review_with_no_synthesis_is_counted_asked_but_not_judged(review
     assert "no synthesis on record" in render_scorecard(result)
 
 
-async def test_a_review_still_running_is_not_scored(review_config):
+@pytest.mark.parametrize("status", ["running", "cancelled"])
+async def test_a_reviewer_that_answered_is_scored_though_its_review_never_settled(
+    review_config, status
+):
+    """A cancel keeps the rows of reviewers that had finished, and their turns are in
+    `usage`; leaving them out of the scorecard would make the two disagree."""
+    consult_config = review_config()
+    await make_review(consult_config, finalize=False)
+    write(consult_config, "UPDATE reviews SET status = ?", status)
+    write(
+        consult_config,
+        "UPDATE review_consultations SET status = 'failed', error_code = 'not_started' "
+        "WHERE agent_id = 'gemini-x'",
+    )
+
+    result = report(consult_config, scorecard)
+
+    assert [r["agent_id"] for r in result["reviewers"]] == ["codex-sol"]  # gemini-x never ran
+    codex = result["reviewers"][0]
+    assert codex["asked"] == 1 and codex["answered"] == 1 and codex["turns"] == 1
+    assert codex["kept"] is None  # no synthesis, so nothing to count as kept
+
+
+async def test_a_review_that_reached_no_reviewer_is_not_scored(review_config):
     consult_config = review_config()
     await make_review(consult_config, finalize=False)
     write(consult_config, "UPDATE reviews SET status = 'running'")
+    write(
+        consult_config,
+        "UPDATE review_consultations SET status = 'failed', error_code = 'not_started'",
+    )
 
     result = report(consult_config, scorecard)
 
@@ -578,6 +606,21 @@ def test_a_missing_config_file_is_its_own_sentence(cli, monkeypatch, tmp_path):
         main(["history"])
 
     assert "config not found" in str(done.value)
+
+
+async def test_a_count_too_big_for_a_date_or_an_integer_is_a_usage_error(cli, review_config):
+    """Unbounded, `--days` overflows `datetime` and `--limit` overflows SQLite, but only
+    once there is a database to read, so the refusal has to come from the parser."""
+    consult_config = review_config()
+    await make_review(consult_config)
+
+    def code(*args):
+        return cli(*args, consult_config=consult_config)[0]
+
+    assert code("usage", "--days", "1000000000") == 2
+    assert code("scorecard", "--days", "3651") == 2
+    assert code("history", "--limit", str(10**30)) == 2
+    assert _parser().parse_args(["usage", "--days", "3650"]).days == 3650
 
 
 def test_a_bad_option_is_a_usage_error_and_help_is_not_one(cli):
