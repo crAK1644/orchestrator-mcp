@@ -19,7 +19,13 @@ import pytest
 from orchestrator_mcp.consult.adapters.base import AdapterResult, AgentStatus
 from orchestrator_mcp.consult.config import ConsultConfig
 from orchestrator_mcp.consult.contract import ConsultationContent
-from orchestrator_mcp.contract import Usage, redact, scrub_json, secret_lines
+from orchestrator_mcp.contract import (
+    Usage,
+    redact,
+    scrub_json,
+    secret_lines,
+    suspect_lines,
+)
 from orchestrator_mcp.review.service import ReviewService
 
 from .conftest import agent
@@ -148,6 +154,42 @@ def test_the_preview_reports_the_line_a_credential_starts_on():
 
     assert secret_lines(f"a\nb\n{key}") == [3]
     assert secret_lines("a\nDB_PASSWORD=hunter2hunter2") == [2]
+
+
+RANDOM = "q7Xk2mVb9Lr4Tz8WnC3pYd6HfJ1sGa5E"  # 32 characters, no vendor prefix
+
+
+def test_a_long_random_token_no_pattern_names_is_a_suspect():
+    assert secret_lines(f"key {RANDOM}") == []
+    assert suspect_lines(f"a\nkey {RANDOM}\nb") == [2]
+    assert suspect_lines(f"{RANDOM[:20]}") == []  # too short to call
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "test_a_preset_no_step_or_agent_can_honour_fails_at_config_load",
+        "OrchestratorMcpServerConfigurationLoader",
+        "workflow_plan_step-and-friends",
+        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        "3b2c1a0e-9d8f-4a7b-8c6d-5e4f3a2b1c0d",
+        "https://github.com/crAK1644/orchestrator-mcp/pull/56/files#diff-abc",
+        "src/orchestrator_mcp/review/diff_and_friends/with/a/very/long/path.py",
+        '"integrity": "sha512-Zx9Qw3Rt7Yu1Io5Pa8Sd2Fg4Hj6Kl0Xc9Vb8Nm7Qw3Er5Ty6Ui=="',
+        "max_length=MAX_LIST_ITEMS, default_factory=ReviewPolicy",
+        "pydantic_core-2.41.3-cp311-cp311-manylinux_2_17_aarch64.whl",
+        "[redacted]" * 4,
+    ],
+)
+def test_code_and_hashes_are_not_suspects(text):
+    assert suspect_lines(text) == []
+
+
+def test_a_line_secret_lines_already_reported_is_not_reported_twice():
+    text = f"AUTH = {OTHER} and {RANDOM}"
+
+    assert secret_lines(text) == [1]
+    assert suspect_lines(text) == []
 
 
 def test_scrubbing_covers_mapping_keys_and_non_list_collections():
@@ -479,3 +521,23 @@ def test_the_reviewers_own_history_is_out_of_reach():
     # flow, so the README names the flows rather than making one blanket claim.
     assert "An ordinary consultation sends its original material" in guardrail
     assert "the Codex adapter opens the rollout file" in guardrail
+
+
+async def test_a_suspect_is_advisory_it_is_reported_by_position_and_blocks_nothing(build):
+    service = await build()
+    plan = await service.plan(goal="review this", context=f"a = 1\nTOKEN_ISH = '{RANDOM}'\n")
+
+    assert plan.error is None, plan.error
+    assert plan.plan.secret_hits == []
+    assert [(h.field, h.line) for h in plan.plan.suspect_hits] == [("context", 2)]
+    assert RANDOM not in plan.model_dump_json()  # positions, never values
+    ran = await service.run(plan.review_id, plan.plan.confirm_token)
+    assert ran.error is None, ran.error
+
+
+async def test_a_real_credential_shape_is_a_secret_hit_and_not_also_a_suspect(build):
+    service = await build()
+    plan = await service.plan(goal="review this", context=f"AUTH = {OTHER}")
+
+    assert [(h.field, h.line) for h in plan.plan.secret_hits] == [("context", 1)]
+    assert plan.plan.suspect_hits == []

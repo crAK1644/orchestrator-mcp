@@ -11,7 +11,9 @@ here, so reaching for it costs none of the independence above.
 
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
 from typing import Any
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -132,6 +134,55 @@ def secret_lines(text: str) -> list[int]:
     lives.
     """
     return [text.count("\n", 0, match.start()) + 1 for match in _SECRETS.finditer(text)]
+
+
+# Candidate tokens for `suspect_lines`. No `/` and no `=`, so a path, a URL and the
+# `name=value` of a keyword argument or an environment line fall apart, and only a run
+# that is one unbroken token is looked at.
+_TOKEN = re.compile(r"[A-Za-z0-9+_-]{24,}")
+_NOT_A_SECRET = re.compile(
+    r"[0-9a-f]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|sha\d+-.*",
+    re.IGNORECASE,
+)
+SUSPECT_MIN_ENTROPY = 4.0  # bits per character
+SUSPECT_MIN_CLASSES = 3  # of lower, upper, digit, symbol
+# Random base64 is about 3% `+_-`; a wheel tag, a snake_case name or a kebab-case one is
+# well over a tenth. That is what separates them at the same entropy.
+SUSPECT_MAX_SYMBOL_SHARE = 0.10
+
+
+def _looks_random(token: str) -> bool:
+    if _NOT_A_SECRET.fullmatch(token):
+        return False
+    counts = Counter(token)
+    entropy = -sum(n / len(token) * math.log2(n / len(token)) for n in counts.values())
+    classes = (
+        any(c.islower() for c in token)
+        + any(c.isupper() for c in token)
+        + any(c.isdigit() for c in token)
+        + any(not c.isalnum() for c in token)
+    )
+    symbols = sum(not c.isalnum() for c in token)
+    return (
+        entropy >= SUSPECT_MIN_ENTROPY
+        and classes >= SUSPECT_MIN_CLASSES
+        and symbols <= SUSPECT_MAX_SYMBOL_SHARE * len(token)
+    )
+
+
+def suspect_lines(text: str) -> list[int]:
+    """1-based line numbers holding a long token that looks random.
+
+    For the credential `secret_lines` has no pattern for. A guess, so it errs toward
+    saying nothing: hex, UUIDs and integrity hashes are left alone, and so is any line
+    `secret_lines` already reported. Positions only, for the same reason.
+    """
+    known = set(secret_lines(text))
+    return [
+        n
+        for n, line in enumerate(text.split("\n"), 1)
+        if n not in known and any(_looks_random(t) for t in _TOKEN.findall(line))
+    ]
 
 
 def scrub_json(value: Any) -> Any:

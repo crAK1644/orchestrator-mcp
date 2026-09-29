@@ -664,7 +664,9 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         credential-shaped was found (positions only, never values). Secret detection
         is best-effort pattern matching; a credential with no recognizable shape
         survives it, so the plan raises the odds the user notices and guarantees
-        nothing. This checkpoint is advisory: MCP gives this server no separate
+        nothing. `suspect_hits` are lines with a long random-looking token no pattern
+        names: a guess, so it never blocks. Read those lines yourself before showing
+        the plan. This checkpoint is advisory: MCP gives this server no separate
         human channel, so it binds and audits the scope but cannot prove which human
         saw or approved it.
 

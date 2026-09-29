@@ -25,7 +25,7 @@ Credential-shaped values are masked on a best-effort basis, but when masking hap
 - **Workflow steps** are masked before they are stored and before they are sent.
 - **Ordinary consultations** send your material as given. Only the stored copy is masked.
 
-Pattern matching can miss a secret that has no recognizable shape, so do not rely on it to catch one.
+Pattern matching can miss a secret that has no recognizable shape, so do not rely on it to catch one. A review's preview also lists lines holding a long random-looking token as `suspect_hits`, a guess that only warns.
 
 Each agent CLI also keeps its own history, for example `~/.codex/sessions/`. Orchestrator cannot redact or delete those files. Use the vendor's own tools for them.
 
