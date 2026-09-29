@@ -3,7 +3,7 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
-## Unreleased
+## 0.9.0 — 2026-09-29
 
 - `orchestrator_apply_fixes` lists the Important findings a selection leaves out in
   `fix_plan.importants_omitted`, as it already did for Critical ones. A finding the
