@@ -24,6 +24,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json
+from ..files import read_files
 from ..log import get_logger
 from ..progress import step as progress_step
 from ..spend import refusal as spend_refusal
@@ -34,6 +35,8 @@ from .adapters.base import GRACE_S, AgentStatus, ConsultAdapter
 from .adapters.claude_cli import PREFLIGHT_TIMEOUT_S
 from .config import AgentConfig, ConsultConfig
 from .contract import (
+    MAX_CONTEXT_CHARS,
+    MAX_CONTEXT_PATHS,
     ConsultAgentInfo,
     ConsultAgentsResponse,
     ConsultationListing,
@@ -84,8 +87,9 @@ class ConsultService:
         self.host_runtime = host_runtime
         self.router = ConsultRouter(config, host_runtime)
         self.store = store or ConsultStore(config.database_path, config.store_full_content)
-        self.request_model = build_consult_request(sorted(config.agents))
-        self.many_request_model = build_consult_many_request(sorted(config.agents))
+        paths_enabled = bool(config.context_roots)
+        self.request_model = build_consult_request(sorted(config.agents), paths_enabled)
+        self.many_request_model = build_consult_many_request(sorted(config.agents), paths_enabled)
         # What every turn is passed through on its way into the database, and only
         # there -- the adapter is still handed the caller's own text, because a
         # consultation answering a redacted question is not the same consultation.
@@ -153,6 +157,28 @@ class ConsultService:
                 started,
             )
 
+    async def _read_context_paths(self, paths: list[str], context: str | None) -> str:
+        """The text of `context_paths`, or a `ValueError` saying why not.
+
+        Off the event loop: it opens files. Refuses a credential-shaped file because
+        consult sends at once, with no preview for the caller to read first.
+        """
+        if context is not None:
+            raise ValueError(
+                "pass `context` or `context_paths`, not both: two sources for one "
+                "field is ambiguous about what would be sent"
+            )
+        text, _ = await asyncio.to_thread(
+            read_files,
+            paths,
+            self.config.context_roots,
+            setting="consult.context_roots",
+            max_items=MAX_CONTEXT_PATHS,
+            limit=MAX_CONTEXT_CHARS,
+            refuse_secrets=True,
+        )
+        return text
+
     async def consult_many(
         self, *, target_agents: list[str] | None = None, count: int = 3, **kwargs: Any
     ) -> ConsultManyResponse:
@@ -163,6 +189,26 @@ class ConsultService:
         """
         group_id = uuid4()
         kwargs["conversation_label"] = f"group {group_id}"
+        # Read once, here, so every member is asked about the same bytes and the disk
+        # is touched once rather than once per agent.
+        if paths := kwargs.pop("context_paths", None):
+            try:
+                kwargs["context"] = await self._read_context_paths(paths, kwargs.get("context"))
+            except ValueError as exc:
+                requested = kwargs.get("capability")
+                return ConsultManyResponse(
+                    group_id=group_id,
+                    results=[
+                        _failed(
+                            None,
+                            requested if isinstance(requested, str) else "<invalid>",
+                            SourceMode.AUTO,
+                            ConsultErrorCode.INVALID_REQUEST,
+                            str(exc),
+                            time.perf_counter(),
+                        )
+                    ],
+                )
         agents = list(dict.fromkeys(target_agents or [])) or self.router.select_many(
             str(kwargs.get("capability")), count
         )
@@ -234,6 +280,16 @@ class ConsultService:
         except Exception as exc:
             return _failed(None, capability, SourceMode.AUTO, ConsultErrorCode.INVALID_REQUEST,
                            str(exc), started)
+
+        # The field exists only when `consult.context_roots:` is set, so a model built
+        # without it has no attribute to read.
+        if paths := getattr(request, "context_paths", None):
+            try:
+                text = await self._read_context_paths(paths, request.context)
+            except ValueError as exc:
+                return _failed(None, capability, request.source_mode,
+                               ConsultErrorCode.INVALID_REQUEST, str(exc), started)
+            request = request.model_copy(update={"context": text, "context_paths": None})
 
         try:
             source_mode = resolve_source_mode(request.source_mode, request.context)

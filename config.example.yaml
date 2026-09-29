@@ -39,6 +39,12 @@ consult:
                             # cheap agent the lower priority and a margin of 5, and
                             # its 92 beats a paid agent's 95.
   protocol_version: consult-v1
+  context_roots: []         # absolute after ~/$VAR expansion, and a directory that
+                            # exists. `orchestrator_consult` may read files named in
+                            # `context_paths` only beneath these; empty leaves the
+                            # argument out of the tool schema altogether. Unlike a
+                            # review there is no preview step, so a file holding
+                            # something credential-shaped is refused, not masked.
 
   # Ceilings, all optional and all off by default. Checked before a request goes
   # out, so what they buy is that the *next* request after the ceiling is crossed is

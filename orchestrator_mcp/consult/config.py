@@ -391,6 +391,24 @@ class ConsultConfig(BaseModel):
     # Absent ceilings, unlike `review:` and `workflow:`, do not gate a tool -- they
     # are a bound on tools that exist either way.
     spend: SpendPolicy = Field(default_factory=SpendPolicy)
+    # Files `orchestrator_consult` may read for a caller through `context_paths` must
+    # resolve beneath one of these. Empty means the argument is not advertised at all.
+    context_roots: list[Path] = Field(default_factory=list)
+
+    @field_validator("context_roots")
+    @classmethod
+    def _expand_context_roots(cls, value: list[Path]) -> list[Path]:
+        expanded: list[Path] = []
+        for root in value:
+            path = Path(os.path.expandvars(str(root))).expanduser()
+            if str(path).strip() in ("", "."):
+                raise ValueError("a context root must name a directory, not a blank path")
+            if not path.is_absolute():
+                raise ValueError(f"context root `{path}` must be absolute")
+            if path == Path(path.anchor):
+                raise ValueError(f"`{path}` is a filesystem root and cannot be a context root")
+            expanded.append(path)
+        return expanded
 
     @field_validator("database_path", "managed_agents_path")
     @classmethod
@@ -635,6 +653,7 @@ def load_consult_config(config: dict[str, Any]) -> ConsultConfig | None:
         check_roots(parsed.review.roots, "review")
     if parsed.workflow:
         check_roots(parsed.workflow.roots, "workflow")
+    check_roots(parsed.context_roots, "context")
     return parsed
 
 

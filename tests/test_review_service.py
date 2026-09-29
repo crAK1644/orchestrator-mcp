@@ -15,6 +15,7 @@ import uuid
 
 import pytest
 
+from orchestrator_mcp import files as files_module
 from orchestrator_mcp.consult.adapters.base import (
     AdapterError,
     AdapterResult,
@@ -29,7 +30,6 @@ from orchestrator_mcp.consult.contract import (
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.store import ConsultStore
 from orchestrator_mcp.contract import Usage
-from orchestrator_mcp.review import service as review_service
 from orchestrator_mcp.review.contract import (
     MAX_GOAL_CHARS,
     MAX_REVIEWERS,
@@ -294,7 +294,7 @@ async def test_a_context_path_replaced_by_a_symlink_during_open_is_refused(
             "roots": [str(allowed)],
         }
     )
-    real_open = review_service.os.open
+    real_open = files_module.os.open
     replaced = False
 
     def swap_before_open(path, flags, *args, **kwargs):
@@ -305,7 +305,7 @@ async def test_a_context_path_replaced_by_a_symlink_during_open_is_refused(
             target.symlink_to(outside)
         return real_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(review_service.os, "open", swap_before_open)
+    monkeypatch.setattr(files_module.os, "open", swap_before_open)
     response = await service.plan(goal="review", context_paths=[str(target)])
 
     assert replaced
