@@ -150,8 +150,9 @@ _NOT_A_SECRET = re.compile(
     re.IGNORECASE,
 )
 # `sha512-` and the base64 after it, `/` included: cut out whole, before `_TOKEN` would
-# split it at a `/` and leave a fragment that has lost its prefix.
-_INTEGRITY = re.compile(r"sha\d+-[A-Za-z0-9+/]+=*")
+# split it at a `/` and leave a fragment that has lost its prefix. It has to start a
+# token: inside `Q7xsha256-...` it would cut a random token down to `Q7x` and hide it.
+_INTEGRITY = re.compile(r"(?<![A-Za-z0-9+_-])sha\d+-[A-Za-z0-9+/]+=*")
 # Letters and nothing else, a number on the end at most: `PascalCase`, `camelCase`,
 # `LoaderV2`. Random text spreads its digits through it.
 _WORD = re.compile(r"[A-Za-z]+\d*")
