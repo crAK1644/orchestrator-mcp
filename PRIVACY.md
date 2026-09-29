@@ -65,13 +65,15 @@ It does not read your assistant's conversation history or memory. What it knows 
 
 ## Retention and deletion
 
-Only the `isolated_write` files above expire, after 7 days. Database records stay until you delete them, with these tools:
+The `isolated_write` files above expire after 7 days. Database records stay until you delete them, unless you set `retention_days` in the `consult:` block: then, at each server start, finished consultations, reviews and workflows with no activity for that many days are deleted. Delete them yourself with these tools:
 
 - `orchestrator_delete_consultation`
 - `orchestrator_delete_review`
 - `orchestrator_delete_workflow`
 
 For bulk deletion, `orchestrator_request_delete_all_consultations`, `orchestrator_request_delete_all` and `orchestrator_request_delete_all_workflows` each preview a delete and return a token, which you pass to the matching `delete_all` tool. To remove everything at once, delete the database file.
+
+The `usage`, `history`, `scorecard` and `export` commands of `orchestrator-mcp-server` read that database from a terminal and print it, and `export` prints the prompts and answers of one record. Stored text is masked as it is printed, which also covers records written before a pattern existed, but masking is best effort: treat the output like the database itself.
 
 Uninstalling the plugin leaves `~/.orchestrator-mcp/` in place. Delete that directory to remove all of Orchestrator's data.
 

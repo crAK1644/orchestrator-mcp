@@ -53,9 +53,14 @@ def review_config(config, host_claude):
 
 
 async def make_review(consult_config, *, goal="review the parser", context="def parse(): ...",
-                      answer=FINDINGS, finalize=True, fix_round=None):
-    """One real review in the store the dashboard reads. Returns its id."""
-    adapters = {agent_id: StubAdapter(answer) for agent_id in consult_config.agents}
+                      answer=FINDINGS, finalize=True, fix_round=None, adapters=None,
+                      combined_findings=None, parent_review_id=None):
+    """One real review in the store the dashboard reads. Returns its id.
+
+    `combined_findings` is called with the reviewers' results, because a finding's id
+    is only known once they have answered.
+    """
+    adapters = adapters or {agent_id: StubAdapter(answer) for agent_id in consult_config.agents}
     service = await StubService(consult_config, "claude", adapters=adapters).open()
     try:
         planned = await service.plan(
@@ -63,6 +68,7 @@ async def make_review(consult_config, *, goal="review the parser", context="def 
             goal=goal,
             material=[{"label": "a.py", "kind": "file", "locator": "lines 1-40", "chars": 40}],
             context=context,
+            parent_review_id=parent_review_id,
         )
         assert planned.error is None, planned.error
         ran = await service.run(
@@ -73,21 +79,22 @@ async def make_review(consult_config, *, goal="review the parser", context="def 
         assert ran.error is None, ran.error
         if finalize:
             criticals = [f for result in ran.results for f in result.findings]
+            combined = (
+                combined_findings(ran.results)
+                if combined_findings
+                else [
+                    {
+                        "problem": "the whole file is read into memory",
+                        "severity": "critical",
+                        "location": "a.py:1",
+                        "agreed_by": sorted(consult_config.agents),
+                        "source_finding_ids": [f.finding_id for f in criticals],
+                        "proposed_action": "stream it",
+                    }
+                ]
+            )
             done = await service.finalize(
-                planned.review_id,
-                SUMMARY
-                | {
-                    "combined_findings": [
-                        {
-                            "problem": "the whole file is read into memory",
-                            "severity": "critical",
-                            "location": "a.py:1",
-                            "agreed_by": sorted(consult_config.agents),
-                            "source_finding_ids": [f.finding_id for f in criticals],
-                            "proposed_action": "stream it",
-                        }
-                    ]
-                },
+                planned.review_id, SUMMARY | {"combined_findings": combined}
             )
             assert done.error is None, done.error
         if fix_round is not None:

@@ -34,7 +34,7 @@ from mcp.shared.exceptions import MCPError
 from mcp.types import Completion, CompletionArgument, ToolAnnotations
 from pydantic import Field
 
-from . import cli
+from . import cli, reports
 from .commands import add_commands
 from .consult.config import (
     HOST_RUNTIME_ENV,
@@ -1264,6 +1264,13 @@ out of its own routing.
                  (default ~/.orchestrator-mcp/config.yaml; never overwrites)
   doctor         check the config, the database, and each agent's login,
                  reading the same environment variables the server does
+  usage [--days N] [--json]
+                 tokens and cost per agent and model (read-only)
+  history [--limit N] [--kind KIND] [--json]
+                 recent consultations, reviews and workflows, with their ids
+  scorecard [--days N] [--json]
+                 how each reviewer answered, and what became of its findings
+  export ID      one record and everything it owns, as JSON (an id or a prefix)
   -h, --help     print this
   -V, --version  print the installed version
 """
@@ -1275,6 +1282,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise SystemExit(cli.init(args[1:]))
     if args == ["doctor"]:
         raise SystemExit(cli.doctor(load_config))
+    if args[:1] and args[0] in {"usage", "history", "scorecard", "export"}:
+        raise SystemExit(reports.run(args, load_config))
     # The unknown one first: `--help --helpp` is a typo either way, and answering the
     # flag it did spell right would send the reader off believing the other one took.
     unknown = [arg for arg in args if arg not in {"-h", "--help", "-V", "--version"}]
