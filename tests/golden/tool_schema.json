@@ -1439,6 +1439,30 @@
           "default": null,
           "title": "Context Paths"
         },
+        "diff_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diff Ref"
+        },
+        "diff_repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diff Repo"
+        },
         "web": {
           "default": false,
           "title": "Web",

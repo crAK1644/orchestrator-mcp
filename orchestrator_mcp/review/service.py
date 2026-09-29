@@ -83,6 +83,7 @@ from .contract import (
     SecretHit,
     missing_serious,
 )
+from .diff import read_diff
 from .store import REVIEW_LEASE_SLACK_S, Review, ReviewStore, _now, canonical, sha256
 
 log = get_logger(__name__)
@@ -140,6 +141,8 @@ class ReviewService:
         material: list[dict[str, Any]] | None = None,
         context: str | None = None,
         context_paths: list[str] | None = None,
+        diff_ref: str | None = None,
+        diff_repo: str | None = None,
         web: bool = False,
         reviewers: list[str] | None = None,
         parent_review_id: UUID | str | None = None,
@@ -165,7 +168,7 @@ class ReviewService:
             await self.open()
             return await self._plan(
                 started, review_id, mode, goal, material or [], context, context_paths,
-                web, reviewers, parent_review_id, host_model,
+                diff_ref, diff_repo, web, reviewers, parent_review_id, host_model,
                 workflow_id, step_id, excluded_identities or {},
             )
         except (StoreError, ValueError) as exc:
@@ -189,6 +192,8 @@ class ReviewService:
         material: list[dict[str, Any]],
         context: str | None,
         context_paths: list[str] | None,
+        diff_ref: str | None,
+        diff_repo: str | None,
         web: bool,
         reviewers: list[str] | None,
         parent_review_id: UUID | str | None,
@@ -208,7 +213,21 @@ class ReviewService:
         # scan, the redaction, the approval hash, the stored row -- runs over the
         # real material rather than over a list of filenames.
         material_verified = False
-        if context_paths:
+        if diff_repo is not None and diff_ref is None:
+            raise ValueError("`diff_repo` only means something with `diff_ref`")
+        if diff_ref is not None:
+            if context is not None or context_paths:
+                raise ValueError(
+                    "pass `diff_ref`, or `context` / `context_paths`, not a mix: two "
+                    "sources for one field is ambiguous about what would be sent"
+                )
+            roots = self.config.review.roots if self.config.review is not None else []
+            context, diff_item = await read_diff(diff_ref, diff_repo, roots)
+            # The host's entries stay, but the pinned endpoints are always listed: they
+            # are what the approval covers. Any host entry leaves the manifest unverified.
+            material_verified = not manifest
+            manifest = [diff_item, *manifest]
+        elif context_paths:
             if context is not None:
                 raise ValueError(
                     "pass `context` or `context_paths`, not both: two sources for one "

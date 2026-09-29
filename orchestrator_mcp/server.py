@@ -649,6 +649,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         material: list[MaterialItem] | None = None,
         context: str | None = None,
         context_paths: list[str] | None = None,
+        diff_ref: str | None = None,
+        diff_repo: str | None = None,
         web: bool = False,
         reviewers: list[str] | None = None,
         parent_review_id: UUID | None = None,
@@ -666,12 +668,20 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         human channel, so it binds and audits the scope but cannot prove which human
         saw or approved it.
 
-        Give the material as **either** `context` (a string you write) **or**
-        `context_paths` (files this server reads for you). Both together is refused.
+        Give the material as **one of** `context` (a string you write), `context_paths`
+        (files this server reads for you) or `diff_ref`. Any two together is refused.
         `context_paths` is how a large review fits in one call: a whole-branch diff
         runs to hundreds of kilobytes, which you cannot type into a tool argument but
         can write to a file and name here. The reviewer never sees a path either way
         -- it runs with no filesystem at all -- so what reaches it is the bytes.
+
+        `diff_ref` skips the file: `main..HEAD`, `main...HEAD` (against the merge
+        base) or a single commit (against its first parent). The server runs `git diff`
+        itself on a repository beneath `review.roots` -- `diff_repo`, which may be
+        omitted when there is exactly one root. Only committed changes: commit first,
+        or pass `context`. Both sides are pinned to commit SHAs in the manifest, and
+        the diff's file paths and hunks are what the reviewer receives. To recheck
+        fixes, use `<the reviewed tip>..HEAD` with `parent_review_id`.
 
         `material` is your own manifest of what went into `context`. When you wrote
         `context` yourself this server cannot check the two agree: it is a disclosure
@@ -703,6 +713,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
             material=[m.model_dump(mode="json") for m in (material or [])],
             context=context,
             context_paths=context_paths,
+            diff_ref=diff_ref,
+            diff_repo=diff_repo,
             web=web,
             reviewers=reviewers,
             parent_review_id=parent_review_id,

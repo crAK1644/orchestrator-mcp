@@ -566,8 +566,41 @@ consult:
   review:
     reviewers: [codex]          # standard: exactly one
     deep_reviewers: [codex, claude]  # deep: one to five
-    roots: [~/src]              # context_paths is restricted to these trees
+    roots: [~/src]              # context_paths and diff_ref are restricted to these trees
 ```
+
+For a branch review, skip the file: `diff_ref` lets Orchestrator run the diff itself.
+
+```text
+orchestrator_review(goal="...", diff_ref="main...HEAD", diff_repo="~/src/myproject")
+```
+
+`A..B` diffs the two commits, `A...B` diffs from their merge base (what a pull request
+shows), and a single commit `X` is `X^..X` (a merge means its first parent). `diff_repo`
+may be left out when `roots` names exactly one directory. `diff_ref` cannot be combined
+with `context` or `context_paths`.
+
+- Both ends are resolved to commit SHAs before the diff runs, and the plan's manifest
+  shows them. Moving the branch between the plan and the run changes the approval hash,
+  so the token no longer fits.
+- Only committed changes. The working tree and the index are not read; commit first or
+  pass the diff through `context`.
+- The repository, and the top level of the repository it sits in, must both be beneath
+  `roots`. Pointing `diff_repo` at a subdirectory of a repository outside them is refused.
+  So is a checkout whose git data lives elsewhere: a linked worktree of a repository
+  outside `roots`, a `.git` file pointing out, or `objects/info/alternates` (a
+  `git clone --shared`) naming a directory outside.
+- `git` runs with external diff programs, `textconv` filters, replacement refs and lazy
+  fetching off, so a repository whose config names a program cannot make this run it. In
+  a partial clone a diff that needs a missing blob fails instead of fetching it. Binary
+  files appear as "differ", not as bytes.
+- A manifest you pass as `material` is kept, listed after the pinned endpoints, and leaves
+  `material_verified` false.
+- One limit: git opens the directory by name after the check, so someone who can already
+  write inside a root and swap the repository for a symlink in that instant can redirect
+  it. Closing that needs an OS sandbox around `git`.
+- The reviewer receives the diff, whose headers carry file paths relative to the repository,
+  never the repository's own location.
 
 `context_paths` is a convenience for material too large to paste into a tool argument.
 Orchestrator reads each named file beneath those roots and sends its contents to the
