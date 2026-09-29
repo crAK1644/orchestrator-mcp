@@ -76,6 +76,7 @@ PROTOCOL_VERSION = "consult-v1"
 MAX_PROMPT_CHARS = 100_000
 MAX_CONTEXT_CHARS = 1_000_000
 MAX_LABEL_CHARS = 200
+MAX_CONTEXT_PATHS = 50
 
 
 class SourceMode(str, Enum):
@@ -310,7 +311,33 @@ def _agent_enum(agent_ids: list[str]):
     return patch
 
 
-def build_consult_request(agent_ids: list[str]) -> type[ConsultRequest]:
+def _context_paths_field() -> dict[str, Any]:
+    """The argument that lets a caller name files for this server to read.
+
+    Added only when `consult.context_roots:` is set. An argument that can only refuse
+    is one more thing a calling model tries; leaving it out of the schema says the
+    feature is off, and `extra="forbid"` refuses a caller who sends it anyway.
+    """
+    return {
+        "context_paths": (
+            list[str] | None,
+            Field(
+                default=None,
+                max_length=MAX_CONTEXT_PATHS,
+                description=(
+                    "Files this server reads for you, instead of `context`. Each must "
+                    "resolve beneath a configured `consult.context_roots:` entry. The "
+                    "agent receives the contents, never the path, and a file holding "
+                    "something credential-shaped is refused. Not together with `context`."
+                ),
+            ),
+        )
+    }
+
+
+def build_consult_request(
+    agent_ids: list[str], context_paths: bool = False
+) -> type[ConsultRequest]:
     """Specialize `ConsultRequest` to the configured agents."""
     if not agent_ids:
         raise ValueError("no consult agents configured")
@@ -326,10 +353,13 @@ def build_consult_request(agent_ids: list[str]) -> type[ConsultRequest]:
                 json_schema_extra=_agent_enum(agent_ids),
             ),
         ),
+        **(_context_paths_field() if context_paths else {}),
     )
 
 
-def build_consult_many_request(agent_ids: list[str]) -> type[BaseModel]:
+def build_consult_many_request(
+    agent_ids: list[str], context_paths: bool = False
+) -> type[BaseModel]:
     """`ConsultRequest` for a panel: every member starts fresh, under the group's label,
     so no `consultation_id`, no `conversation_label`, and a list of agents or a count
     in place of one agent."""
@@ -359,6 +389,7 @@ def build_consult_many_request(agent_ids: list[str]) -> type[BaseModel]:
                 description="How many to ask when `target_agents` is empty.",
             ),
         ),
+        **(_context_paths_field() if context_paths else {}),
     )
 
 

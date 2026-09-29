@@ -508,6 +508,7 @@ Request fields:
 | `capability` | yes | `coding`, `research`, `writing`, `reasoning`, `review`, `planning`, `prompt_authoring`, `testing`, or `synthesis`. |
 | `prompt` | yes | Task or question, up to 100,000 characters. |
 | `context` | no | Evidence, up to 1,000,000 characters. |
+| `context_paths` | no | Up to 50 files this server reads instead of `context`; not together with it. Exists only once `consult.context_roots` is set. |
 | `source_mode` | no | `auto`, `document`, `web`, or `model`. |
 | `consultation_id` | no | Return the previous ID to continue the conversation. |
 | `target_agent` | no | Choose one configured agent instead of automatic routing. |
@@ -526,6 +527,21 @@ Agent configuration:
 | `web_search` | `false` | Permit `source_mode: web` for this agent. |
 | `reasoning_effort` | unset | `low`, `medium`, `high`, `xhigh`, or `max`; Codex only. |
 | `timeout_s` | unset | Limit for one turn with this agent, overriding `consult.timeout_s`. |
+
+`context_paths` uses the same reader as a review's (strict resolve, `O_NOFOLLOW` walk, no
+FIFOs, no symlinks out), against its own list:
+
+```yaml
+consult:
+  context_roots: [~/src]   # empty: the argument is not in the tool schema at all
+```
+
+A review previews what it will send and can mask a hit; a consultation sends at once. So a
+file with something credential-shaped in it is refused, naming the path and line numbers
+but never the value. Pass a masked excerpt through `context` instead. The file's path is
+the heading the agent sees, so an absolute path can disclose a username or directory
+layout. `orchestrator_consult_many` reads the files once and gives every member the same
+bytes.
 
 </details>
 
