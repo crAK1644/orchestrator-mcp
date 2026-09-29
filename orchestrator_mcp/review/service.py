@@ -1163,6 +1163,15 @@ class ReviewService:
         response = await self._get(started, review)
         chosen = self._selected(response.results, finding_ids)
         picked = {f.finding_id for f in chosen}
+
+        def left_out(severity: str) -> list[str]:
+            return [
+                f.finding_id
+                for r in response.results
+                for f in r.findings
+                if f.severity == severity and f.finding_id not in picked
+            ][:MAX_FINDINGS]
+
         return response.model_copy(
             update={
                 "fix_plan": FixPlan(
@@ -1170,12 +1179,11 @@ class ReviewService:
                     # Named here rather than found again by the recheck: a selection
                     # that leaves out a Critical is the synthesis failure one stage
                     # later, and the host should be told before it starts editing.
-                    criticals_omitted=[
-                        f.finding_id
-                        for r in response.results
-                        for f in r.findings
-                        if f.severity == "critical" and f.finding_id not in picked
-                    ][:MAX_FINDINGS],
+                    criticals_omitted=left_out("critical"),
+                    # The same check one severity down. Raw reviewer findings, so one
+                    # the synthesis rejected and the host meant to skip is listed too:
+                    # a prompt to look, not a to-do list.
+                    importants_omitted=left_out("important"),
                     steps=FIX_STEPS,
                 )
             }

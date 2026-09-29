@@ -85,6 +85,52 @@ async def test_a_selection_that_leaves_out_a_critical_says_so(build):
     assert response.fix_plan.criticals_omitted == [critical_id(run)]
 
 
+THREE_SEVERITIES = (
+    'Three things.\n\n```json\n{"findings": ['
+    '{"location": "a.py:1", "severity": "critical", "why": "unbounded read", '
+    '"example": "a 2GB file", "fix": "stream it"}, '
+    '{"location": "a.py:5", "severity": "important", "why": "swallowed error", '
+    '"example": "a bad path", "fix": "raise it"}, '
+    '{"location": "a.py:9", "severity": "minor", "why": "stale comment", '
+    '"example": "line 9", "fix": "delete it"}]}\n```'
+)
+
+
+def ids(run, severity: str) -> list[str]:
+    return [f.finding_id for r in run.results for f in r.findings if f.severity == severity]
+
+
+async def test_a_selection_that_leaves_out_an_important_says_so(build):
+    service = await build({aid: StubAdapter(THREE_SEVERITIES) for aid in REVIEWERS})
+    run = await reviewed(service)
+
+    response = await service.fix_plan(run.review_id, ids(run, "critical"))
+
+    assert response.fix_plan.importants_omitted == ids(run, "important")
+    assert response.fix_plan.importants_omitted
+    assert response.fix_plan.criticals_omitted == []
+
+
+async def test_selecting_the_importants_empties_the_list(build):
+    service = await build({aid: StubAdapter(THREE_SEVERITIES) for aid in REVIEWERS})
+    run = await reviewed(service)
+
+    response = await service.fix_plan(run.review_id, ids(run, "critical") + ids(run, "important"))
+
+    assert response.fix_plan.importants_omitted == []
+    assert response.fix_plan.criticals_omitted == []
+
+
+async def test_each_omission_list_holds_only_its_own_severity(build):
+    service = await build({aid: StubAdapter(THREE_SEVERITIES) for aid in REVIEWERS})
+    run = await reviewed(service)
+
+    response = await service.fix_plan(run.review_id, ids(run, "important") + ids(run, "minor"))
+
+    assert response.fix_plan.criticals_omitted == ids(run, "critical")
+    assert response.fix_plan.importants_omitted == []
+
+
 async def test_the_fix_plan_of_a_finished_review_still_carries_its_synthesis(build):
     """Fixing normally happens after the synthesis, so `complete` is the common case
     here -- and a `complete` envelope without the summary is one the invariants

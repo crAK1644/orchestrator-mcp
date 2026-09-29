@@ -5,6 +5,9 @@ One line per change a user would notice. The full notes for each version are on 
 
 ## Unreleased
 
+- `orchestrator_apply_fixes` lists the Important findings a selection leaves out in
+  `fix_plan.importants_omitted`, as it already did for Critical ones. A finding the
+  synthesis rejected on purpose is listed too: it prompts a look, not a fix.
 - `usage`, `history`, `scorecard` and `export ID` subcommands print the database's
   spend, recent records, per-reviewer results and a masked JSON copy of one record. All
   are read-only: they never migrate the database (a WAL database may gain `-wal` and

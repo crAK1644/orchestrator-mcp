@@ -591,7 +591,7 @@ Finalization must preserve every machine-readable Critical and Important finding
 | `orchestrator_retry_review` | Re-run failed reviewers without discarding successful answers. |
 | `orchestrator_finalize_review` | Record the host's synthesis; the only path to `complete`. |
 | `orchestrator_cancel_review` | Cancel a review while retaining answers already received. |
-| `orchestrator_apply_fixes` | Return selected findings and fix steps. Changes no files. |
+| `orchestrator_apply_fixes` | Return selected findings and fix steps, and list the Critical and Important findings the selection leaves out. Changes no files. |
 | `orchestrator_record_fix_round` | Record the host's claim about a fix round. |
 | `orchestrator_test_reviewers` | Check installation and login readiness without sending project material. |
 | `orchestrator_get_review` / `orchestrator_list_reviews` | Read one review or recent review metadata. |
