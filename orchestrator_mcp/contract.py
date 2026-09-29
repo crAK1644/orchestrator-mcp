@@ -133,7 +133,12 @@ def secret_lines(text: str) -> list[int]:
     anywhere, and a preview that quoted the secret back would be one more place it
     lives.
     """
-    return [text.count("\n", 0, match.start()) + 1 for match in _SECRETS.finditer(text)]
+    lines, line, seen = [], 1, 0
+    for match in _SECRETS.finditer(text):  # ascending, so count only what is new
+        line += text.count("\n", seen, match.start())
+        seen = match.start()
+        lines.append(line)
+    return lines
 
 
 # Candidate tokens for `suspect_lines`. No `/` and no `=`, so a path, a URL and the
@@ -141,9 +146,15 @@ def secret_lines(text: str) -> list[int]:
 # that is one unbroken token is looked at.
 _TOKEN = re.compile(r"[A-Za-z0-9+_-]{24,}")
 _NOT_A_SECRET = re.compile(
-    r"[0-9a-f]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|sha\d+-.*",
+    r"[0-9a-f]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
     re.IGNORECASE,
 )
+# `sha512-` and the base64 after it, `/` included: cut out whole, before `_TOKEN` would
+# split it at a `/` and leave a fragment that has lost its prefix.
+_INTEGRITY = re.compile(r"sha\d+-[A-Za-z0-9+/]+=*")
+# Letters and nothing else, a number on the end at most: `PascalCase`, `camelCase`,
+# `LoaderV2`. Random text spreads its digits through it.
+_WORD = re.compile(r"[A-Za-z]+\d*")
 SUSPECT_MIN_ENTROPY = 4.0  # bits per character
 SUSPECT_MIN_CLASSES = 3  # of lower, upper, digit, symbol
 # Random base64 is about 3% `+_-`; a wheel tag, a snake_case name or a kebab-case one is
@@ -152,7 +163,7 @@ SUSPECT_MAX_SYMBOL_SHARE = 0.10
 
 
 def _looks_random(token: str) -> bool:
-    if _NOT_A_SECRET.fullmatch(token):
+    if _NOT_A_SECRET.fullmatch(token) or _WORD.fullmatch(token):
         return False
     counts = Counter(token)
     entropy = -sum(n / len(token) * math.log2(n / len(token)) for n in counts.values())
@@ -181,7 +192,8 @@ def suspect_lines(text: str) -> list[int]:
     return [
         n
         for n, line in enumerate(text.split("\n"), 1)
-        if n not in known and any(_looks_random(t) for t in _TOKEN.findall(line))
+        if n not in known
+        and any(_looks_random(t) for t in _TOKEN.findall(_INTEGRITY.sub(" ", line)))
     ]
 
 
