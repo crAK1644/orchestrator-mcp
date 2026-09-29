@@ -568,22 +568,30 @@ class ConsultStore:
         # simultaneous first calls both arrive here with no connection, and two
         # threads racing to create the schema is how one of them gets
         # "database is locked" instead of an envelope.
-        if self._connection is None:
-            async with self._open_lock:
-                if self._connection is None:
-                    # Published here rather than by the worker, because cancelling
-                    # this `await` releases the lock without stopping the thread.
-                    # A worker that assigned the field itself would land on a store
-                    # someone else has since opened -- or closed -- and reopen it
-                    # from the outside. Cancelled, the connection it built is simply
-                    # never taken, and goes when the discarded result does.
-                    self._connection = await asyncio.to_thread(self._open)
-                    if self.retention_days:
-                        await self._sweep(self.retention_days)
-        # Checked on every open, not only the first: a task that died comes back.
-        # No await between the check and the create, so two callers cannot both start one.
-        if self.retention_days and (self._retention_task is None or self._retention_task.done()):
-            self._retention_task = asyncio.create_task(self._retain(self.retention_days))
+        #
+        # The lock also orders `open` against `close`: `close` yields while the
+        # cancelled retention task unwinds, and an `open` in that gap would take the
+        # connection `close` is about to shut, or start a task `close` never saw.
+        async with self._open_lock:
+            fresh = self._connection is None
+            if fresh:
+                # Published here rather than by the worker, because cancelling
+                # this `await` releases the lock without stopping the thread.
+                # A worker that assigned the field itself would land on a store
+                # someone else has since opened -- or closed -- and reopen it
+                # from the outside. Cancelled, the connection it built is simply
+                # never taken, and goes when the discarded result does.
+                self._connection = await asyncio.to_thread(self._open)
+            # Checked on every open, not only the first: a task that died comes back.
+            # Under the lock, so neither two callers nor a `close` can interleave.
+            if self.retention_days and (
+                self._retention_task is None or self._retention_task.done()
+            ):
+                self._retention_task = asyncio.create_task(self._retain(self.retention_days))
+        if fresh and self.retention_days:
+            # Outside the lock: a long sweep of a large history must not hold up the
+            # callers that arrive once the connection is there.
+            await self._sweep(self.retention_days)
         return self
 
     def _open(self) -> sqlite3.Connection:
@@ -694,20 +702,21 @@ class ConsultStore:
         db.execute("COMMIT")
 
     async def close(self) -> None:
-        if self._retention_task is not None:
-            self._retention_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._retention_task
-        if self._connection is not None:
-            connection, self._connection = self._connection, None
+        async with self._open_lock:
+            if self._retention_task is not None:
+                self._retention_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._retention_task
+            if self._connection is not None:
+                connection, self._connection = self._connection, None
 
-            def locked_close() -> None:
-                # A sweep cancelled mid-`to_thread` still finishes its statement;
-                # closing under the lock waits for it instead of closing beneath it.
-                with self._lock:
-                    connection.close()
+                def locked_close() -> None:
+                    # A sweep cancelled mid-`to_thread` still finishes its statement;
+                    # closing under the lock waits for it instead of closing beneath it.
+                    with self._lock:
+                        connection.close()
 
-            await asyncio.to_thread(locked_close)
+                await asyncio.to_thread(locked_close)
 
     @property
     def _db(self) -> sqlite3.Connection:
