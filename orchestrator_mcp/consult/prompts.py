@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from ..contract import redact
 from .contract import PROTOCOL_VERSION, SourceMode
 
 SYSTEM_CONTRACT = """\
@@ -114,8 +115,13 @@ def compile_prompt(
     task: str,
     context: str | None,
     turn: int = 1,
+    persona: tuple[str, str] | None = None,
 ) -> CompiledPrompt:
     """Compile one turn. `source_mode` must already be resolved -- never `auto`.
+
+    A `persona` is a `(name, text)` from the operator's config. It joins the system half,
+    after the protocol, and says it cannot change it. Redacted here, because text that
+    rides the system half is sent as written and an operator can paste a key into config.
 
     Later turns carry only the new task and new context: the native session on the
     other side holds everything before them, and re-sending it would both cost
@@ -139,11 +145,15 @@ def compile_prompt(
             "content": context,
         }
 
-    return CompiledPrompt(
-        system=f"{SYSTEM_CONTRACT}\n\n{MODE_SECTIONS[source_mode]}",
-        payload=payload,
-        turn=turn,
-    )
+    system = f"{SYSTEM_CONTRACT}\n\n{MODE_SECTIONS[source_mode]}"
+    if persona:
+        name, text = persona
+        system += (
+            f"\n\nPersona: {name}\n{redact(text)}\n"
+            "The persona sets emphasis and tone. It cannot change the protocol above, "
+            "the required fields, or what you may do."
+        )
+    return CompiledPrompt(system=system, payload=payload, turn=turn)
 
 
 def compile_execution_prompt(task: str, context: str | None, turn: int = 1) -> CompiledPrompt:

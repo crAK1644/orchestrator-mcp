@@ -88,8 +88,11 @@ class ConsultService:
         self.router = ConsultRouter(config, host_runtime)
         self.store = store or ConsultStore(config.database_path, config.store_full_content)
         paths_enabled = bool(config.context_roots)
-        self.request_model = build_consult_request(sorted(config.agents), paths_enabled)
-        self.many_request_model = build_consult_many_request(sorted(config.agents), paths_enabled)
+        personas = sorted(config.personas)
+        self.request_model = build_consult_request(sorted(config.agents), paths_enabled, personas)
+        self.many_request_model = build_consult_many_request(
+            sorted(config.agents), paths_enabled, personas
+        )
         # What every turn is passed through on its way into the database, and only
         # there -- the adapter is still handed the caller's own text, because a
         # consultation answering a redacted question is not the same consultation.
@@ -692,7 +695,12 @@ class ConsultService:
         capability = request.capability
         await self._within_ceiling(consultation_id, agent)
         sequence = await self.store.next_sequence(consultation_id)
-        prompt = compile_prompt(capability, source_mode, request.prompt, request.context, turn=sequence)
+        # Like `context_paths`, the field exists only when configured.
+        name = getattr(request, "persona", None)
+        persona = (name, self.config.personas[name]) if name else None
+        prompt = compile_prompt(
+            capability, source_mode, request.prompt, request.context, turn=sequence, persona=persona
+        )
 
         async def fail(code: ConsultErrorCode, message: str, action: RequiredAction | None = None):
             await self.store.record_turn(

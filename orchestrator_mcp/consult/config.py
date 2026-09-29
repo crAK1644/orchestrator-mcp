@@ -41,6 +41,8 @@ Score = Annotated[int, Field(ge=0, le=100)]
 # by hand -- reached every one of those places without passing this. The shape a value
 # has to have belongs beside the model, not beside one of its writers.
 AGENT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+PERSONA_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+MAX_PERSONA_CHARS = 2000
 
 
 class AgentConfig(BaseModel):
@@ -394,6 +396,25 @@ class ConsultConfig(BaseModel):
     # Files `orchestrator_consult` may read for a caller through `context_paths` must
     # resolve beneath one of these. Empty means the argument is not advertised at all.
     context_roots: list[Path] = Field(default_factory=list)
+    # Named emphases a caller may ask for with `persona`. Empty means the argument is
+    # not advertised at all, same as `context_roots`.
+    personas: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("personas")
+    @classmethod
+    def _check_personas(cls, value: dict[str, str]) -> dict[str, str]:
+        checked: dict[str, str] = {}
+        for name, text in value.items():
+            if not PERSONA_NAME.fullmatch(name):
+                raise ValueError(
+                    f"persona name {name!r} must start with a lowercase letter and use only "
+                    "lowercase letters, digits, dashes and underscores (max 32)"
+                )
+            text = text.strip()
+            if not 1 <= len(text) <= MAX_PERSONA_CHARS:
+                raise ValueError(f"persona `{name}` must be 1 to {MAX_PERSONA_CHARS} characters")
+            checked[name] = text
+        return checked
 
     @field_validator("context_roots")
     @classmethod
