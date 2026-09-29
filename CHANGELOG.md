@@ -3,6 +3,28 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
+## 0.10.0 — 2026-09-30
+
+- `orchestrator_review` takes `diff_ref` (`A..B`, `A...B` or one commit) and `diff_repo`: the
+  server reads the committed diff from git objects under `review.roots`, so a branch review
+  no longer needs a diff written to a file first. The preview lists the resolved SHAs. It
+  reads no working tree or index and runs no program the repository's config names.
+- `orchestrator_consult` and `orchestrator_consult_many` take `context_paths`, read from the
+  directories in the new `consult.context_roots`. The argument does not exist until that is
+  set. A file holding a credential-shaped value is refused, by path and line.
+- `consult.personas` names emphases (`skeptic: "Doubt the premise first."`). Both consult
+  tools take `persona`, per turn, once any are configured. The text joins the system half
+  and cannot change the protocol.
+- `workflow.presets` names sets of step bindings, and `orchestrator_workflow_start` takes
+  `preset`. A preset sits between the config's `bindings` and the call's. It is checked at
+  config load, and a running workflow is unmoved by editing it.
+- The review preview lists `suspect_hits`: lines holding a long random-looking token that no
+  pattern names. Advisory only: it never blocks, never changes the confirm hash and is
+  not stored. Hex, UUIDs, integrity hashes, snake_case, kebab-case and plain words are left
+  alone; a key of letters only, or of hex, is not caught.
+- Adding config fields widens `config_hash`, so the dashboard shows its stale-row banner once
+  after upgrading.
+
 ## 0.9.0 — 2026-09-29
 
 - `orchestrator_apply_fixes` lists the Important findings a selection leaves out in
