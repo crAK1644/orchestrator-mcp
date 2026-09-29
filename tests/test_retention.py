@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from functools import partial
 from uuid import uuid4
@@ -126,3 +127,141 @@ def test_retention_is_off_unless_asked_for():
     assert ConsultConfig(**consult_block()).retention_days is None
     with pytest.raises(ValidationError):
         ConsultConfig(**consult_block(retention_days=0))
+
+
+# --- the daily tick ---------------------------------------------------------
+
+
+class Ticks:
+    """Stands in for `asyncio.sleep`: each `await` waits for the test to release one tick."""
+
+    def __init__(self) -> None:
+        self.asked: list[float] = []
+        self._release = asyncio.Semaphore(0)
+        self.waiting = asyncio.Event()
+
+    async def __call__(self, seconds: float) -> None:
+        self.asked.append(seconds)
+        self.waiting.set()
+        await self._release.acquire()
+
+    async def tick(self) -> None:
+        """Release one pause and wait until the loop is paused again."""
+        self.waiting.clear()
+        self._release.release()
+        await asyncio.wait_for(self.waiting.wait(), 5)
+
+
+async def stale_consultation(store: ConsultStore) -> str:
+    consultation_id = uuid4()
+    await store.create_consultation(
+        consultation_id=consultation_id,
+        origin_runtime="claude",
+        route=ROUTE,
+        capability="research",
+        protocol_version="consult-v1",
+        config_hash="abc123",
+    )
+    await store._run(
+        lambda: store._db.execute(
+            "UPDATE consultations SET updated_at = '2026-01-01T00:00:00Z' WHERE id = ?",
+            (str(consultation_id),),
+        )
+    )
+    return str(consultation_id)
+
+
+async def consultation_ids(store: ConsultStore) -> set[str]:
+    return await store._run(
+        lambda: {row[0] for row in store._db.execute("SELECT id FROM consultations")}
+    )
+
+
+async def opened_with_ticks(tmp_path, days: int | None = 30) -> tuple[ConsultStore, Ticks]:
+    """Opened, with the pause swapped in before the task first reaches it."""
+    ticks = Ticks()
+    store = ConsultStore(tmp_path / "consultations.sqlite3", retention_days=days)
+    store._pause = ticks
+    await store.open()
+    if days:
+        await asyncio.wait_for(ticks.waiting.wait(), 5)
+    return store, ticks
+
+
+async def test_a_tick_sweeps_what_went_stale_while_the_server_ran(tmp_path):
+    store, ticks = await opened_with_ticks(tmp_path)
+    stale, fresh = await stale_consultation(store), uuid4()
+    await store.create_consultation(
+        consultation_id=fresh,
+        origin_runtime="claude",
+        route=ROUTE,
+        capability="research",
+        protocol_version="consult-v1",
+        config_hash="abc123",
+    )
+    assert stale in await consultation_ids(store)  # the start-up sweep is long past
+
+    await ticks.tick()
+
+    assert await consultation_ids(store) == {str(fresh)}
+    assert ticks.asked[0] == 86_400
+    await store.close()
+
+
+async def test_close_cancels_the_task_and_leaves_nothing_pending(tmp_path):
+    store, _ = await opened_with_ticks(tmp_path)
+    task = store._retention_task
+
+    await store.close()
+
+    assert task.cancelled()
+    assert not [t for t in asyncio.all_tasks() if "_retain" in repr(t)]
+
+
+async def test_no_task_without_retention_days(tmp_path):
+    store, _ = await opened_with_ticks(tmp_path, days=None)
+
+    assert store._retention_task is None
+    await store.close()
+
+
+async def test_a_failing_tick_does_not_end_the_loop(tmp_path, monkeypatch):
+    store, ticks = await opened_with_ticks(tmp_path)
+    calls = []
+
+    async def broken(days: int) -> None:
+        calls.append(days)
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(store, "_sweep", broken)
+
+    await ticks.tick()
+    await ticks.tick()
+
+    assert calls == [30, 30]
+    assert not store._retention_task.done()
+    await store.close()
+
+
+async def test_a_task_that_died_comes_back_on_the_next_open(tmp_path):
+    store, _ = await opened_with_ticks(tmp_path)
+    store._retention_task.cancel()
+    await asyncio.sleep(0)
+    dead = store._retention_task
+    assert dead.done()
+
+    await store.open()
+
+    assert store._retention_task is not dead
+    assert not store._retention_task.done()
+    await store.close()
+
+
+async def test_opening_twice_starts_one_task(tmp_path):
+    store, _ = await opened_with_ticks(tmp_path)
+    task = store._retention_task
+
+    await asyncio.gather(store.open(), store.open())
+
+    assert store._retention_task is task
+    await store.close()

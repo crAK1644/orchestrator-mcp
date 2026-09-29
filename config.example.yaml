@@ -25,7 +25,7 @@ consult:
                             # thinking at `xhigh` over a real diff needs far more --
                             # 1800 is not unreasonable.
   store_full_content: true  # false stores metadata and routing only
-  # retention_days: 90      # at startup, delete finished workflows, reviews and
+  # retention_days: 90      # at startup and roughly daily, delete finished workflows, reviews and
                             # consultations untouched this long. Absent keeps all.
   web_turn_limit: 8         # web mode: assistant turns allowed; the one that spends
                             # the last of them still answers, the next is killed
