@@ -871,6 +871,7 @@ class ConsultDashboard:
                 editable=editable,
             )
         with closing(self._connect()) as connection:
+            connection.execute("BEGIN")  # one snapshot for every query below
             problem = reports.ledger_problem(connection)
             result = None if problem else reports.scorecard(connection, days)
         if result is None:
