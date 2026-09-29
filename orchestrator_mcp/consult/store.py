@@ -148,6 +148,21 @@ def _rollup_caveats(row: sqlite3.Row) -> list[str]:
     return notes
 
 
+# The aggregate half of every spend query, over `consultation_turns` aliased `t`, and
+# the exact row shape `_spend` reads. One text so a report and a ceiling cannot come to
+# count the same turns two ways; a caller adds its own keys and `FROM` around it.
+SPEND_COLUMNS = (
+    "COUNT(*) AS turns, COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
+    "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
+    "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
+    "COALESCE(SUM(t.input_tokens + t.output_tokens != t.total_tokens), 0) "
+    "AS contradicting_turns, "
+    "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd, "
+    "MIN(t.usage_semantics) AS min_semantics, MAX(t.usage_semantics) AS max_semantics, "
+    "GROUP_CONCAT(t.counts_incomplete, char(31)) AS turn_caveats"
+)
+
+
 def _spend(row: sqlite3.Row) -> Spend:
     """One grouped row of the turn ledger, read as both a display and a bound."""
     known = row["cost_usd"] or 0.0
@@ -959,15 +974,7 @@ class ConsultStore:
 
         def work() -> Spend | None:
             row = self._db.execute(
-                "SELECT COUNT(*) AS turns, COALESCE(SUM(input_tokens), 0) AS input_tokens, "
-                "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
-                "COALESCE(SUM(total_tokens), 0) AS total_tokens, "
-                "COALESCE(SUM(input_tokens + output_tokens != total_tokens), 0) "
-                "AS contradicting_turns, "
-                "COUNT(cost_usd) AS priced_turns, SUM(cost_usd) AS cost_usd, "
-                "MIN(usage_semantics) AS min_semantics, MAX(usage_semantics) AS max_semantics, "
-                "GROUP_CONCAT(counts_incomplete, char(31)) AS turn_caveats "
-                "FROM consultation_turns WHERE consultation_id = ?",
+                f"SELECT {SPEND_COLUMNS} FROM consultation_turns t WHERE t.consultation_id = ?",
                 (str(consultation_id),),
             ).fetchone()
             return _spend(row) if row["turns"] else None
@@ -995,15 +1002,7 @@ class ConsultStore:
 
         def work() -> dict[str, Spend]:
             rows = self._db.execute(
-                "SELECT rc.agent_id AS agent_id, COUNT(*) AS turns, "
-                "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
-                "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
-                "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
-                "COALESCE(SUM(t.input_tokens + t.output_tokens != t.total_tokens), 0) "
-                "AS contradicting_turns, "
-                "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd, "
-                "MIN(t.usage_semantics) AS min_semantics, MAX(t.usage_semantics) AS max_semantics, "
-                "GROUP_CONCAT(t.counts_incomplete, char(31)) AS turn_caveats "
+                f"SELECT rc.agent_id AS agent_id, {SPEND_COLUMNS} "
                 "FROM consultation_turns t "
                 "JOIN review_consultations rc ON rc.consultation_id = t.consultation_id "
                 "WHERE rc.review_id = ? GROUP BY 1",
@@ -1068,15 +1067,7 @@ class ConsultStore:
                 # THEN branch's candidates belong here, so it keeps its COALESCE.
                 "SELECT CASE WHEN c.workflow_id = :workflow_id "
                 "THEN COALESCE(c.step_id, r.step_id) ELSE r.step_id END "
-                "AS step_id, COUNT(*) AS turns, "
-                "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
-                "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
-                "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
-                "COALESCE(SUM(t.input_tokens + t.output_tokens != t.total_tokens), 0) "
-                "AS contradicting_turns, "
-                "COUNT(t.cost_usd) AS priced_turns, SUM(t.cost_usd) AS cost_usd, "
-                "MIN(t.usage_semantics) AS min_semantics, MAX(t.usage_semantics) AS max_semantics, "
-                "GROUP_CONCAT(t.counts_incomplete, char(31)) AS turn_caveats "
+                f"AS step_id, {SPEND_COLUMNS} "
                 "FROM consultation_turns t JOIN consultations c ON c.id = t.consultation_id "
                 # A scalar subquery rather than a join to `review_consultations`: a
                 # join there would multiply one turn by however many rows point at

@@ -3,6 +3,15 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
+## Unreleased
+
+- `usage`, `history`, `scorecard` and `export ID` subcommands print the database's
+  spend, recent records, per-reviewer results and a masked JSON copy of one record. All
+  are read-only: they never migrate the database (a WAL database may gain `-wal` and
+  `-shm` sidecar files while they read). A price nobody reported prints as `unknown`,
+  never `$0`.
+- The dashboard has a `/scorecard` page: the same per-reviewer numbers as `scorecard`.
+
 ## 0.8.1 — 2026-09-29
 
 - Private keys are now masked in review material, stored history and error text. The

@@ -350,9 +350,41 @@ orchestrator-mcp-server --help      # what the environment variables have to say
 ```
 
 Both answer and exit without reading your configuration. Anything else on the command
-line is refused rather than ignored. To make the server read the configuration, run it
+line, besides the [reports](#reports-from-the-terminal) below, is refused rather than
+ignored. To make the server read the configuration, run it
 with no arguments: a file it cannot accept leaves as a message naming the key -- one
 line for most mistakes, several for a schema violation, never a traceback.
+
+### Reports from the terminal
+
+Four read-only commands print what the database already holds. They run instead of the
+server, read the same config for its `database_path`, and open the file read-only: they
+never migrate it, so a database from an older version gets a sentence telling you to
+start the server once.
+
+```bash
+orchestrator-mcp-server usage [--days 30] [--json]      # turns, tokens and cost per agent and model
+orchestrator-mcp-server history [--limit 20] [--kind review] [--json]   # recent records, with their ids
+orchestrator-mcp-server scorecard [--days 30] [--json]  # how each reviewer answered, and what became of its findings
+orchestrator-mcp-server export ID                       # one record and everything it owns, as JSON
+```
+
+A price is shown only when every turn in the group reported one; otherwise it reads
+`unknown` beside the sum of the prices that were reported, never as zero. The scorecard
+counts a finding as kept when the host marked it `fixed` or `accepted_risk` and
+rejected when it marked it `rejected`; those are dispositions the host reported when it
+finalized a review, which this server does not check, and a later recheck does not
+update them. A reviewer's hit rate appears once ten findings are decided. Recheck
+reviews are left out so the same finding is not counted twice, and a review with no
+synthesis on record (not finalized yet, or `store_full_content: false`, under which
+finalizing is refused) is counted as asked but not judged.
+
+`export` takes a full id or a unique prefix of at least eight characters from `history`.
+It prints the record as stored, run through the same masking as everything else, without
+session ids or confirm-token hashes; a review or workflow names the consultations it owns
+by id, and you `export` those to read them. What it prints is your prompts and the
+answers, so treat it as you would the database. Opening a WAL database read-only can
+create `-wal` and `-shm` files beside it; the database file itself is never written.
 
 ### Run with `uvx` instead
 
@@ -1004,6 +1036,8 @@ ORCHESTRATOR_CONFIG=/absolute/path/to/config.yaml orchestrator-mcp-dashboard
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
 `/workflows` lists every workflow; a workflow's page shows its state, fix rounds against the cap, the bindings frozen at start, and the step timeline in the order it happened, with each step linking to its consultation and its review. Those consultations are reachable nowhere else. The workflow pages are read-only: deletion stays on the MCP tools, where the confirmation token is.
+
+`/scorecard` adds up each reviewer's answers and what became of its findings, the same numbers as `orchestrator-mcp-server scorecard` (`?days=90` widens the window from 30). It only reads, so `editable` does not gate it.
 
 Set `editable: true` to manage consult agents and reviewer selection in the browser. Browser-managed agents are written to `~/.orchestrator-mcp/agents.yaml`; the dashboard never rewrites `config.yaml`, runs login commands, or starts consultations.
 
