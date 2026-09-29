@@ -512,6 +512,7 @@ Request fields:
 | `source_mode` | no | `auto`, `document`, `web`, or `model`. |
 | `consultation_id` | no | Return the previous ID to continue the conversation. |
 | `target_agent` | no | Choose one configured agent instead of automatic routing. |
+| `persona` | no | One of the names under `consult.personas`, for this turn only. Exists only once `consult.personas` is set. |
 | `conversation_label` | no | Label stored with the consultation, up to 200 characters. |
 
 Agent configuration:
@@ -542,6 +543,22 @@ but never the value. Pass a masked excerpt through `context` instead. The file's
 the heading the agent sees, so an absolute path can disclose a username or directory
 layout. `orchestrator_consult_many` reads the files once and gives every member the same
 bytes.
+
+`persona` asks for one of your own named emphases, written once in config:
+
+```yaml
+consult:
+  personas:
+    skeptic: Doubt the premise before answering. Say what evidence would change your mind.
+    security: Read as an attacker would. Rank findings by what an attacker gains.
+```
+
+The text joins the system half of the prompt after the protocol and states that it cannot
+change the protocol, the required fields, or what the agent may do. It applies to that turn
+only: a resumed consultation's agent remembers earlier turns, so leaving `persona` out later
+does not unsay it. It is not on reviews or workflow steps, which have prompts of their own.
+The stored turn's compiled prompt shows exactly what was sent, and a credential-shaped value
+pasted into a persona is masked before it goes out.
 
 </details>
 

@@ -335,8 +335,30 @@ def _context_paths_field() -> dict[str, Any]:
     }
 
 
+def _persona_field(names: list[str]) -> dict[str, Any]:
+    """The argument that asks an agent to lean a named way for this turn.
+
+    Added only when `consult.personas:` is set, for the reason `context_paths` is.
+    """
+    return {
+        "persona": (
+            Literal[tuple(names)] | None,  # type: ignore[valid-type]
+            Field(
+                default=None,
+                description=(
+                    "A named emphasis from the operator's config, for this turn only: it "
+                    "sets tone and what to weigh, never the protocol. A resumed "
+                    "consultation's agent remembers earlier turns, so leaving it out later "
+                    "does not unsay it."
+                ),
+                json_schema_extra=_agent_enum(names),
+            ),
+        )
+    }
+
+
 def build_consult_request(
-    agent_ids: list[str], context_paths: bool = False
+    agent_ids: list[str], context_paths: bool = False, personas: list[str] | None = None
 ) -> type[ConsultRequest]:
     """Specialize `ConsultRequest` to the configured agents."""
     if not agent_ids:
@@ -354,11 +376,12 @@ def build_consult_request(
             ),
         ),
         **(_context_paths_field() if context_paths else {}),
+        **(_persona_field(personas) if personas else {}),
     )
 
 
 def build_consult_many_request(
-    agent_ids: list[str], context_paths: bool = False
+    agent_ids: list[str], context_paths: bool = False, personas: list[str] | None = None
 ) -> type[BaseModel]:
     """`ConsultRequest` for a panel: every member starts fresh, under the group's label,
     so no `consultation_id`, no `conversation_label`, and a list of agents or a count
@@ -390,6 +413,7 @@ def build_consult_many_request(
             ),
         ),
         **(_context_paths_field() if context_paths else {}),
+        **(_persona_field(personas) if personas else {}),
     )
 
 
