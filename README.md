@@ -631,7 +631,7 @@ and failing the first `context_paths` call -- which is a reviewer's turn later.
 
 The workflow is deliberately split:
 
-1. `orchestrator_review` creates a plan and **sends nothing**. The plan shows reviewers, material size, web access, request count, and locations of credential-shaped text. `suspect_hits` adds the lines holding a long random-looking token that no pattern names (32 characters of mixed case and digits, say). It is a guess: hex, UUIDs, integrity hashes, and names in snake_case, kebab-case or CamelCase are left alone, and so is a line already in `secret_hits`. It never blocks and is not stored. A key made only of lowercase letters and digits gets past it, so read the material yourself. A plan nobody runs within a day is dropped the next time a review is planned.
+1. `orchestrator_review` creates a plan and **sends nothing**. The plan shows reviewers, material size, web access, request count, and locations of credential-shaped text. `suspect_hits` adds the lines holding a long random-looking token that no pattern names (32 characters of mixed case and digits, say). It is a guess: hex, UUIDs, integrity hashes, names in snake_case or kebab-case, and a name of letters alone with a number on the end (`LoaderV2`) are left alone, and so is a line already in `secret_hits`. It never blocks and is not stored. A key made only of lowercase letters and digits gets past it, so read the material yourself. A plan nobody runs within a day is dropped the next time a review is planned.
 2. Show that plan to the user. `orchestrator_review_run` spends its one-time token and asks reviewers in parallel.
 3. Read every result and call `orchestrator_finalize_review`. Reviewer replies alone leave the review at `awaiting_synthesis`.
 

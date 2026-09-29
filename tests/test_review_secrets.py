@@ -176,6 +176,10 @@ def test_a_long_random_token_no_pattern_names_is_a_suspect():
         "https://github.com/crAK1644/orchestrator-mcp/pull/56/files#diff-abc",
         "src/orchestrator_mcp/review/diff_and_friends/with/a/very/long/path.py",
         '"integrity": "sha512-Zx9Qw3Rt7Yu1Io5Pa8Sd2Fg4Hj6Kl0Xc9Vb8Nm7Qw3Er5Ty6Ui=="',
+        # A `/` is legal in base64, and splitting there left a fragment with no prefix.
+        '"integrity": "sha512-AAAA/AbCdEfGhIjKlMnOpQrStUvWxYz012345AbCdEfGhIjKlMnOpA=="',
+        "OrchestratorMcpServerConfigurationLoaderV2",
+        "workflowPlanStepArgumentsAndTheirDefaults2",
         "max_length=MAX_LIST_ITEMS, default_factory=ReviewPolicy",
         "pydantic_core-2.41.3-cp311-cp311-manylinux_2_17_aarch64.whl",
         "[redacted]" * 4,
@@ -183,6 +187,13 @@ def test_a_long_random_token_no_pattern_names_is_a_suspect():
 )
 def test_code_and_hashes_are_not_suspects(text):
     assert suspect_lines(text) == []
+
+
+def test_secret_lines_numbers_every_match_by_the_line_it_starts_on():
+    """Counted in one pass now; a prefix count per match was quadratic in the matches."""
+    text = f"{OTHER}\n\nx {OTHER} {SECRET}\nplain\n{SECRET}"
+
+    assert secret_lines(text) == [1, 3, 3, 5]
 
 
 def test_a_line_secret_lines_already_reported_is_not_reported_twice():
