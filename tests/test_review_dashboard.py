@@ -681,3 +681,18 @@ async def test_a_planted_credential_reaches_no_scorecard(serve, review_config):
     )
 
     assert SECRET not in get("/scorecard")[1]
+
+
+async def test_a_stored_model_name_or_caveat_reaches_no_scorecard(serve, review_config):
+    """Rows this version wrote hold neither, but a row from before the masking may."""
+    get, consult_config = serve(review_config())
+    await make_review(consult_config)
+    with sqlite3.connect(consult_config.database_path) as database:
+        database.execute("UPDATE consultations SET target_model = ?", (f"m {SECRET}",))
+        database.execute(
+            "UPDATE consultation_turns SET counts_incomplete = ?", (f'["odd {SECRET}"]',)
+        )
+
+    body = get("/scorecard")[1]
+
+    assert "odd" in body and SECRET not in body

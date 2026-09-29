@@ -63,6 +63,10 @@ def connect(path: Path) -> sqlite3.Connection:
         f"{path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False
     )
     db.row_factory = sqlite3.Row
+    # A SELECT alone opens no transaction, so each statement would read the database as
+    # it stood at that moment. Another server may finalize or delete between them; an
+    # explicit BEGIN makes the first read pin one snapshot for the whole report.
+    db.execute("BEGIN")
     if reason := ledger_problem(db):
         db.close()
         fail(reason)
@@ -113,7 +117,7 @@ def _spend_fields(spend: Spend) -> dict[str, Any]:
         # `None` is unknown, not free: some turn in the group reported no price.
         "cost_usd": usage.cost_usd,
         "known_cost_usd": spend.known_cost_usd,
-        "caveats": list(usage.counts_incomplete),
+        "caveats": [_clean(note) for note in usage.counts_incomplete],
     }
 
 
@@ -134,7 +138,7 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
 
 def _notes(notes: Sequence[str]) -> str:
     return "".join(
-        "\n" + textwrap.fill(note, 100, initial_indent="  - ", subsequent_indent="    ")
+        "\n" + textwrap.fill(_clean(note), 100, initial_indent="  - ", subsequent_indent="    ")
         for note in notes
     )
 
@@ -160,8 +164,8 @@ def usage(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
     for row in rows:
         groups.append(
             {
-                "agent_id": row["agent_id"],
-                "model": row["model"],
+                "agent_id": _clean(row["agent_id"]),
+                "model": _clean(row["model"]),
                 "errors": row["errors"],
                 "avg_latency_ms": round(row["avg_latency_ms"]),
                 **_spend_fields(_spend(row)),
@@ -169,7 +173,7 @@ def usage(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
         )
     # The total follows the groups' own rule: a sum is a price only if every group's is.
     known = sum(g["known_cost_usd"] for g in groups)
-    priced = all(g["cost_usd"] is not None for g in groups)
+    priced = bool(groups) and all(g["cost_usd"] is not None for g in groups)
     return {
         "days": days,
         "groups": groups,
@@ -344,7 +348,7 @@ def scorecard(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
     for (agent_id, model), group in sorted(groups.items()):
         decided = group["kept"] + group["rejected"]
         counted = group.pop("with_summary") > 0
-        entry: dict[str, Any] = {"agent_id": agent_id, "model": model, **group}
+        entry: dict[str, Any] = {"agent_id": _clean(agent_id), "model": _clean(model), **group}
         if not counted:
             # Nothing was kept to count, which is not the same as nothing was found.
             entry |= {"kept": None, "rejected": None, "open": None}
@@ -365,8 +369,9 @@ def scorecard(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
 SCORECARD_NOTE = (
     "Kept is fixed or accepted as a risk, rejected is rejected, open is neither yet. "
     "These are the host's dispositions at finalize; this server checks none of them, and a "
-    "later recheck does not update them. A reviewer's hit rate is shown from "
-    f"{MIN_DECIDED} decided findings."
+    "later recheck does not update them. Counts are per combined finding, once for each "
+    "reviewer that raised it, not per raw reviewer finding. A reviewer's hit rate is shown "
+    f"from {MIN_DECIDED} decided findings."
 )
 
 

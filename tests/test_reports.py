@@ -158,6 +158,36 @@ async def test_a_turn_older_than_the_window_is_left_out(review_config):
     assert "No turns" in render_usage(report(consult_config, usage, 30))
 
 
+async def test_a_window_with_no_turns_has_no_price_rather_than_a_free_one(review_config):
+    consult_config = review_config()
+    await consult(consult_config, capability="coding", prompt="q")
+    write(consult_config, "UPDATE consultation_turns SET created_at = '2020-01-01T00:00:00+00:00'")
+
+    total = report(consult_config, usage, 30)["total"]
+
+    assert total["cost_usd"] is None and total["known_cost_usd"] == 0
+
+
+async def test_a_credential_in_a_stored_caveat_or_model_name_reaches_no_output(review_config):
+    """Rows this version wrote hold neither, but usage and the scorecard print stored
+    strings, and a row from before the masking existed is still on disk."""
+    consult_config = review_config()
+    await make_review(consult_config)
+    write(consult_config, "UPDATE consultation_turns SET counts_incomplete = ?",
+          json.dumps(["odd " + SECRET]))
+    write(consult_config, "UPDATE consultations SET target_model = ?", "\x1b[31m " + SECRET)
+
+    usage_result = report(consult_config, usage)
+    card = report(consult_config, scorecard)
+    texts = [
+        render_usage(usage_result), json.dumps(usage_result),
+        render_scorecard(card), json.dumps(card),
+    ]
+
+    assert "odd" in texts[0] and "odd" in texts[2]  # the planted field did reach the report
+    assert all(SECRET not in text and "\x1b" not in text for text in texts)
+
+
 async def test_a_legacy_turn_says_its_totals_are_not_comparable(review_config):
     consult_config = review_config()
     await consult(consult_config, capability="coding", prompt="q")
@@ -407,6 +437,19 @@ async def test_a_credential_in_a_json_column_and_in_a_raw_row_comes_out_masked(r
 
     assert SECRET not in reviewed and SECRET not in consulted
     assert "MIIabcdef" not in reviewed
+
+
+async def test_a_report_reads_one_snapshot_even_if_the_record_is_deleted_mid_way(review_config):
+    """Another server process may finalize or delete while a report runs. Each SELECT
+    on its own would see a different database; the report has to see one."""
+    consult_config = review_config()
+    review_id = str(await make_review(consult_config))
+
+    with closing(connect(consult_config.database_path)) as db:
+        write(consult_config, "DELETE FROM reviews WHERE id = ?", review_id)
+        found = export(db, review_id)
+
+    assert found["review"]["id"] == review_id
 
 
 async def test_a_session_id_and_a_token_hash_are_never_exported(review_config):
