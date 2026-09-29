@@ -157,7 +157,7 @@ _INTEGRITY = re.compile(r"(?<![A-Za-z0-9+_-])sha\d+-[A-Za-z0-9+/]+=*")
 # `LoaderV2`. Random text spreads its digits through it.
 _WORD = re.compile(r"[A-Za-z]+\d*")
 SUSPECT_MIN_ENTROPY = 4.0  # bits per character
-SUSPECT_MIN_CLASSES = 3  # of lower, upper, digit, symbol
+SUSPECT_MIN_CLASSES = 3  # of lower, upper, digit, symbol; two do if one is a digit
 # Random base64 is about 3% `+_-`; a wheel tag, a snake_case name or a kebab-case one is
 # well over a tenth. That is what separates them at the same entropy.
 SUSPECT_MAX_SYMBOL_SHARE = 0.10
@@ -168,16 +168,17 @@ def _looks_random(token: str) -> bool:
         return False
     counts = Counter(token)
     entropy = -sum(n / len(token) * math.log2(n / len(token)) for n in counts.values())
+    digit = any(c.isdigit() for c in token)
     classes = (
         any(c.islower() for c in token)
         + any(c.isupper() for c in token)
-        + any(c.isdigit() for c in token)
+        + digit
         + any(not c.isalnum() for c in token)
     )
     symbols = sum(not c.isalnum() for c in token)
     return (
         entropy >= SUSPECT_MIN_ENTROPY
-        and classes >= SUSPECT_MIN_CLASSES
+        and (classes >= SUSPECT_MIN_CLASSES or classes == 2 and digit)
         and symbols <= SUSPECT_MAX_SYMBOL_SHARE * len(token)
     )
 
