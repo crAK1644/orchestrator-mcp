@@ -30,7 +30,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -436,6 +436,7 @@ MIGRATIONS: list[str] = [
 DEFAULT_PROFILE = "default"
 LEASE_TTL_S = 300.0
 DELETE_CONFIRM_TTL_S = 300.0
+RETENTION_INTERVAL_S = 86_400.0
 
 _T = TypeVar("_T")
 
@@ -556,6 +557,9 @@ class ConsultStore:
         # open transaction and rolls back with it.
         self._lock = threading.RLock()
         self._open_lock = asyncio.Lock()
+        # A field so a test can wait on an event instead of a day.
+        self._pause = asyncio.sleep
+        self._retention_task: asyncio.Task[None] | None = None
 
     # --- lifecycle ----------------------------------------------------------
 
@@ -574,10 +578,12 @@ class ConsultStore:
                     # from the outside. Cancelled, the connection it built is simply
                     # never taken, and goes when the discarded result does.
                     self._connection = await asyncio.to_thread(self._open)
-                    # ponytail: once per process, so history lives up to the setting
-                    # plus the server's uptime. A timer when a long-lived server needs it.
                     if self.retention_days:
                         await self._sweep(self.retention_days)
+        # Checked on every open, not only the first: a task that died comes back.
+        # No await between the check and the create, so two callers cannot both start one.
+        if self.retention_days and (self._retention_task is None or self._retention_task.done()):
+            self._retention_task = asyncio.create_task(self._retain(self.retention_days))
         return self
 
     def _open(self) -> sqlite3.Connection:
@@ -688,9 +694,20 @@ class ConsultStore:
         db.execute("COMMIT")
 
     async def close(self) -> None:
+        if self._retention_task is not None:
+            self._retention_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._retention_task
         if self._connection is not None:
             connection, self._connection = self._connection, None
-            await asyncio.to_thread(connection.close)
+
+            def locked_close() -> None:
+                # A sweep cancelled mid-`to_thread` still finishes its statement;
+                # closing under the lock waits for it instead of closing beneath it.
+                with self._lock:
+                    connection.close()
+
+            await asyncio.to_thread(locked_close)
 
     @property
     def _db(self) -> sqlite3.Connection:
@@ -1289,13 +1306,22 @@ class ConsultStore:
 
     # --- retention ----------------------------------------------------------
 
+    async def _retain(self, days: int) -> None:
+        """The first sweep is `open()`'s; this repeats it for a server that stays up."""
+        while True:
+            await self._pause(RETENTION_INTERVAL_S)
+            try:
+                await self._sweep(days)
+            except Exception:
+                log.warning("retention sweep failed", exc_info=True)
+
     async def _sweep(self, days: int) -> None:
         """Delete finished history untouched for `days`, through the same deletes the
         tools use and so under the same refusals: a running review, a leased step or
         a turn in flight stays. One record at a time, so one refusal skips one record.
 
         Never raises. A store that cannot sweep still opens, and tries again at the
-        next start."""
+        next tick."""
         # Imported here: both modules import this one.
         from ..review.store import ReviewStore
         from ..workflow.store import _TERMINAL_SQL, WorkflowStore
@@ -1328,7 +1354,7 @@ class ConsultStore:
                             partial(delete, [row_id], stale_before=cutoff)
                         )
                     except StoreError:
-                        pass  # refused -- still busy, or owned; the next start retries
+                        pass  # refused -- still busy, or owned; the next tick retries
         except Exception:
             log.warning("retention sweep stopped early", exc_info=True)
         if any(removed.values()):

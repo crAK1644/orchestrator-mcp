@@ -65,7 +65,7 @@ It does not read your assistant's conversation history or memory. What it knows 
 
 ## Retention and deletion
 
-The `isolated_write` files above expire after 7 days. Database records stay until you delete them, unless you set `retention_days` in the `consult:` block: then, at each server start, finished consultations, reviews and workflows with no activity for that many days are deleted. Delete them yourself with these tools:
+The `isolated_write` files above expire after 7 days. Database records stay until you delete them, unless you set `retention_days` in the `consult:` block: then, at each server start and roughly daily while it runs, finished consultations, reviews and workflows with no activity for that many days are deleted. Delete them yourself with these tools:
 
 - `orchestrator_delete_consultation`
 - `orchestrator_delete_review`

@@ -11,6 +11,8 @@ One line per change a user would notice. The full notes for each version are on 
   `-shm` sidecar files while they read). A price nobody reported prints as `unknown`,
   never `$0`.
 - The dashboard has a `/scorecard` page: the same per-reviewer numbers as `scorecard`.
+- `retention_days` now also sweeps roughly daily while the server runs, not only at start-up,
+  so a server left up for weeks no longer keeps history past the setting.
 
 ## 0.8.1 — 2026-09-29
 
