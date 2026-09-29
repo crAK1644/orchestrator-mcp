@@ -163,6 +163,7 @@ class WorkflowService:
         web: bool = False,
         bindings: dict[str, dict[str, Any]] | None = None,
         allow_dirty: bool = False,
+        preset: str | None = None,
     ) -> WorkflowResponse:
         """Create a workflow and freeze its routing. Sends nothing.
 
@@ -182,7 +183,7 @@ class WorkflowService:
                 )
             path = resolve_workdir(workdir, self.policy.roots)
             head = await baseline(path, allow_dirty)
-            resolved = self.router.resolve_all(self._bindings(bindings), want_web=web)
+            resolved = self.router.resolve_all(self._bindings(bindings, preset), want_web=web)
             snapshot = {step: view.as_binding() for step, view in resolved.items()}
             policy = {
                 "max_fix_rounds": self.policy.max_fix_rounds,
@@ -212,8 +213,10 @@ class WorkflowService:
         except ValueError as exc:
             return _failed(workflow_id, "failed", ConsultErrorCode.INVALID_REQUEST, str(exc), started)
 
-    def _bindings(self, overrides: dict[str, dict[str, Any]] | None) -> dict[Step, StepBinding]:
-        """Configured bindings, with this call's overrides on top.
+    def _bindings(
+        self, overrides: dict[str, dict[str, Any]] | None, preset: str | None = None
+    ) -> dict[Step, StepBinding]:
+        """Configured bindings, then the preset's, then this call's overrides on top.
 
         A step nobody bound falls to the host. That is the conservative default and
         not a placeholder: the host can always do the work itself, and defaulting to
@@ -224,6 +227,15 @@ class WorkflowService:
         """
         merged: dict[Step, StepBinding] = {step: StepBinding(executor="host") for step in STEPS}
         merged.update(self.policy.bindings)
+        if preset is not None:
+            if preset not in self.policy.presets:
+                named = ", ".join(f"`{n}`" for n in sorted(self.policy.presets))
+                raise WorkflowError(
+                    ConsultErrorCode.INVALID_REQUEST,
+                    f"`{preset}` is not a workflow preset; "
+                    + (f"configured: {named}" if named else "none are configured under `workflow.presets:`"),
+                )
+            merged.update(self.policy.presets[preset])
         for name, raw in (overrides or {}).items():
             if name not in STEPS:
                 raise WorkflowError(

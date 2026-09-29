@@ -764,6 +764,27 @@ they run under — the round cap, `advance_on_failed_test` and the review policy
 `orchestrator_workflow_plan_replan` and its own approval. A replan re-decides the steps
 you name and leaves every other one on the routing the workflow already had.
 
+### Presets
+
+A preset is a named set of bindings for the steps you would rather not spell out at every
+start. `workflow_start(preset="cheap")` layers it over the rest, lowest to highest: the
+host default, `bindings:`, the preset, then the `bindings` argument of that call. A preset
+names only the steps it changes.
+
+```yaml
+    presets:
+      cheap:
+        research: {agent: flash}
+        plan:     {agent: flash}
+```
+
+A preset is checked when the config loads, exactly as `bindings:` is: an unknown agent, a
+mode the step does not take, or a mix of shapes refuses the boot and names
+`workflow.presets.<name>.<step>`. A name is lowercase, `[a-z][a-z0-9_-]{0,31}`. An unknown
+preset at start is refused and the configured names are listed. The preset name is not
+stored: what a workflow runs under is the resolved snapshot, so editing a preset later does
+not move a running workflow.
+
 ### Execution modes, and what each one can reach
 
 `execution_modes` on an agent is **operator trust, not capability**. What actually

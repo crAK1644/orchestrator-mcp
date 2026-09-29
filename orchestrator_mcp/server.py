@@ -1017,6 +1017,7 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         web: bool = False,
         bindings: dict[Step, StepBinding] | None = None,
         allow_dirty: bool = False,
+        preset: str | None = None,
     ) -> WorkflowResponse:
         """Create a workflow and freeze its routing. **Sends nothing.**
 
@@ -1033,6 +1034,11 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
         through the same compatibility checks: a step whose agent scores 0 for it, or
         whose runtime cannot be held to the execution mode asked for, is refused here
         rather than at the step. **A step nobody binds falls to the host.**
+
+        `preset` names one of the operator's `workflow.presets:`, a set of bindings for
+        some steps. Order of precedence, last wins: the host default, the configured
+        `bindings:`, the preset, then this call's `bindings`. An unknown name is refused
+        and the configured names are listed.
         """
         return await service.start(
             goal=goal,
@@ -1040,6 +1046,7 @@ def _add_workflow_tools(server: MCPServer, service: WorkflowService) -> None:
             web=web,
             bindings={k: v.model_dump(mode="json") for k, v in (bindings or {}).items()},
             allow_dirty=allow_dirty,
+            preset=preset,
         )
 
     @_tool(

@@ -10730,6 +10730,18 @@
           "default": false,
           "title": "Allow Dirty",
           "type": "boolean"
+        },
+        "preset": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preset"
         }
       },
       "required": [

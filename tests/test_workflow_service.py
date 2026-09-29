@@ -21,7 +21,7 @@ from orchestrator_mcp.consult.adapters.base import (
     AdapterResult,
     AgentStatus,
 )
-from orchestrator_mcp.consult.config import ConsultConfig
+from orchestrator_mcp.consult.config import ConsultConfig, StepBinding
 from orchestrator_mcp.consult.contract import ConsultationContent, Usage
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.store import StoreError
@@ -413,6 +413,88 @@ async def test_start_resolves_every_binding_and_records_the_baseline(build, repo
     }
     assert view.next_steps == ["research", "plan"]
     assert view.bindings["review"]["agents"][0]["agent_id"] == "codex-sol"
+
+
+# --- presets ------------------------------------------------------------------
+
+PRESETS = {"cheap": {"plan": {"agent": "flash"}, "research": {"agent": "flash"}}}
+LAYERED = {"research": {"agent": "opus-agent"}, "plan": {"agent": "opus-agent"}}
+
+
+def who(view, step_name: str) -> list[str]:
+    binding = view.bindings[step_name]
+    return ["host"] if binding["executor"] == "host" else [a["agent_id"] for a in binding["agents"]]
+
+
+async def test_a_preset_sits_between_the_configured_bindings_and_the_call(build, repo):
+    service = await build(bindings=LAYERED, presets=PRESETS)
+
+    plain = await service.start(goal="g", workdir=str(repo))
+    preset = await service.start(goal="g", workdir=str(repo), preset="cheap")
+    called = await service.start(
+        goal="g", workdir=str(repo), preset="cheap", bindings={"research": {"agent": "codex-sol"}}
+    )
+
+    for response in (plain, preset, called):
+        assert response.error is None, response.error
+    # No preset: the configured layer.
+    assert (who(plain.workflow, "research"), who(plain.workflow, "plan")) == (
+        ["opus-agent"], ["opus-agent"]
+    )
+    # The preset beats the configured layer, and leaves the steps it does not name alone.
+    assert (who(preset.workflow, "research"), who(preset.workflow, "plan")) == (
+        ["flash"], ["flash"]
+    )
+    assert who(preset.workflow, "test") == ["host"]
+    assert who(preset.workflow, "review") == ["codex-sol"]
+    # The call beats the preset, for the one step it names.
+    assert (who(called.workflow, "research"), who(called.workflow, "plan")) == (
+        ["codex-sol"], ["flash"]
+    )
+
+
+async def test_an_unknown_preset_is_refused_and_the_configured_ones_are_listed(build, repo):
+    service = await build(presets={**PRESETS, "deep": {"plan": {"agent": "opus-agent"}}})
+    bare = await build()
+
+    unknown = await service.start(goal="g", workdir=str(repo), preset="nope")
+    none = await bare.start(goal="g", workdir=str(repo), preset="cheap")
+
+    assert unknown.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert "`nope`" in unknown.error.message and "`cheap`, `deep`" in unknown.error.message
+    assert none.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert "none are configured" in none.error.message
+
+
+@pytest.mark.parametrize(
+    "preset, needle",
+    [
+        ({"plan": {"agent": "ghost"}}, "workflow.presets.bad.plan"),
+        ({"research": {"agent": "flash", "execution": "patch"}}, "workflow.presets.bad.research"),
+        ({"apply_patch": {"agent": "flash"}}, "workflow.presets.bad.apply_patch"),
+    ],
+)
+async def test_a_preset_no_step_or_agent_can_honour_fails_at_config_load(build, preset, needle):
+    with pytest.raises(ValueError, match=needle):
+        await build(presets={"bad": preset})
+
+
+def test_a_preset_name_is_a_short_lowercase_slug():
+    with pytest.raises(ValueError, match="preset name"):
+        ConsultConfig(
+            agents=AGENTS,
+            workflow={"presets": {"Bad Name": {"plan": {"executor": "host"}}}},
+        )
+
+
+async def test_a_running_workflow_is_unmoved_by_editing_its_preset_afterwards(build, repo):
+    service = await build(presets=PRESETS)
+    started_id = await started(service, repo, preset="cheap")
+
+    service.policy.presets["cheap"]["plan"] = StepBinding(executor="host")
+    later = await service.status(started_id)
+
+    assert who(later.workflow, "plan") == ["flash"]
 
 
 async def test_a_workdir_outside_every_root_is_refused(build, tmp_path, repo):
