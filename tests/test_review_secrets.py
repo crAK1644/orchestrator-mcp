@@ -165,11 +165,19 @@ def test_a_long_random_token_no_pattern_names_is_a_suspect():
     assert suspect_lines(f"{RANDOM[:20]}") == []  # too short to call
 
 
+@pytest.mark.parametrize("key", ["k8a3m9x2q7w1z5v4c6b0n8p2j5h3g7d1", "K8A3M9X2Q7W1Z5V4C6B0N8P2J5H3G7D1"])
+def test_a_key_of_one_letter_case_and_digits_is_a_suspect(key):
+    """Two kinds of character are enough when one of them is a digit."""
+    assert suspect_lines(f"key {key}") == [1]
+
+
 @pytest.mark.parametrize(
     "text",
     [
         "test_a_preset_no_step_or_agent_can_honour_fails_at_config_load",
         "OrchestratorMcpServerConfigurationLoader",
+        "orchestrator-mcp-server-configuration-loader",
+        "abcdefghijklmnopqrstuvwxyz",
         "workflow_plan_step-and-friends",
         "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
         "3b2c1a0e-9d8f-4a7b-8c6d-5e4f3a2b1c0d",
