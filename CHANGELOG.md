@@ -3,6 +3,22 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
+## 0.8.1 — 2026-09-29
+
+- Private keys are now masked in review material, stored history and error text. The
+  pattern never matched a real `-----BEGIN ... PRIVATE KEY-----` header, so a key in a
+  review's context reached the reviewers and the local database as written, and the
+  preview did not flag it. History stored before 0.8.1 is not rescanned;
+  `orchestrator_delete_all_reviews` clears it.
+- `DB_PASSWORD=`, `OPENAI_API_KEY=`, `GITHUB_TOKEN=`, `AWS_SECRET_ACCESS_KEY=` and other
+  prefixed names are masked, with more token shapes and URL passwords. Words such as
+  `task-management-system` no longer are.
+- `doctor` notes that Antigravity takes the prompt on its command line, where other users
+  on the machine can read it while a turn runs.
+- README and `config.example.yaml` now say what the code does: `isolated_write` reaches
+  OpenCode where the sandbox holds, and finalization keeps every Critical and Important
+  finding.
+
 ## 0.8.0 — 2026-09-28
 
 - A failure no service anticipated now reaches the model as a coded refusal naming the
