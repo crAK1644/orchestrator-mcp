@@ -19,12 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import secrets as secrets_mod
-import stat
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -47,6 +45,7 @@ from ..consult.service import ConsultService
 from ..consult.store import ConsultStore, StoreError
 from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json, secret_lines
 from ..estimate import ceiling_warning, for_agents
+from ..files import read_files
 from ..json_objects import fenced_json_objects, json_object_candidates
 from ..log import get_logger
 from ..progress import step as progress_step
@@ -1425,129 +1424,21 @@ def _fix_rounds(review) -> list[FixRound]:
 
 
 def _read_paths(paths: list[str], roots: list[Path]) -> tuple[str, list[MaterialItem]]:
-    """Assemble `context` from files on disk, and the manifest describing them.
+    """`context_paths` as review material: the text, and a manifest built from the bytes read.
 
-    The reviewer never sees a path. Both adapters run it with no filesystem at all
-    -- codex in an empty temporary cwd with `features.shell_tool=false`, claude with
-    `--tools ""` -- so a path handed onward would be a string it cannot open, and a
-    review of a file nobody read. Reading here is also what keeps the preview
-    honest: `scan_secrets` can only report what is leaving because this process
-    holds the exact bytes.
-
-    Refusals are `ValueError`, which `plan` turns into an `INVALID_REQUEST`
-    envelope, and each one names the path it refused.
-
-    The allowlist is checked after strict resolution, so symlinks cannot move a path
-    outside the configured tree. An MCP caller may run with less filesystem authority
-    than this server; context_paths must not turn that difference into a read primitive.
+    Refusals are `ValueError`, which `plan` turns into an `INVALID_REQUEST` envelope.
     """
-    if len(paths) > MAX_MATERIAL_ITEMS:
-        raise ValueError(f"at most {MAX_MATERIAL_ITEMS} paths, got {len(paths)}")
-    if not roots:
-        raise ValueError(
-            "`context_paths` is disabled until `consult.review.roots:` names the "
-            "directories review material may be read from"
-        )
-    allowed: list[Path] = []
-    for root in roots:
-        try:
-            resolved_root = root.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise ValueError(f"review root `{root}` cannot be read: {type(exc).__name__}") from exc
-        if not resolved_root.is_dir():
-            raise ValueError(f"review root `{root}` is not a directory")
-        allowed.append(resolved_root)
-
-    parts: list[str] = []
-    manifest: list[MaterialItem] = []
-    total = 0
-    for raw in paths:
-        path = Path(raw).expanduser()
-        try:
-            resolved = path.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise ValueError(f"`{raw}` cannot be read: {type(exc).__name__}") from exc
-        if not any(resolved.is_relative_to(root) for root in allowed):
-            choices = ", ".join(f"`{root}`" for root in allowed)
-            raise ValueError(
-                f"`{raw}` resolves outside `consult.review.roots`; allowed roots: "
-                f"{choices}. Add its directory explicitly or pass its contents "
-                "through `context`"
-            )
-        root = next(root for root in allowed if resolved.is_relative_to(root))
-        data = _read_beneath(root, resolved, raw, MAX_CONTEXT_CHARS - total)
-        total += len(data)
-        # `replace` rather than a raise: a stray byte in one file should cost a
-        # character, not the whole review.
-        text = data.decode("utf-8", errors="replace")
-        parts.append(f"===== {raw} =====\n{text}")
-        manifest.append(
-            MaterialItem(label=raw[:MAX_LABEL_CHARS], kind="file", locator="whole file",
-                         chars=len(text))
-        )
-
-    context = "\n\n".join(parts)
-    if len(context) > MAX_CONTEXT_CHARS:
-        # Reachable when the bytes fit but the decoded characters plus the headers do
-        # not. Same refusal, stated against the number that actually applies.
-        raise ValueError(
-            f"the assembled material is {len(context)} characters, over the "
-            f"{MAX_CONTEXT_CHARS} limit; send fewer paths, or narrow the diff"
-        )
-    return context, manifest
-
-
-def _read_beneath(root: Path, target: Path, raw: str, remaining: int) -> bytes:
-    """Open one regular file beneath an already-resolved root without path races."""
-    relative = target.relative_to(root)
-    if not relative.parts:
-        raise ValueError(
-            f"`{raw}` is not a regular file; name the files to review, not a directory"
-        )
-
-    directory_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    directory_flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    # A FIFO opened read-only waits for a writer before we can reach ``fstat`` and
-    # reject it. Non-blocking makes the type check authoritative without letting an
-    # allowed path stall the MCP request indefinitely. It has no effect on regular
-    # file reads.
-    file_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    file_flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    directory_fd: int | None = None
-    file_fd: int | None = None
-    try:
-        directory_fd = os.open(root, directory_flags)
-        for part in relative.parts[:-1]:
-            next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
-            os.close(directory_fd)
-            directory_fd = next_fd
-        file_fd = os.open(relative.parts[-1], file_flags, dir_fd=directory_fd)
-        info = os.fstat(file_fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError(
-                f"`{raw}` is not a regular file; name the files to review, not a directory"
-            )
-        handle = os.fdopen(file_fd, "rb")
-        file_fd = None
-        with handle:
-            data = handle.read(remaining + 1)
-        if len(data) > remaining:
-            raise ValueError(
-                f"the material is over the {MAX_CONTEXT_CHARS} character limit by `{raw}`; "
-                "send fewer paths, or narrow the diff"
-            )
-        return data
-    except ValueError:
-        raise
-    except OSError as exc:
-        raise ValueError(f"`{raw}` cannot be read safely: {type(exc).__name__}") from exc
-    finally:
-        if file_fd is not None:
-            with suppress(OSError):
-                os.close(file_fd)
-        if directory_fd is not None:
-            with suppress(OSError):
-                os.close(directory_fd)
+    context, files = read_files(
+        paths,
+        roots,
+        setting="consult.review.roots",
+        max_items=MAX_MATERIAL_ITEMS,
+        limit=MAX_CONTEXT_CHARS,
+    )
+    return context, [
+        MaterialItem(label=raw[:MAX_LABEL_CHARS], kind="file", locator="whole file", chars=chars)
+        for raw, chars in files
+    ]
 
 
 def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, int]:
