@@ -1770,7 +1770,7 @@
         },
         "FixPlan": {
           "additionalProperties": false,
-          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again.",
+          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again. `importants_omitted` is the same\ncheck for Important findings, and lists reviewer findings the synthesis may have\nrejected on purpose, so it prompts a look rather than a fix.",
           "properties": {
             "findings": {
               "items": {
@@ -1786,6 +1786,14 @@
               },
               "maxItems": 200,
               "title": "Criticals Omitted",
+              "type": "array"
+            },
+            "importants_omitted": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Importants Omitted",
               "type": "array"
             },
             "steps": {
@@ -2888,7 +2896,7 @@
         },
         "FixPlan": {
           "additionalProperties": false,
-          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again.",
+          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again. `importants_omitted` is the same\ncheck for Important findings, and lists reviewer findings the synthesis may have\nrejected on purpose, so it prompts a look rather than a fix.",
           "properties": {
             "findings": {
               "items": {
@@ -2904,6 +2912,14 @@
               },
               "maxItems": 200,
               "title": "Criticals Omitted",
+              "type": "array"
+            },
+            "importants_omitted": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Importants Omitted",
               "type": "array"
             },
             "steps": {
@@ -3992,7 +4008,7 @@
         },
         "FixPlan": {
           "additionalProperties": false,
-          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again.",
+          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again. `importants_omitted` is the same\ncheck for Important findings, and lists reviewer findings the synthesis may have\nrejected on purpose, so it prompts a look rather than a fix.",
           "properties": {
             "findings": {
               "items": {
@@ -4008,6 +4024,14 @@
               },
               "maxItems": 200,
               "title": "Criticals Omitted",
+              "type": "array"
+            },
+            "importants_omitted": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Importants Omitted",
               "type": "array"
             },
             "steps": {
@@ -5207,7 +5231,7 @@
         },
         "FixPlan": {
           "additionalProperties": false,
-          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again.",
+          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again. `importants_omitted` is the same\ncheck for Important findings, and lists reviewer findings the synthesis may have\nrejected on purpose, so it prompts a look rather than a fix.",
           "properties": {
             "findings": {
               "items": {
@@ -5223,6 +5247,14 @@
               },
               "maxItems": 200,
               "title": "Criticals Omitted",
+              "type": "array"
+            },
+            "importants_omitted": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Importants Omitted",
               "type": "array"
             },
             "steps": {
@@ -6261,7 +6293,7 @@
         },
         "FixPlan": {
           "additionalProperties": false,
-          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again.",
+          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again. `importants_omitted` is the same\ncheck for Important findings, and lists reviewer findings the synthesis may have\nrejected on purpose, so it prompts a look rather than a fix.",
           "properties": {
             "findings": {
               "items": {
@@ -6277,6 +6309,14 @@
               },
               "maxItems": 200,
               "title": "Criticals Omitted",
+              "type": "array"
+            },
+            "importants_omitted": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Importants Omitted",
               "type": "array"
             },
             "steps": {
@@ -7331,7 +7371,7 @@
         },
         "FixPlan": {
           "additionalProperties": false,
-          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again.",
+          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again. `importants_omitted` is the same\ncheck for Important findings, and lists reviewer findings the synthesis may have\nrejected on purpose, so it prompts a look rather than a fix.",
           "properties": {
             "findings": {
               "items": {
@@ -7347,6 +7387,14 @@
               },
               "maxItems": 200,
               "title": "Criticals Omitted",
+              "type": "array"
+            },
+            "importants_omitted": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Importants Omitted",
               "type": "array"
             },
             "steps": {
@@ -8377,7 +8425,7 @@
         },
         "FixPlan": {
           "additionalProperties": false,
-          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again.",
+          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again. `importants_omitted` is the same\ncheck for Important findings, and lists reviewer findings the synthesis may have\nrejected on purpose, so it prompts a look rather than a fix.",
           "properties": {
             "findings": {
               "items": {
@@ -8393,6 +8441,14 @@
               },
               "maxItems": 200,
               "title": "Criticals Omitted",
+              "type": "array"
+            },
+            "importants_omitted": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Importants Omitted",
               "type": "array"
             },
             "steps": {
@@ -9570,7 +9626,7 @@
         },
         "FixPlan": {
           "additionalProperties": false,
-          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again.",
+          "description": "What `orchestrator_apply_fixes` hands back: the selected findings, and the steps around\nediting them.\n\n`criticals_omitted` is the field that earns this a tool of its own. A\nselection that quietly leaves out a Critical is the same failure the synthesis\ncheck exists to prevent, one stage later -- so it is named here rather than\ndiscovered when the recheck finds it again. `importants_omitted` is the same\ncheck for Important findings, and lists reviewer findings the synthesis may have\nrejected on purpose, so it prompts a look rather than a fix.",
           "properties": {
             "findings": {
               "items": {
@@ -9586,6 +9642,14 @@
               },
               "maxItems": 200,
               "title": "Criticals Omitted",
+              "type": "array"
+            },
+            "importants_omitted": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Importants Omitted",
               "type": "array"
             },
             "steps": {

@@ -313,13 +313,16 @@ class FixPlan(BaseModel):
     `criticals_omitted` is the field that earns this a tool of its own. A
     selection that quietly leaves out a Critical is the same failure the synthesis
     check exists to prevent, one stage later -- so it is named here rather than
-    discovered when the recheck finds it again.
+    discovered when the recheck finds it again. `importants_omitted` is the same
+    check for Important findings, and lists reviewer findings the synthesis may have
+    rejected on purpose, so it prompts a look rather than a fix.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     findings: list[Finding] = Field(default_factory=list, max_length=MAX_FINDINGS)
     criticals_omitted: list[str] = Field(default_factory=list, max_length=MAX_FINDINGS)
+    importants_omitted: list[str] = Field(default_factory=list, max_length=MAX_FINDINGS)
     steps: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
 
 

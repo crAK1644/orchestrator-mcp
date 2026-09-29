@@ -840,6 +840,8 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         `fix_plan.criticals_omitted` lists Critical findings your selection leaves
         out. Show them to the user rather than skipping past them -- a Critical
         dropped here is one the recheck will simply find again.
+        `fix_plan.importants_omitted` is the same check for Important findings; one
+        the synthesis rejected on purpose is listed too, so look, don't assume.
 
         To re-review, plan a new review with `parent_review_id` set to this one and
         only the diff as `context`: the server adds this review's open findings. A
