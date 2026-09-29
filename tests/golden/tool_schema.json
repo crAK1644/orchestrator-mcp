@@ -1997,6 +1997,14 @@
               "title": "Secret Hits",
               "type": "array"
             },
+            "suspect_hits": {
+              "items": {
+                "$ref": "#/$defs/SecretHit"
+              },
+              "maxItems": 500,
+              "title": "Suspect Hits",
+              "type": "array"
+            },
             "duplicate_models": {
               "items": {
                 "type": "string"
@@ -3123,6 +3131,14 @@
               "title": "Secret Hits",
               "type": "array"
             },
+            "suspect_hits": {
+              "items": {
+                "$ref": "#/$defs/SecretHit"
+              },
+              "maxItems": 500,
+              "title": "Suspect Hits",
+              "type": "array"
+            },
             "duplicate_models": {
               "items": {
                 "type": "string"
@@ -4233,6 +4249,14 @@
               },
               "maxItems": 500,
               "title": "Secret Hits",
+              "type": "array"
+            },
+            "suspect_hits": {
+              "items": {
+                "$ref": "#/$defs/SecretHit"
+              },
+              "maxItems": 500,
+              "title": "Suspect Hits",
               "type": "array"
             },
             "duplicate_models": {
@@ -5458,6 +5482,14 @@
               "title": "Secret Hits",
               "type": "array"
             },
+            "suspect_hits": {
+              "items": {
+                "$ref": "#/$defs/SecretHit"
+              },
+              "maxItems": 500,
+              "title": "Suspect Hits",
+              "type": "array"
+            },
             "duplicate_models": {
               "items": {
                 "type": "string"
@@ -6518,6 +6550,14 @@
               },
               "maxItems": 500,
               "title": "Secret Hits",
+              "type": "array"
+            },
+            "suspect_hits": {
+              "items": {
+                "$ref": "#/$defs/SecretHit"
+              },
+              "maxItems": 500,
+              "title": "Suspect Hits",
               "type": "array"
             },
             "duplicate_models": {
@@ -7598,6 +7638,14 @@
               "title": "Secret Hits",
               "type": "array"
             },
+            "suspect_hits": {
+              "items": {
+                "$ref": "#/$defs/SecretHit"
+              },
+              "maxItems": 500,
+              "title": "Suspect Hits",
+              "type": "array"
+            },
             "duplicate_models": {
               "items": {
                 "type": "string"
@@ -8650,6 +8698,14 @@
               },
               "maxItems": 500,
               "title": "Secret Hits",
+              "type": "array"
+            },
+            "suspect_hits": {
+              "items": {
+                "$ref": "#/$defs/SecretHit"
+              },
+              "maxItems": 500,
+              "title": "Suspect Hits",
               "type": "array"
             },
             "duplicate_models": {
@@ -9853,6 +9909,14 @@
               "title": "Secret Hits",
               "type": "array"
             },
+            "suspect_hits": {
+              "items": {
+                "$ref": "#/$defs/SecretHit"
+              },
+              "maxItems": 500,
+              "title": "Suspect Hits",
+              "type": "array"
+            },
             "duplicate_models": {
               "items": {
                 "type": "string"
@@ -10730,6 +10794,18 @@
           "default": false,
           "title": "Allow Dirty",
           "type": "boolean"
+        },
+        "preset": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preset"
         }
       },
       "required": [

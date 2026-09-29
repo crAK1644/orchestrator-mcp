@@ -631,7 +631,7 @@ and failing the first `context_paths` call -- which is a reviewer's turn later.
 
 The workflow is deliberately split:
 
-1. `orchestrator_review` creates a plan and **sends nothing**. The plan shows reviewers, material size, web access, request count, and locations of credential-shaped text. A plan nobody runs within a day is dropped the next time a review is planned.
+1. `orchestrator_review` creates a plan and **sends nothing**. The plan shows reviewers, material size, web access, request count, and locations of credential-shaped text. `suspect_hits` adds the lines holding a long random-looking token that no pattern names (32 characters of mixed case and digits, say). It is a guess: hex, UUIDs, integrity hashes, and names in snake_case, kebab-case or CamelCase are left alone, and so is a line already in `secret_hits`. It never blocks and is not stored. A key made only of lowercase letters and digits gets past it, so read the material yourself. A plan nobody runs within a day is dropped the next time a review is planned.
 2. Show that plan to the user. `orchestrator_review_run` spends its one-time token and asks reviewers in parallel.
 3. Read every result and call `orchestrator_finalize_review`. Reviewer replies alone leave the review at `awaiting_synthesis`.
 
@@ -763,6 +763,27 @@ they run under — the round cap, `advance_on_failed_test` and the review policy
 `config.yaml` does not reroute a running workflow or move its cap; that takes
 `orchestrator_workflow_plan_replan` and its own approval. A replan re-decides the steps
 you name and leaves every other one on the routing the workflow already had.
+
+### Presets
+
+A preset is a named set of bindings for the steps you would rather not spell out at every
+start. `workflow_start(preset="cheap")` layers it over the rest, lowest to highest: the
+host default, `bindings:`, the preset, then the `bindings` argument of that call. A preset
+names only the steps it changes.
+
+```yaml
+    presets:
+      cheap:
+        research: {agent: flash}
+        plan:     {agent: flash}
+```
+
+A preset is checked when the config loads, exactly as `bindings:` is: an unknown agent, a
+mode the step does not take, or a mix of shapes refuses the boot and names
+`workflow.presets.<name>.<step>`. A name is lowercase, `[a-z][a-z0-9_-]{0,31}`. An unknown
+preset at start is refused and the configured names are listed. The preset name is not
+stored: what a workflow runs under is the resolved snapshot, so editing a preset later does
+not move a running workflow.
 
 ### Execution modes, and what each one can reach
 

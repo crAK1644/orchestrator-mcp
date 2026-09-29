@@ -205,6 +205,10 @@ class ReviewPlan(BaseModel):
     web_requested: bool
     expected_requests: int = Field(ge=0)
     secret_hits: list[SecretHit] = Field(default_factory=list, max_length=MAX_SECRET_HITS)
+    # Lines with a long random-looking token no pattern names. Advisory: a guess, so it
+    # never blocks and is not in the confirm hash, and it is not stored, so `get_review`
+    # does not show it. Read those lines before approving.
+    suspect_hits: list[SecretHit] = Field(default_factory=list, max_length=MAX_SECRET_HITS)
     # Two reviewers on one model agree cheaply and mean nothing; worth saying before
     # the requests are paid for rather than after.
     duplicate_models: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)

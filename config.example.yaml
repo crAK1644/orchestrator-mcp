@@ -238,6 +238,14 @@ consult:
       review:    {agents: [codex-sol, claude-opus]}
       synthesize: {executor: host}
       fix:       {agent: codex-sol, execution: patch}
+    # Named sets of bindings, picked with `workflow_start(preset: ...)`. They sit above
+    # `bindings:` and below the call's own `bindings`, and name only the steps they
+    # change. Checked at load like `bindings:`. Not stored: a workflow keeps the
+    # bindings it resolved to.
+    presets: {}
+    #   cheap:
+    #     research: {agent: flash}
+    #     plan:     {agent: flash}
 
   # A local page over the stored consultations, reviews and workflows, loopback only,
   # started separately with `orchestrator-mcp-dashboard`. Off unless you turn it on:

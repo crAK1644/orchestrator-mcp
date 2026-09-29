@@ -43,7 +43,14 @@ from ..consult.contract import (
 from ..consult.errors import ConsultErrorCode
 from ..consult.service import ConsultService
 from ..consult.store import ConsultStore, StoreError
-from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json, secret_lines
+from ..contract import (
+    MAX_ERROR_CHARS,
+    Usage,
+    redact,
+    scrub_json,
+    secret_lines,
+    suspect_lines,
+)
 from ..estimate import ceiling_warning, for_agents
 from ..files import read_files
 from ..json_objects import fenced_json_objects, json_object_candidates
@@ -260,6 +267,8 @@ class ReviewService:
 
         hits = [SecretHit(field="goal", line=n) for n in secret_lines(goal)]
         hits += [SecretHit(field="context", line=n) for n in secret_lines(context or "")]
+        suspects = [SecretHit(field="goal", line=n) for n in suspect_lines(goal)]
+        suspects += [SecretHit(field="context", line=n) for n in suspect_lines(context or "")]
 
         # Hashed over the *redacted* text, which is what the row stores. Hashing the
         # original would make the check unrecomputable exactly when a secret was
@@ -303,6 +312,7 @@ class ReviewService:
             web_requested=web,
             expected_requests=len(snapshots),
             secret_hits=hits[:MAX_SECRET_HITS],
+            suspect_hits=suspects[:MAX_SECRET_HITS],
             duplicate_models=sorted(m for m, n in seen.items() if n > 1),
             host_model_conflict=next(
                 (s.model for s in snapshots if host_model and s.model == host_model), None

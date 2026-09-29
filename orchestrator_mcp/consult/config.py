@@ -41,7 +41,7 @@ Score = Annotated[int, Field(ge=0, le=100)]
 # by hand -- reached every one of those places without passing this. The shape a value
 # has to have belongs beside the model, not beside one of its writers.
 AGENT_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-PERSONA_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+NAME_SLUG = re.compile(r"[a-z][a-z0-9_-]{0,31}")  # personas and workflow presets
 MAX_PERSONA_CHARS = 2000
 
 
@@ -330,6 +330,20 @@ class WorkflowConfig(BaseModel):
     execution_timeout_s: int = Field(default=900, ge=1)
     review_policy: ReviewPolicy = Field(default_factory=ReviewPolicy)
     bindings: dict[Step, StepBinding] = Field(default_factory=dict)
+    # Named sets of bindings a caller picks with `workflow_start(preset=...)`. Each
+    # names only the steps it changes; the rest keep what `bindings:` gave them.
+    presets: dict[str, dict[Step, StepBinding]] = Field(default_factory=dict)
+
+    @field_validator("presets")
+    @classmethod
+    def _name_presets(cls, value: dict[str, dict[Step, StepBinding]]):
+        for name in value:
+            if not NAME_SLUG.fullmatch(name):
+                raise ValueError(
+                    f"preset name {name!r} must start with a lowercase letter and use only "
+                    "lowercase letters, digits, dashes and underscores (max 32)"
+                )
+        return value
 
     @field_validator("roots")
     @classmethod
@@ -405,7 +419,7 @@ class ConsultConfig(BaseModel):
     def _check_personas(cls, value: dict[str, str]) -> dict[str, str]:
         checked: dict[str, str] = {}
         for name, text in value.items():
-            if not PERSONA_NAME.fullmatch(name):
+            if not NAME_SLUG.fullmatch(name):
                 raise ValueError(
                     f"persona name {name!r} must start with a lowercase letter and use only "
                     "lowercase letters, digits, dashes and underscores (max 32)"
@@ -513,9 +527,12 @@ class ConsultConfig(BaseModel):
             )
         for step, binding in sorted(self.workflow.bindings.items()):
             self.check_binding(step, binding)
+        for name, preset in sorted(self.workflow.presets.items()):
+            for step, binding in sorted(preset.items()):
+                self.check_binding(step, binding, f"`workflow.presets.{name}.{step}`")
         return self
 
-    def check_binding(self, step: Step, binding: StepBinding) -> None:
+    def check_binding(self, step: Step, binding: StepBinding, where: str | None = None) -> None:
         """Refuse a binding the step, the agent or the runtime cannot honour.
 
         Shared with workflow creation so an override supplied at `workflow_start`
@@ -523,7 +540,7 @@ class ConsultConfig(BaseModel):
         arrive later by another door.
         """
         definition = STEPS[step]
-        where = f"`workflow.bindings.{step}`"
+        where = where or f"`workflow.bindings.{step}`"
         if binding.executor == "host":
             return
         if binding.agents is not None and not definition.supports_multiple_agents:
