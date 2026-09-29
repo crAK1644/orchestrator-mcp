@@ -55,7 +55,8 @@ The optional dashboard is off by default. When it is on, it listens on loopback 
 
 Orchestrator reads its own configuration and database, plus:
 
-- the files you name in `context_paths`, which must sit under a configured `review.roots` entry;
+- the files you name in `context_paths`, which must sit under a configured `review.roots` entry (for `orchestrator_consult`, a `context_roots` entry);
+- the committed diff you name in a review's `diff_ref`, read by running `git diff` in a repository under a configured `review.roots` entry. Both ends must be commits: it reads git objects, not your working tree or index, and runs no program the repository's config names;
 - a workflow's `workdir`, which must be a git repository under a configured `workflow.roots` entry;
 - two fields from agent CLI history, both to identify the model that answered:
   - from the Codex session it just ran, the model, plus Codex's latest rate-limit figures;

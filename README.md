@@ -566,8 +566,31 @@ consult:
   review:
     reviewers: [codex]          # standard: exactly one
     deep_reviewers: [codex, claude]  # deep: one to five
-    roots: [~/src]              # context_paths is restricted to these trees
+    roots: [~/src]              # context_paths and diff_ref are restricted to these trees
 ```
+
+For a branch review, skip the file: `diff_ref` lets Orchestrator run the diff itself.
+
+```text
+orchestrator_review(goal="...", diff_ref="main...HEAD", diff_repo="~/src/myproject")
+```
+
+`A..B` diffs the two commits, `A...B` diffs from their merge base (what a pull request
+shows), and a single commit `X` is `X^..X` (a merge means its first parent). `diff_repo`
+may be left out when `roots` names exactly one directory. `diff_ref` cannot be combined
+with `context` or `context_paths`.
+
+- Both ends are resolved to commit SHAs before the diff runs, and the plan's manifest
+  shows them. Moving the branch between the plan and the run changes the approval hash,
+  so the token no longer fits.
+- Only committed changes. The working tree and the index are not read; commit first or
+  pass the diff through `context`.
+- The repository, and the top level of the repository it sits in, must both be beneath
+  `roots`. Pointing `diff_repo` at a subdirectory of a repository outside them is refused.
+- `git` runs with external diff programs and `textconv` filters off, so a repository whose
+  config names one cannot make this run it. Binary files appear as "differ", not as bytes.
+- The reviewer receives the diff, whose headers carry file paths relative to the repository,
+  never the repository's own location.
 
 `context_paths` is a convenience for material too large to paste into a tool argument.
 Orchestrator reads each named file beneath those roots and sends its contents to the
