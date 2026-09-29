@@ -13,7 +13,7 @@ from orchestrator_mcp.consult.config import load_consult_config
 from orchestrator_mcp.consult.service import ConsultService
 from orchestrator_mcp.server import main
 
-from .conftest import consult_block
+from .conftest import agent, consult_block
 
 
 @pytest.fixture
@@ -127,6 +127,30 @@ def test_doctor_fails_an_agent_that_is_not_logged_in(host_claude, monkeypatch, t
     assert _doctor(monkeypatch, tmp_path, config, logged_in=False) == 1
 
     assert "FAIL agent codex-sol: run `codex login`" in capsys.readouterr().out
+
+
+def test_doctor_says_antigravity_puts_the_prompt_in_the_process_list(
+    host_claude, monkeypatch, tmp_path, capsys
+):
+    block = consult_block(database_path=str(tmp_path / "db.sqlite3"))
+    block["agents"]["agy-flash"] = agent("antigravity", "gemini-3-flash", 30)
+
+    assert _doctor(monkeypatch, tmp_path, {"consult": block}) == 0
+
+    out = capsys.readouterr().out
+    assert "agent agy-flash: antigravity takes the prompt on its command line" in out
+    # Once, for the agent that does it -- not for Codex, which reads stdin.
+    assert out.count("command line") == 1
+
+
+def test_doctor_stays_quiet_about_the_process_list_without_an_antigravity_agent(
+    host_claude, monkeypatch, tmp_path, capsys
+):
+    config = {"consult": consult_block(database_path=str(tmp_path / "db.sqlite3"))}
+
+    assert _doctor(monkeypatch, tmp_path, config) == 0
+
+    assert "command line" not in capsys.readouterr().out
 
 
 def test_doctor_fails_a_broken_config(host_claude, monkeypatch, tmp_path, capsys):

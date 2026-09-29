@@ -84,8 +84,9 @@ consult:
                             # what this agent may be *asked* for, which is trust and
                             # not capability: `isolated_write` written here cannot
                             # make a runtime containable, and a runtime that is not
-                            # refuses at startup with its own reason. Codex is the
-                            # only runtime that can be, and it is not on by default.
+                            # refuses at startup with its own reason. Codex, and OpenCode
+                            # where Orchestrator's sandbox holds, can be; neither is on
+                            # by default.
                             # Default `[consultation]`.
       scores:               # 0..100 per capability; omitted means 0, i.e. never
         coding: 95          # the vocabulary is fixed: coding, research, writing,

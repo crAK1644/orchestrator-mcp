@@ -1099,8 +1099,8 @@ class ReviewService:
             if truncated:
                 details.append(f"truncated findings from {', '.join(truncated)}")
             return refusal(
-                "the summary cannot be finalized because Critical-finding survival "
-                f"cannot be verified: {'; '.join(details)}"
+                "the summary cannot be finalized because Critical and Important "
+                f"finding survival cannot be verified: {'; '.join(details)}"
             )
 
         # Checked, not merely asked for: the reason to consult more than one reviewer

@@ -431,3 +431,18 @@ async def test_a_credential_in_an_error_message_is_redacted(tmp_path, host_claud
     assert response.ok is False
     assert "sk-ant-api03" not in response.error.message
     assert "[redacted]" in response.error.message
+
+
+async def test_a_url_password_in_an_error_message_is_redacted(tmp_path, host_claude):
+    """A connection string is the commonest credential a provider error quotes."""
+    config = ConsultConfig(**consult_block(database_path=str(tmp_path / "c.sqlite3")))
+    adapter = StubAdapter(error=AdapterError(
+        ConsultErrorCode.AGENT_UNAVAILABLE,
+        "the agent exited 1: could not reach postgres://svc:hunter2pass@db.internal:5432/app",
+    ))
+    service = await StubService(config, "claude", adapter=adapter).open()
+
+    response = await service.consult(capability="coding", prompt="q")
+
+    assert "hunter2pass" not in response.error.message
+    assert "postgres://svc:[redacted]@db.internal" in response.error.message
