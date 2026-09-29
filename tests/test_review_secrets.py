@@ -196,6 +196,15 @@ def test_secret_lines_numbers_every_match_by_the_line_it_starts_on():
     assert secret_lines(text) == [1, 3, 3, 5]
 
 
+def test_an_integrity_prefix_inside_a_longer_token_hides_nothing():
+    """`sha256-` cut out of the middle of `Q7xsha256-...` left `Q7x`, and the random
+    token around it was never looked at."""
+    token = "Q7xsha256-AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+
+    assert suspect_lines(f"key {token}") == [1]
+    assert suspect_lines(f'"integrity": "sha512-AAAA/{RANDOM}=="') == []
+
+
 def test_a_line_secret_lines_already_reported_is_not_reported_twice():
     text = f"AUTH = {OTHER} and {RANDOM}"
 
