@@ -587,8 +587,18 @@ with `context` or `context_paths`.
   pass the diff through `context`.
 - The repository, and the top level of the repository it sits in, must both be beneath
   `roots`. Pointing `diff_repo` at a subdirectory of a repository outside them is refused.
-- `git` runs with external diff programs and `textconv` filters off, so a repository whose
-  config names one cannot make this run it. Binary files appear as "differ", not as bytes.
+  So is a checkout whose git data lives elsewhere: a linked worktree of a repository
+  outside `roots`, a `.git` file pointing out, or `objects/info/alternates` (a
+  `git clone --shared`) naming a directory outside.
+- `git` runs with external diff programs, `textconv` filters, replacement refs and lazy
+  fetching off, so a repository whose config names a program cannot make this run it. In
+  a partial clone a diff that needs a missing blob fails instead of fetching it. Binary
+  files appear as "differ", not as bytes.
+- A manifest you pass as `material` is kept, listed after the pinned endpoints, and leaves
+  `material_verified` false.
+- One limit: git opens the directory by name after the check, so someone who can already
+  write inside a root and swap the repository for a symlink in that instant can redirect
+  it. Closing that needs an OS sandbox around `git`.
 - The reviewer receives the diff, whose headers carry file paths relative to the repository,
   never the repository's own location.
 

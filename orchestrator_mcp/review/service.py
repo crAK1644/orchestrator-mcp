@@ -213,9 +213,9 @@ class ReviewService:
         # scan, the redaction, the approval hash, the stored row -- runs over the
         # real material rather than over a list of filenames.
         material_verified = False
-        if diff_repo and not diff_ref:
+        if diff_repo is not None and diff_ref is None:
             raise ValueError("`diff_repo` only means something with `diff_ref`")
-        if diff_ref:
+        if diff_ref is not None:
             if context is not None or context_paths:
                 raise ValueError(
                     "pass `diff_ref`, or `context` / `context_paths`, not a mix: two "
@@ -223,10 +223,10 @@ class ReviewService:
                 )
             roots = self.config.review.roots if self.config.review is not None else []
             context, diff_item = await read_diff(diff_ref, diff_repo, roots)
-            # Same rule as `context_paths`: a manifest the host wrote still wins.
-            if not manifest:
-                manifest = [diff_item]
-                material_verified = True
+            # The host's entries stay, but the pinned endpoints are always listed: they
+            # are what the approval covers. Any host entry leaves the manifest unverified.
+            material_verified = not manifest
+            manifest = [diff_item, *manifest]
         elif context_paths:
             if context is not None:
                 raise ValueError(

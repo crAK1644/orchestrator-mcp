@@ -309,3 +309,112 @@ async def test_a_credential_in_the_diff_shows_up_in_the_preview(build, repo, his
     assert response.error is None, response.error
     assert [h.field for h in response.plan.secret_hits] == ["context"]
     assert SECRET not in response.model_dump_json()
+
+
+def promisor_clone(tmp_path: Path, upstream: Path, name: str, marker: Path) -> Path:
+    """A blobless clone whose remote program leaves `marker` behind whenever it is run."""
+    script = tmp_path / "upload.sh"
+    script.write_text(f'#!/bin/sh\necho ran >> "{marker}"\nexec git upload-pack "$@"\n')
+    script.chmod(0o755)
+    clone = tmp_path / name
+    git(tmp_path, "clone", "-q", "--filter=blob:none", "--no-checkout", f"file://{upstream}", str(clone))
+    git(clone, "config", "remote.origin.uploadpack", str(script))
+    return clone
+
+
+async def test_a_partial_clone_does_not_run_its_remote_to_fetch_a_blob(build, repo, history, tmp_path):
+    git(repo, "config", "uploadpack.allowFilter", "true")
+    git(repo, "config", "uploadpack.allowAnySHA1InWant", "true")
+    marker = tmp_path / "marker"
+
+    # The trap is live: plain `git diff` in a blobless clone runs the remote's program.
+    trap = promisor_clone(tmp_path, repo, "trap", marker)
+    subprocess.run(["git", "diff", "HEAD~1", "HEAD"], cwd=trap, capture_output=True)
+    assert marker.exists()
+    marker.unlink()
+
+    clone = promisor_clone(tmp_path, repo, "clone", marker)
+    service = await build(roots=[clone])
+    response = await plan(service, "HEAD~1..HEAD")
+
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert not marker.exists()
+
+
+async def test_replacement_refs_do_not_change_what_the_pinned_shas_diff(build, repo, history):
+    git(repo, "checkout", "-q", "-b", "other", "main")
+    fake = commit(repo, "t.py", "REPLACED\n")
+    git(repo, "checkout", "-q", "main")
+    git(repo, "replace", history["c2"], fake)
+
+    # The trap is live: with replacement objects on, the topic tip is not what it was.
+    assert "REPLACED" in git(repo, "diff", "main..topic")
+
+    service = await build()
+    response = await plan(service, "main..topic")
+    run = await service.run(response.review_id, response.plan.confirm_token)
+
+    sent = next(iter(service.adapters.values())).prompts[0]
+    assert run.status == "awaiting_synthesis"
+    assert "+topic" in sent and "REPLACED" not in sent
+
+
+async def test_a_worktree_whose_git_data_is_outside_the_roots_is_refused(
+    build, tmp_path, repo, history
+):
+    roots = tmp_path / "roots"
+    roots.mkdir()
+    git(repo, "worktree", "add", "-q", str(roots / "wt"), "topic")
+    service = await build(roots=[roots])
+
+    response = await plan(service, "HEAD~1..HEAD", diff_repo=str(roots / "wt"))
+
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert "keeps git data" in response.error.message
+
+
+async def test_a_clone_borrowing_objects_from_outside_the_roots_is_refused(
+    build, tmp_path, repo, history
+):
+    roots = tmp_path / "roots"
+    roots.mkdir()
+    git(tmp_path, "clone", "-q", "--shared", str(repo), str(roots / "shared"))
+    service = await build(roots=[roots])
+
+    response = await plan(service, "HEAD~1..HEAD", diff_repo=str(roots / "shared"))
+
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert "keeps git data" in response.error.message
+
+
+async def test_a_worktree_whose_main_repository_is_inside_the_roots_is_accepted(
+    build, tmp_path, repo, history
+):
+    linked = tmp_path / "linked"
+    git(repo, "worktree", "add", "-q", str(linked), "topic")
+    service = await build(roots=[tmp_path])
+
+    response = await plan(service, "main..topic", diff_repo=str(linked))
+
+    assert response.error is None, response.error
+
+
+async def test_an_empty_ref_is_refused_by_the_ref_check(build, history):
+    service = await build()
+
+    response = await plan(service, "")
+
+    assert response.error.code is ConsultErrorCode.INVALID_REQUEST
+    assert "`diff_ref` must be 1 to" in response.error.message
+
+
+async def test_a_host_manifest_keeps_the_pinned_endpoints_in_the_plan(build, history):
+    service = await build()
+    note = {"label": "the topic branch", "kind": "text"}
+
+    both = await plan(service, "main..topic", material=[note])
+    alone = await plan(service, "main..topic")
+
+    assert [m.label for m in both.plan.material] == ["git diff main..topic", "the topic branch"]
+    assert both.plan.material[0].locator == alone.plan.material[0].locator
+    assert both.plan.material_verified is False and alone.plan.material_verified is True
