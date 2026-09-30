@@ -519,7 +519,11 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
         "would, so three agents is three times the spend.\n\n"
         "Every result is an ordinary consultation with its own `consultation_id`: "
         "continue any one of them with `orchestrator_consult`. They share the label "
-        "`group <group_id>`. Check each result's `ok`; one failing does not fail the rest."
+        "`group <group_id>`. Check each result's `ok`; one failing does not fail the rest.\n\n"
+        "`both_sides=true` instead asks exactly two agents to argue opposite sides of "
+        "the proposal in `prompt`: the first for, the second against. `sides` says who "
+        "argued which. Each was told which case to make, so read the two as arguments, "
+        "not as either agent's own verdict."
     )
     _tool(
         server,

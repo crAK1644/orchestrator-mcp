@@ -187,48 +187,74 @@ class ConsultService:
         return text
 
     async def consult_many(
-        self, *, target_agents: list[str] | None = None, count: int = 3, **kwargs: Any
+        self,
+        *,
+        target_agents: list[str] | None = None,
+        count: int = 3,
+        both_sides: bool = False,
+        **kwargs: Any,
     ) -> ConsultManyResponse:
         """The same question to several agents at once, each an ordinary consultation.
 
         No group table: the members share a label, and each stays resumable on its own
         through `consult`. Nobody eligible is `consult`'s own refusal, as one envelope.
+
+        `both_sides` makes the panel exactly two and hands the first the `case-for`
+        persona and the second `case-against`. That is the only difference between them:
+        same task, same bytes of context, and still blind to each other.
         """
         group_id = uuid4()
         kwargs["conversation_label"] = f"group {group_id}"
+
+        def refused(message: str) -> ConsultManyResponse:
+            requested = kwargs.get("capability")
+            return ConsultManyResponse(
+                group_id=group_id,
+                results=[
+                    _failed(
+                        None,
+                        requested if isinstance(requested, str) else "<invalid>",
+                        SourceMode.AUTO,
+                        ConsultErrorCode.INVALID_REQUEST,
+                        message,
+                        time.perf_counter(),
+                    )
+                ],
+            )
+
+        if both_sides and kwargs.get("persona"):
+            return refused("`both_sides` gives each agent its own persona, so leave `persona` out")
         # Read once, here, so every member is asked about the same bytes and the disk
         # is touched once rather than once per agent.
         if paths := kwargs.pop("context_paths", None):
             try:
                 kwargs["context"] = await self._read_context_paths(paths, kwargs.get("context"))
             except ValueError as exc:
-                requested = kwargs.get("capability")
-                return ConsultManyResponse(
-                    group_id=group_id,
-                    results=[
-                        _failed(
-                            None,
-                            requested if isinstance(requested, str) else "<invalid>",
-                            SourceMode.AUTO,
-                            ConsultErrorCode.INVALID_REQUEST,
-                            str(exc),
-                            time.perf_counter(),
-                        )
-                    ],
-                )
+                return refused(str(exc))
         agents = list(dict.fromkeys(target_agents or [])) or self.router.select_many(
-            str(kwargs.get("capability")), count
+            str(kwargs.get("capability")), 2 if both_sides else count
         )
         if not agents:
             return ConsultManyResponse(group_id=group_id, results=[await self.consult(**kwargs)])
+        if both_sides and len(agents) != 2:
+            return refused(
+                f"`both_sides` needs exactly two different agents, and {len(agents)} "
+                "would be asked"
+            )
+        # ponytail: the first agent is always "for"; reversing `target_agents` swaps the
+        # sides, and a random draw would only make a run harder to repeat.
+        sides = dict(zip(agents, ("for", "against"))) if both_sides else None
 
         answered = 0
 
         async def one(agent_id: str) -> ConsultResponse:
             nonlocal answered
+            # The tool layer passes every field, `persona=None` included, so the side's
+            # persona replaces that key instead of being added beside it.
+            ask = {**kwargs, "persona": f"case-{sides[agent_id]}"} if sides else kwargs
             # `consult` returns an envelope for every failure, so one agent failing
             # cannot take the others' answers down with it.
-            result = await self.consult(target_agent=agent_id, **kwargs)
+            result = await self.consult(target_agent=agent_id, **ask)
             answered += 1
             await progress_step(
                 f"{answered} of {len(agents)} agents answered",
@@ -239,7 +265,7 @@ class ConsultService:
 
         await progress_step(f"asking {len(agents)} agents", 0, float(len(agents)))
         return ConsultManyResponse(
-            group_id=group_id, results=list(await asyncio.gather(*map(one, agents)))
+            group_id=group_id, results=list(await asyncio.gather(*map(one, agents))), sides=sides
         )
 
     async def consult_review(
