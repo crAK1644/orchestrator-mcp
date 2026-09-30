@@ -8,6 +8,9 @@ operator's own. A config entry of the same name replaces the wording.
 hands its two agents. The wording asks for an honest case, not a performance: a side
 forced to win an argument it believes lost will invent, so each is told to keep its
 doubts in `uncertainties` and to name the point it finds hardest to answer.
+
+Either also works alone, as `persona` on a plain `orchestrator_consult`, so neither text
+may say or imply that another agent is arguing the other side.
 """
 
 from __future__ import annotations
@@ -36,15 +39,15 @@ STYLES: dict[str, tuple[str, str]] = {
     "case-for": (
         "argue the strongest honest case for",
         "Argue the strongest honest case for the proposal in the task. Use only claims "
-        "you believe are true, and put what you doubt in `uncertainties`. Do not soften "
-        "the case to seem balanced: the case against is argued elsewhere. Finish by "
-        "naming the one objection you find hardest to answer.",
+        "you believe are true, and put what you doubt in `uncertainties`. Make this "
+        "side's case only, and do not soften it to seem balanced. Finish by naming the "
+        "one objection you find hardest to answer.",
     ),
     "case-against": (
         "argue the strongest honest case against",
         "Argue the strongest honest case against the proposal in the task. Use only "
-        "claims you believe are true, and put what you doubt in `uncertainties`. Do not "
-        "soften the case to seem balanced: the case for is argued elsewhere. Finish by "
-        "naming the one point in its favour you find hardest to answer.",
+        "claims you believe are true, and put what you doubt in `uncertainties`. Make "
+        "this side's case only, and do not soften it to seem balanced. Finish by naming "
+        "the one point in its favour you find hardest to answer.",
     ),
 }
