@@ -14,9 +14,18 @@ undocumented, so it is not the only layer: `--allow-all-tools` is never passed (
 that survived would need an approval `--no-ask-user` refuses), `--deny-tool` names the
 shell, write and url kinds, and `_read_stream` fails the turn on any `tool.*` event or any
 tool request. A prompt asking for a file to be created created nothing, and the working
-directory stayed empty in every run. A `.mcp.json` and a `.vscode/mcp.json`
-planted in the working directory, or in the one above it, were neither listed nor
-started; the working directory is a fresh empty one regardless. See `_run`.
+directory stayed empty in every run. A `.mcp.json`, a `.vscode/mcp.json` and a
+`.github/mcp.json` planted in the working directory, or in the one above it, were neither
+listed nor started; the working directory is a fresh empty one regardless. See `_run`.
+
+What the allowlist does not stop is the CLI's own startup. A server in the home's
+`mcp-config.json` was launched and connected on every run and on the readiness check, its
+tool listed among the disabled ones ("Disabled tools: ... real-marker-touch_marker"), so
+the model could not call it. `--disable-mcp-server` does stop the launch, takes a name and
+no pattern, and so `_mcp_off` reads the names out of that file. A hook in the home's
+`config.json` ran on `sessionStart` and `userPromptSubmitted`, and no flag stops that. Nor
+does anything here look at what a plugin brings. The home is for the login and the
+sessions; the README says to keep it that way.
 
 The exit code means something here: 1 for a model the account cannot use (`Model "X"
 from --model flag is not available.`) and 1 when signed out (`No authentication
@@ -163,7 +172,8 @@ class CopilotCliAdapter:
         try:
             with tempfile.TemporaryDirectory(dir=root, prefix="probe-") as cwd:
                 result = await run_process(
-                    [command, *_FLAGS, "--model", _NO_MODEL, "--session-id", probe],
+                    [command, *_FLAGS, *_mcp_off(Path(env["COPILOT_HOME"])),
+                     "--model", _NO_MODEL, "--session-id", probe],
                     "x",
                     PREFLIGHT_TIMEOUT_S,
                     env=env,
@@ -289,7 +299,11 @@ class CopilotCliAdapter:
         retry, retry_usage = await self._call(
             agent, command, repair(complaint), session, env, work, 2
         )
-        joined = _Reply(retry.text, retry.model or reply.model, retry.calls, reply.record + "\n" + retry.record)
+        # The repair's own model, and none if it named none: the first reply's model wrote
+        # the broken answer, not this one, so lending its name would mark the answer that
+        # is returned as verified against a call that did not produce it. Its events stay
+        # in the record.
+        joined = _Reply(retry.text, retry.model, retry.calls, reply.record + "\n" + retry.record)
         return parse_content(retry.text), joined, _add(usage, retry_usage)
 
     async def _call(
@@ -304,7 +318,8 @@ class CopilotCliAdapter:
     ) -> tuple[_Reply, Usage]:
         report = work / f"usage-{number}.json"
         result = await run_process(
-            [command, *_FLAGS, "--model", agent.model, "--session-id", session,
+            [command, *_FLAGS, *_mcp_off(Path(env["COPILOT_HOME"])),
+             "--model", agent.model, "--session-id", session,
              "--usage-output-file", str(report)],
             text,
             self.timeout_s,
@@ -360,6 +375,20 @@ def _isolated() -> tuple[Path, dict[str, str]]:
     _private(root)
     home = _private(root / "home")
     return root, child_env({"COPILOT_HOME": str(home)})
+
+
+def _mcp_off(home: Path) -> list[str]:
+    """A `--disable-mcp-server` for every server this home configures.
+
+    `--available-tools` switches off a server's tools and leaves the server running. The
+    flag stops the launch, but takes a name, so the names come from the file
+    `copilot mcp add` writes. A server that file does not list is not stopped, and a hook
+    is not either: see the module docstring. The `=` form, so that a name that opens with
+    a dash is still a value.
+    """
+    config = _load(home / "mcp-config.json")
+    servers = config.get("mcpServers") if isinstance(config, dict) else None
+    return [f"--disable-mcp-server={name}" for name in sorted(servers)] if isinstance(servers, dict) else []
 
 
 def _forget(home: Path, session: str) -> None:
@@ -479,6 +508,16 @@ def _read_stream(result: ProcessResult, session: str) -> _Reply:
             ConsultErrorCode.TRANSPORT_ERROR,
             "the agent's reply ended without a `result`, so it is a fragment rather than "
             f"an answer (exit {result.returncode}): {result.stderr.strip()[:400]}",
+        )
+    code = finished.get("exitCode")
+    if isinstance(code, int) and code != 0:
+        # The process said 0 and its own last event says otherwise: neither is trusted
+        # over the other, and a failed run is not an answer. A code the event leaves out
+        # is not a failure.
+        raise AdapterError(
+            ConsultErrorCode.AGENT_UNAVAILABLE,
+            f"the agent's own last event reports exit code {code} although the process "
+            f"exited {result.returncode}: {result.stderr.strip()[:400]}",
         )
     if finished.get("sessionId") != session:
         raise AdapterError(

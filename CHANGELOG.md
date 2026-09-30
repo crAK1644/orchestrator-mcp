@@ -9,7 +9,8 @@ One line per change a user would notice. The full notes for each version are on 
   off and the run happens in an empty scratch directory, under a `COPILOT_HOME` of its own in
   `~/.orchestrator-mcp/copilot` that your `~/.copilot` never touches. `isolated_write` and web
   mode are refused. Sign in once with the command a signed-out consultation returns; the
-  readiness check costs no request.
+  readiness check costs no request. An MCP server that home's `mcp-config.json` lists is
+  switched off by name; a hook there is not stopped, so keep the home for the sign-in only.
 - A free Copilot plan serves the model `auto` only, and the response names the model Copilot
   routed the call to. Copilot reports no price, so its cost reads as unknown and a dollar
   ceiling cannot count it; a turn ceiling can. Its session history keeps prompts and answers

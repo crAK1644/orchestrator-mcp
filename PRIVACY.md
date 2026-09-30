@@ -46,7 +46,7 @@ The GitHub Copilot CLI also sends its own telemetry to GitHub: GitHub's help for
   - `home` is the `COPILOT_HOME` Copilot runs under: its configuration, logs and session store, one session directory for each consultation, and, on a host with no system keychain, the sign-in token where GitHub's documentation puts it. The session directories and the store hold each prompt and answer as sent, unmasked, and nothing prunes them.
   - Each run also gets a scratch directory beside it, empty, which is deleted when the run ends.
 
-  Both are mode `0700`. Your own `~/.copilot` is neither read nor written.
+  Both are mode `0700`. Your own `~/.copilot` is neither read nor written by Orchestrator. Put nothing in `home` but the sign-in: an MCP server that `mcp-config.json` lists is switched off for each run, by name, but a hook in `config.json` is not stopped by any flag, and Orchestrator neither looks for hooks or plugins nor limits them.
 - **`isolated_write` workflow steps** use `~/.orchestrator-mcp/worktrees` for two things:
   - **A throwaway worktree for each step.** It is removed when the step ends. The exception is a worktree whose diff could not be captured, which is kept as the only copy of that work.
   - **A private copy of each step's raw patch**, mode `0600`, kept so a lost response can be recovered. Unlike the database, this copy is not masked, because a masked patch does not apply.
@@ -69,7 +69,7 @@ Orchestrator reads its own configuration and database, plus:
 - two fields from agent CLI history, both to identify the model that answered:
   - from the Codex session it just ran, the model, plus Codex's latest rate-limit figures;
   - from `opencode export` of the OpenCode session it just ran, the model;
-- nothing from GitHub Copilot's history: the model that answered comes from the output of the run itself, the turn's token counts from a usage file that run writes into its scratch directory, and a session it resumes is checked for and not opened.
+- nothing from GitHub Copilot's history: the model that answered comes from the output of the run itself, the turn's token counts from a usage file that run writes into its scratch directory, and a session it resumes is checked for and not opened. It also opens `mcp-config.json` in Copilot's `home` and uses only the names of the servers listed, to switch each off; nothing else in the file is kept or sent on.
 
 It does not read your assistant's conversation history or memory. What it knows of a conversation is what arrives as tool arguments.
 
