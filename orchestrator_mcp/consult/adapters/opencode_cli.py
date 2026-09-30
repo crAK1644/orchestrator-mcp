@@ -45,6 +45,7 @@ from typing import Any
 from uuid import uuid4
 
 from ...contract import Usage
+from ...spend import tallied
 from ..config import AgentConfig
 from ..contract import ConsultationContent, SourceMode
 from ..errors import ConsultErrorCode
@@ -726,7 +727,8 @@ def _add(left: Usage, right: Usage) -> Usage:
     """One turn's cost plus the repair turn's, so the caller is billed the truth.
 
     Half a sum is not a total: if either side's cost is unknown the result is unknown,
-    rather than the known half presented as though it covered both turns.
+    rather than the known half presented as though it covered both turns. The same goes
+    for a count either side substituted a zero for: what it said about its counts is kept.
     """
     known = left.cost_usd is not None and right.cost_usd is not None
     return Usage(
@@ -734,4 +736,5 @@ def _add(left: Usage, right: Usage) -> Usage:
         completion_tokens=left.completion_tokens + right.completion_tokens,
         total_tokens=left.total_tokens + right.total_tokens,
         cost_usd=left.cost_usd + right.cost_usd if known else None,
+        counts_incomplete=tallied([*left.counts_incomplete, *right.counts_incomplete]),
     )

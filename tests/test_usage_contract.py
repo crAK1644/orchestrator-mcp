@@ -170,6 +170,34 @@ def test_a_turn_that_counted_cleanly_says_nothing(runtime):
     assert parse(payload).counts_incomplete == []
 
 
+# The adapters that add one turn to the next: a chunked run, a run's steps, a repair.
+ADDERS = {
+    "antigravity": antigravity_cli._add,
+    "opencode": opencode_cli._add,
+    "copilot": copilot_cli._add,
+}
+
+
+@pytest.mark.parametrize("runtime", sorted(ADDERS))
+def test_adding_two_turns_keeps_what_either_said_about_its_counts(runtime):
+    """A sum that holds a count somebody invented is not a measurement.
+
+    Each turn's caveat is stamped by its own parser, so it is the add that has to carry
+    it on. Rebuilding a `Usage` from the token fields alone made a chunked or repaired
+    run's total read as clean, whichever turn had the substituted zero in it.
+    """
+    add = ADDERS[runtime]
+    parse, garbage = GARBAGE[runtime]
+    _, healthy = TURN[runtime]
+    noted, clean = parse(garbage), parse(healthy)
+
+    assert noted.counts_incomplete and not clean.counts_incomplete
+    assert add(noted, clean).counts_incomplete == noted.counts_incomplete
+    assert add(clean, noted).counts_incomplete == noted.counts_incomplete
+    # The same failure in both turns is one thing to go and look at, said once.
+    assert len(add(noted, noted).counts_incomplete) == len(noted.counts_incomplete)
+
+
 # --- what the helpers say when a count does not read -------------------------
 
 

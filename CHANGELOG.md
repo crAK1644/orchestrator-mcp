@@ -3,6 +3,13 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
+## Unreleased
+
+- A chunked Antigravity run, and an OpenCode run that took several steps or a repair turn, no
+  longer lose the note that a count did not read. The server substitutes a zero for a count
+  it cannot parse and says so in `counts_incomplete`; adding turns together dropped that note,
+  so the total looked measured. It now keeps what each turn said, once.
+
 ## 0.10.3 — 2026-09-30
 
 - `runtime: copilot` consults the GitHub Copilot CLI, for answers only. Every tool is switched

@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from ...contract import Usage
+from ...spend import tallied
 from ..config import AgentConfig
 from ..contract import RequiredAction, SourceMode, consultation_content_schema
 from ..errors import ConsultErrorCode
@@ -635,10 +636,12 @@ def _add(left: Usage, right: Usage) -> Usage:
 
     Summed rather than taking the last turn's: every turn is a separately billed
     request, and a run that re-sent its history four times cost four times, however
-    much of it was served from cache.
+    much of it was served from cache. What either turn said about its counts is kept, so
+    a zero this server substituted in one turn does not vanish into the run's total.
     """
     return Usage(
         prompt_tokens=left.prompt_tokens + right.prompt_tokens,
         completion_tokens=left.completion_tokens + right.completion_tokens,
         total_tokens=left.total_tokens + right.total_tokens,
+        counts_incomplete=tallied([*left.counts_incomplete, *right.counts_incomplete]),
     )
