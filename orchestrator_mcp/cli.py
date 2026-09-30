@@ -27,8 +27,9 @@ DEFAULT_PATH = "~/.orchestrator-mcp/config.yaml"
 # What `init` offers per runtime: where to look for the CLI, and the agent it writes
 # if one is found. Taken from `config.example.yaml`; the scores are starting points
 # for the user to edit, not measurements.
-# ponytail: no opencode entry. Its free models rotate, so any model written here goes
-# stale; add one by hand from `opencode models` (config.example.yaml shows how).
+# ponytail: no opencode or copilot entry. Their model names rotate (and Copilot's depend
+# on the plan), so any model written here goes stale; add one by hand from
+# `opencode models`, or `auto` for Copilot (config.example.yaml shows how).
 _TEMPLATES: dict[str, tuple[list[str], str, dict[str, Any]]] = {
     "codex": (
         # The ChatGPT desktop app bundles the CLI and does not put it on PATH. Newer

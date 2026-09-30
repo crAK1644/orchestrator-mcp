@@ -112,6 +112,11 @@ MODEL_PRESETS: dict[str, tuple[str, ...]] = {
         "opencode/big-pickle",
         "opencode/mimo-v2.5-free",
     ),
+    # `auto` is the one name every Copilot plan accepts: on a free plan every explicit
+    # slug was refused as "not available" and `auto` alone was served, and on a paid one
+    # the concrete names depend on the plan and rotate, so none is offered here. `auto`
+    # is routed per call to a model the stream names, which the adapter reads back.
+    "copilot": ("auto",),
 }
 
 # A form of this shape is a few hundred bytes. The cap is here so a request cannot ask

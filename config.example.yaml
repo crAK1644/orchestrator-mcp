@@ -1,14 +1,14 @@
 # Orchestrator MCP config.
 #
 # There is one block, and it routes to an *agent runtime* -- a Codex, Claude Code,
-# OpenCode, or experimental Antigravity CLI installed on this machine. Claude Code
-# can consult GPT, Codex can consult Claude, and OpenCode can reach its hosted
-# catalogue without this server holding a provider key. No provider SDK or network
-# call of our own.
+# OpenCode, GitHub Copilot, or experimental Antigravity CLI installed on this machine.
+# Claude Code can consult GPT, Codex can consult Claude, and OpenCode can reach its
+# hosted catalogue without this server holding a provider key. No provider SDK or
+# network call of our own.
 #
 # One environment variable is required alongside it: ORCHESTRATOR_HOST_RUNTIME, set
-# to `codex`, `claude`, `opencode`, or `antigravity` to say which runtime this installation
-# *is*. It is never a tool argument, because an agent that could name the host
+# to `codex`, `claude`, `opencode`, `copilot`, or `antigravity` to say which runtime
+# this installation *is*. It is never a tool argument, because an agent that could name the host
 # runtime could route the work straight back to itself. Missing it is a startup
 # error.
 
@@ -59,9 +59,10 @@ consult:
   # price contributes nothing to the total, so the refusal names those agents rather
   # than pretending the number is complete.
   #
-  # The turn ceilings are the ones that bind an agent on a flat-rate plan. Codex and
-  # Antigravity report no per-turn price, so a dollar ceiling over them never leaves
-  # $0.00 and can never fire; turns are counted whatever an agent charges.
+  # The turn ceilings are the ones that bind an agent on a flat-rate plan. Codex,
+  # GitHub Copilot and Antigravity report no per-turn price, so a dollar ceiling over
+  # them never leaves $0.00 and can never fire; turns are counted whatever an agent
+  # charges.
   #
   # The consultation pair is the one that bounds `orchestrator_consult` itself. That
   # tool resumes a session by id, so a caller can keep spending turns on one paid CLI
@@ -76,7 +77,7 @@ consult:
 
   agents:
     codex-sol:              # the id callers name in `target_agent`
-      runtime: codex        # codex | claude | opencode | antigravity
+      runtime: codex        # codex | claude | opencode | copilot | antigravity
       command: codex        # resolved on PATH; an absolute path works too, which is
                             # what the ChatGPT desktop app needs -- it bundles the CLI
                             # at /Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex
@@ -156,6 +157,26 @@ consult:
       web_search: false     # not offered by this runtime, and setting it true here
                             # does not buy it: web mode is refused either way
       execution_modes: [consultation, patch]
+      scores:
+        coding: 60
+        reasoning: 60
+
+    # GitHub Copilot answers through your Copilot plan, from a copy of its state kept in
+    # ~/.orchestrator-mcp/copilot rather than your own ~/.copilot. Sign in to that copy
+    # once; a consultation that finds it signed out returns the command.
+    copilot:
+      runtime: copilot
+      command: copilot
+      model: auto           # the plan decides which models it offers. A free plan
+                            # serves `auto` only, which lets Copilot pick a model for
+                            # each call and report which one answered; a named model is
+                            # refused there as `configured_model_unavailable`.
+      priority: 50
+      web_search: false     # not offered by this runtime, and setting it true here
+                            # does not buy it: web mode is refused either way
+      execution_modes: [consultation, patch]
+                            # `isolated_write` is refused: it consults with every tool
+                            # switched off and has no write path
       scores:
         coding: 60
         reasoning: 60

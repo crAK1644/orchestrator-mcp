@@ -31,7 +31,7 @@
 
 ---
 
-Orchestrator MCP is a local [Model Context Protocol](https://modelcontextprotocol.io) server that lets one coding agent consult another. It launches the Codex, Claude Code, OpenCode, or experimental Antigravity CLI already installed and authenticated on your machine, routes the request, and returns a structured answer.
+Orchestrator MCP is a local [Model Context Protocol](https://modelcontextprotocol.io) server that lets one coding agent consult another. It launches the Codex, Claude Code, OpenCode, GitHub Copilot, or experimental Antigravity CLI already installed and authenticated on your machine, routes the request, and returns a structured answer.
 
 It does not ask for a provider key, proxy provider traffic, or silently switch models. Authentication remains inside each vendor's CLI.
 
@@ -84,6 +84,7 @@ Same subscriptions. Less context shuffling.
  Claude Code host  ──►  Orchestrator MCP  ──►  Codex CLI
  Codex host        ──►  Orchestrator MCP  ──►  Claude Code CLI
  Any host          ──►  Orchestrator MCP  ──►  OpenCode CLI (DeepSeek, Qwen, Kimi…)
+ Any host          ──►  Orchestrator MCP  ──►  GitHub Copilot CLI
  Any host          ──►  Orchestrator MCP  ──►  Antigravity CLI (experimental)
 
                          local routing
@@ -107,7 +108,7 @@ models through provider API keys. Orchestrator is for the rest:
 
 | | Orchestrator MCP | codex-plugin-cc | PAL MCP |
 |---|---|---|---|
-| Direction | Either way: Claude Code asks Codex, **Codex asks Claude Code**, and either asks OpenCode or Antigravity | Claude Code asks Codex | Any MCP host asks API models; `clink` launches agent CLIs |
+| Direction | Either way: Claude Code asks Codex, **Codex asks Claude Code**, and either asks OpenCode, GitHub Copilot or Antigravity | Claude Code asks Codex | Any MCP host asks API models; `clink` launches agent CLIs |
 | Credentials | Each CLI's own login, no keys | The Codex CLI's login | Provider API keys (OpenRouter, Gemini, OpenAI, …) |
 | Review | A [panel of reviewers](#reviews-with-a-checkpoint) from different vendors, answered in parallel, then one synthesis | Codex review and adversarial review | `codereview` and multi-model `consensus` |
 | Delegated edits | In a [disposable worktree under an OS sandbox](#execution-modes-and-what-each-one-can-reach); the host applies the diff | `/codex:rescue` hands the task to Codex | — |
@@ -121,7 +122,7 @@ Google's Gemini CLI stopped serving free and Google AI Pro/Ultra accounts on Jun
 
 ## Install
 
-**Claude Code: install as a plugin.** Needs [`uv`](https://docs.astral.sh/uv/) on your `PATH`, and at least one of Codex, Antigravity or OpenCode installed and logged in ([step 1](#1-sign-in-to-the-agent-clis) below). What you consult them about — prompts, diffs, file contents — goes to those providers under your own logins, and the usage is billed to your accounts with them; see the [privacy policy](PRIVACY.md) and the [Security model](#security-model). In Claude Code:
+**Claude Code: install as a plugin.** Needs [`uv`](https://docs.astral.sh/uv/) on your `PATH`, and at least one of Codex, Antigravity, OpenCode or GitHub Copilot installed and logged in ([step 1](#1-sign-in-to-the-agent-clis) below). What you consult them about — prompts, diffs, file contents — goes to those providers under your own logins, and the usage is billed to your accounts with them; see the [privacy policy](PRIVACY.md) and the [Security model](#security-model). In Claude Code:
 
 ```text
 /plugin marketplace add crAK1644/orchestrator-mcp
@@ -129,7 +130,7 @@ Google's Gemini CLI stopped serving free and Google AI Pro/Ultra accounts on Jun
 /orchestrator-mcp:setup
 ```
 
-`/orchestrator-mcp:setup` writes `~/.orchestrator-mcp/config.yaml` from the agent CLIs it finds, then runs `doctor` on it. It finds Codex and Antigravity; OpenCode goes into the config by hand, from its agent in [`config.example.yaml`](config.example.yaml). Then reconnect `plugin:orchestrator-mcp:orchestrator` in `/mcp`, or restart Claude Code: `/reload-plugins` keeps the server that started without a config.
+`/orchestrator-mcp:setup` writes `~/.orchestrator-mcp/config.yaml` from the agent CLIs it finds, then runs `doctor` on it. It finds Codex and Antigravity; OpenCode and GitHub Copilot go into the config by hand, from their agents in [`config.example.yaml`](config.example.yaml). Then reconnect `plugin:orchestrator-mcp:orchestrator` in `/mcp`, or restart Claude Code: `/reload-plugins` keeps the server that started without a config.
 
 If you added the server earlier with `claude mcp add orchestrator`, remove that entry (`claude mcp remove orchestrator -s <scope>`, with the scope `claude mcp get orchestrator` shows), or two copies of the server run side by side.
 
@@ -159,6 +160,8 @@ These are the normal Codex and Claude Code login flows. Orchestrator checks read
 
 For OpenCode, sign in once with `opencode auth login` for whichever provider you plan to consult. Hosted providers only — this server does not run a model on your machine. See the [OpenCode runtime](#opencode-runtime--deepseek-qwen-kimi) section below.
 
+For GitHub Copilot, sign in to the copy of its state that Orchestrator runs it under, not to your own: `COPILOT_HOME=$HOME/.orchestrator-mcp/copilot/home copilot login`. A consultation that finds it signed out returns that command in `required_action`. It needs a Copilot plan; see the [GitHub Copilot runtime](#github-copilot-runtime) section below.
+
 ### 2. Write a starter config
 
 ```bash
@@ -169,8 +172,8 @@ orchestrator-mcp-server init --host claude   # or codex: the client you run it u
 `~/.orchestrator-mcp/config.yaml` (mode `0600`, never over an existing file; `--path`
 picks another), and prints the exact line for step 3. It picks the best reviewer
 that is not the host. It writes no `workflow:` block, because only you can choose the
-directories a workflow may work in, and no OpenCode agent, because its free models
-rotate too often for a template; add both by hand from
+directories a workflow may work in, and no OpenCode or GitHub Copilot agent, because
+their model names change too often for a template; add them by hand from
 [`config.example.yaml`](config.example.yaml).
 
 <details>
@@ -207,7 +210,7 @@ or digit, and use only letters, digits, dots, dashes and underscores, up to 64
 characters. Anything else is refused at startup with a message naming the key.
 
 See [`config.example.yaml`](config.example.yaml) for a broader annotated configuration,
-an OpenCode agent, and an experimental Antigravity example.
+an OpenCode agent, a GitHub Copilot agent, and an experimental Antigravity example.
 
 </details>
 
@@ -457,7 +460,7 @@ The PyPI distribution is named `orchestrator-mcp-server`; the shorter PyPI name 
 | **Three-phase workflow** | Run a whole job — research and planning, implementation and testing, review and fixing — with eligible models bound to steps their runtime and configured execution mode permit. |
 | **Slash commands** | Drive consultations, reviews and workflows by name, with their checkpoints written down rather than hoped for. |
 | **Local history** | Store consultations, reviews, and workflows in SQLite, with an optional loopback dashboard. |
-| **Answer-only isolation** | Codex, Claude Code, and OpenCode are prevented from using action tools; explicit web mode enables only the target runtime's web-search facility. Experimental Antigravity detects and fails reported tool use but cannot yet prevent it. |
+| **Answer-only isolation** | Codex, Claude Code, OpenCode and GitHub Copilot are prevented from using action tools; explicit web mode enables only the target runtime's web-search facility, and Copilot has none. Copilot's lockdown is layered, and any tool use its stream reports fails the turn. Experimental Antigravity detects and fails reported tool use but cannot yet prevent it. |
 
 ### The consultation tools
 
@@ -550,7 +553,7 @@ Agent configuration:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `runtime` | required | `codex`, `claude`, `opencode`, or `antigravity`. |
+| `runtime` | required | `codex`, `claude`, `opencode`, `copilot`, or `antigravity`. |
 | `command` | required | Executable name or absolute path. |
 | `model` | required | Requested model and, where possible, verified responding model. |
 | `priority` | `100` | Lower wins a score tie, or any pick within `consult.score_margin`. |
@@ -689,7 +692,7 @@ external gate.
 Finalization must preserve every machine-readable Critical and Important finding, even when other reviewers disagree with it. Deep mode also requires the host agent to record its own findings before seeing the reviewers' answers.
 
 > [!IMPORTANT]
-> Material sent to a reviewer may remain in that vendor CLI's own history. Orchestrator cannot erase Codex, Claude Code, OpenCode, or Antigravity session logs.
+> Material sent to a reviewer may remain in that vendor CLI's own history. Orchestrator cannot erase Codex, Claude Code, OpenCode, GitHub Copilot, or Antigravity session logs.
 
 <details>
 <summary><strong>Review tool reference</strong></summary>
@@ -850,6 +853,7 @@ refusal names which side said no.
 | `opencode` | **supported where the sandbox holds** | Its own permission set isolates *configuration*, not filesystem effects, so the bound is Orchestrator's OS-level sandbox (seatbelt on macOS): writes are held to the worktree, and its runtime state is redirected into it and removed before the diff is read. **The network is open**, because the model is hosted: weaker than Codex, whose network is off. Stored `opencode auth` credentials are not carried in, so only providers that need none (such as OpenCode's free catalogue) work. Bubblewrap cannot grant that network yet, so Linux still refuses, and the refusal at startup says why. |
 | `claude` | refused | Same bar as OpenCode: its permission modes are requests, not kernel bounds. |
 | `antigravity` | refused | Writing needs `--dangerously-skip-permissions`, the one flag the adapter refuses by construction. |
+| `copilot` | refused | Its adapter consults with every tool disabled and has no write path. Use `patch` and apply the diff on the host. |
 
 A root allowlist and a prompt instruction are not containment. An agent that declares
 `isolated_write` on a runtime that cannot be contained is refused **at startup**, not at
@@ -1005,7 +1009,7 @@ scope, accepted plan, authored brief and prior findings as a JSON payload. An au
 brief is data inside that payload, and no field turns it into contract text.
 
 That is **code ownership, not a transport-level enforcement boundary**. Claude Code has
-a real system-prompt channel; Codex and OpenCode receive one compiled text, so there the
+a real system-prompt channel; Codex, OpenCode and GitHub Copilot receive one compiled text, so there the
 ordering is a prompt convention a determined model could argue with. Saying so is more
 useful than overclaiming.
 
@@ -1076,7 +1080,7 @@ storage or request latency.
 |---|---|
 | **Credentials** | No provider key setting exists. Orchestrator never reads, stores, returns, or refreshes a CLI's own credential. A credential you put in a prompt is material, not a credential here — see the warning below. |
 | **Process launch** | Commands are executed as argument lists, never through a shell. |
-| **Prompt visibility** | Codex, Claude Code and OpenCode read the prompt from stdin. Antigravity's CLI reads none, so its prompt is a command-line argument that other users on the machine can read in the process list while a turn runs. `doctor` says so for each such agent; do not send it material you would not put in `ps` output on a shared machine. |
+| **Prompt visibility** | Codex, Claude Code, OpenCode and GitHub Copilot read the prompt from stdin. Antigravity's CLI reads none, so its prompt is a command-line argument that other users on the machine can read in the process list while a turn runs. `doctor` says so for each such agent; do not send it material you would not put in `ps` output on a shared machine. |
 | **Self-consultation** | `ORCHESTRATOR_HOST_RUNTIME` comes from the environment and cannot be overridden by a tool call. |
 | **Agent permissions** | Consulted agents are answer-only, except for the target CLI's bounded search in explicit web mode. |
 | **Model identity** | A detected mismatch fails with `configured_model_unavailable`. Missing CLI metadata is reported as unverified, not invented. |
@@ -1091,7 +1095,7 @@ storage or request latency.
 > [!WARNING]
 > **Redaction covers every retained database copy, but what gets transmitted depends on the flow.** An ordinary consultation sends its original material while storing a scrubbed copy. Reviews normally send the masked copy; `secrets="send_as_is"` is the explicit path that sends the original. Workflow step material is redacted before both storage and transmission. Detection is best-effort pattern matching rather than a scanner with perfect recall, so a secret with no recognizable shape can survive it. Keep the database private, or set `store_full_content: false` where the selected feature permits it.
 >
-> **Vendor history is outside all of this.** Material sent to a reviewer also lands in that reviewer's own CLI history — Codex writes `~/.codex/sessions/`, and the others keep their own logs. Orchestrator cannot redact or erase those files. It does read from them, in three places and for two fields: the Codex adapter opens the rollout file for the session it just ran to recover the model identity the CLI does not otherwise report, and opens the newest rollout to read the latest Codex CLI rate-limit numbers; the OpenCode adapter runs `opencode export` on the session it just ran, for the same reason — the model identity is absent from that runtime's event stream. Nothing else is taken from any of them.
+> **Vendor history is outside all of this.** Material sent to a reviewer also lands in that reviewer's own CLI history — Codex writes `~/.codex/sessions/`, and the others keep their own logs. Orchestrator cannot redact or erase those files. It does read from them, in three places and for two fields: the Codex adapter opens the rollout file for the session it just ran to recover the model identity the CLI does not otherwise report, and opens the newest rollout to read the latest Codex CLI rate-limit numbers; the OpenCode adapter runs `opencode export` on the session it just ran, for the same reason — the model identity is absent from that runtime's event stream. Nothing else is taken from any of them. GitHub Copilot's state lives under `~/.orchestrator-mcp/copilot/home`, one session directory per consultation, which Orchestrator looks for before resuming a session and never prunes.
 
 Two more limits worth knowing:
 
@@ -1130,7 +1134,46 @@ Two limits worth knowing before you enable it:
 - **Web search is not supported in this runtime.** `source_mode: web` is refused whatever `web_search` is set to, rather than being served a model-mode answer under a web-mode contract.
 - **`opencode run` exits 0 even when it fails**, so success is judged from the event stream. A run that produces no answer is reported as a failure rather than as an empty one.
 
-There is no schema flag on this runtime, unlike the other three, so the response shape is stated in the prompt. A model that returns malformed JSON is asked once more in the same session, and a second failure ends the consultation.
+There is no schema flag on this runtime, unlike Codex, Claude Code and Antigravity, so the response shape is stated in the prompt. A model that returns malformed JSON is asked once more in the same session, and a second failure ends the consultation.
+
+</details>
+
+<a id="github-copilot-runtime"></a>
+
+<details>
+<summary><strong>GitHub Copilot runtime</strong></summary>
+
+<br>
+
+[GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli) (`copilot`) reaches the models your Copilot plan includes, through the login you already have. It is consulted for answers only:
+
+```yaml
+    copilot:
+      runtime: copilot
+      command: copilot
+      model: auto
+      scores: { coding: 60, reasoning: 60 }
+```
+
+**Which model answers is your plan's decision.** On the free plan this was tested against, every explicit model name was refused and only `auto` was served, which lets Copilot pick a model for each call. A plan that offers named models takes them; one that does not fails the consultation as `configured_model_unavailable`, naming the model. `auto` names nothing to check an answer against, so the response reports the model Copilot says answered, and that can change from one call to the next. A concrete name is compared with the answering model, and a mismatch fails as `configured_model_unavailable`.
+
+**Readiness costs no request.** Orchestrator asks the CLI to answer under a model name nobody has. Signed in, the CLI says the model is not available; signed out, it says there is no authentication information. That proves the sign-in and spends nothing. It does not prove that Copilot is reachable or that your quota is left, so a consultation that finds otherwise fails then. The CLI opens a session before it looks at the model, so the check names its own and removes it afterwards.
+
+**Its state is not yours.** Copilot runs with `COPILOT_HOME` pointed at `~/.orchestrator-mcp/copilot/home` (mode `0700`), so its config and sessions are kept apart from your own `~/.copilot`, and nothing in yours is read. Sign in once against that home with `COPILOT_HOME=$HOME/.orchestrator-mcp/copilot/home copilot login`. On macOS the login lives in the system keychain, so one you already have carries over. Where there is no keychain, GitHub's documentation puts the token in a file under that home, which is why the command names it; that path has not been exercised here. The token variables `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` and `GITHUB_TOKEN` are not passed on, like every other credential: the child gets a fixed allowlist of environment variables.
+
+**Answer-only, in layers.** The CLI has no read-only mode. Each consultation runs with every built-in tool switched off, the shell, write and url kinds denied, no custom instructions, no MCP servers and no remote sessions, and `--allow-all-tools` is never passed. The working directory is a fresh empty one, deleted afterwards; a `.mcp.json` planted in it or beside it was neither listed nor started. The switch-off relies on an allowlist naming one tool that does not exist, which the CLI accepts and GitHub does not document, so the stream is checked as well: any tool event, or a message that asks for a tool, fails the turn as `protocol_validation_failed` rather than being returned as an answer. A prompt asking it to create a file created nothing.
+
+**Sessions.** The prompt goes over stdin. `consultation_id` continues the same Copilot session: Orchestrator names each session with a UUID of its own and resumes it by that name, after checking that the session is still in that home. Without the check Copilot would start an empty one and answer as if the conversation had never happened, so a session removed from the home comes back as `session_not_found`. Session state grows by one directory per consultation, holds each prompt and answer unmasked, and nothing prunes it. A first turn the CLI refuses, such as one over a model your plan does not offer, still leaves its empty directory. Deleting `~/.orchestrator-mcp/copilot/home` clears it, and a consultation that used it can then no longer be continued.
+
+**Spend.** Copilot reports premium requests and no price, so a turn's cost reads as unknown, never `$0.00`, and a dollar ceiling cannot count it. Set a turn ceiling ([Spending ceilings](#spending-ceilings)). Token counts are the turn's own, not the session's running total, and a turn whose stream shows more than one model call says so in `counts_incomplete`.
+
+Limits worth knowing before you enable it:
+
+- **Web search is not supported in this runtime.** `source_mode: web` is refused whatever `web_search` is set to, rather than being served a model-mode answer under a web-mode contract.
+- **Consultation only.** `isolated_write` is refused for it; `patch` returns a diff for the host to apply.
+- **There is no schema flag**, so the response shape is stated in the prompt and a malformed reply is asked for once more in the same session, as on OpenCode.
+- **It leans on behavior GitHub does not document**: exit codes, the event stream, and the messages the readiness check reads, all checked against CLI 1.0.89. What it does not recognise fails rather than being guessed at.
+- **What you send is processed by GitHub** and the model provider behind the model Copilot picks, and the CLI sends GitHub its own telemetry, which Orchestrator does not turn off. See the [privacy policy](PRIVACY.md).
 
 </details>
 
@@ -1231,8 +1274,8 @@ An agent that reports no price contributes nothing to the total, which makes the
 total a floor. The refusal names those agents rather than presenting the floor as a
 sum. The error code is `spend_limit_reached`.
 
-**Set a turn ceiling too if anything in your routing is on a flat-rate plan.** Codex
-and Antigravity report no per-turn price, so a dollar ceiling over them counts nothing
+**Set a turn ceiling too if anything in your routing is on a flat-rate plan.** Codex,
+GitHub Copilot and Antigravity report no per-turn price, so a dollar ceiling over them counts nothing
 and never leaves `$0.00` -- it reads as a bound and is not one. Turns are counted for
 every agent whatever it charges, so `max_turns_per_review` and `max_turns_per_workflow`
 bound the work that money cannot see. They are checked at the same moments, refuse with
@@ -1315,7 +1358,7 @@ Live tests make real requests and may use paid capacity. Do not run them in CI u
 | `no_agent_available` | Give an enabled, non-host agent a positive score for the requested capability. |
 | `agent_not_installed` | Use an absolute path for `command`; GUI apps often inherit a smaller `PATH`. |
 | `connection_required` | Run the login command returned in `required_action`, then retry. |
-| Host runtime error | Set `ORCHESTRATOR_HOST_RUNTIME` to `claude`, `codex`, `opencode`, or `antigravity`. |
+| Host runtime error | Set `ORCHESTRATOR_HOST_RUNTIME` to `claude`, `codex`, `opencode`, `copilot`, or `antigravity`. |
 | The client lists the server as failed | Read the client's own stderr first; it carries the real message. `orchestrator-mcp-server --version` tells you only whether *that* shell can find the command, which a GUI client's smaller `PATH` may not. Running it with no arguments is what exercises the configuration: it either names the key to fix, or goes quiet waiting on stdin because the configuration is fine. |
 | Every consultation starts over | Return the previous `consultation_id` on the next call. |
 | `timeout` during a review | Raise `consult.timeout_s`; high-effort review can take much longer than 180 seconds. |
@@ -1328,7 +1371,7 @@ Live tests make real requests and may use paid capacity. Do not run them in CI u
 - No file edits, shell commands, MCP tools, or subagents for ordinary consulted agents;
   explicit web mode enables only the target runtime's web-search facility.
 - No automatic fixes; the host agent owns edits and tests. A workflow records and validates the phases, it does not run the job unattended.
-- No delegated write to your actual working tree. `isolated_write` runs in a throwaway worktree, and only where the runtime can be contained: Codex, and OpenCode where Orchestrator's OS-level sandbox holds. Claude Code and Antigravity refuse it. The host applies every patch.
+- No delegated write to your actual working tree. `isolated_write` runs in a throwaway worktree, and only where the runtime can be contained: Codex, and OpenCode where Orchestrator's OS-level sandbox holds. Claude Code, GitHub Copilot and Antigravity refuse it. The host applies every patch.
 - No streaming; each consultation returns one complete envelope.
 - No dashboard-initiated consultations.
 - No automatic configuration reload.

@@ -35,6 +35,10 @@ from . import sandbox
 #                bounds the kernel enforces.
 #   antigravity  writing needs `--dangerously-skip-permissions`, the one flag its
 #                adapter refuses by construction.
+#   copilot      its consult adapter runs with every tool switched off and refuses
+#                the turn if one is requested anyway, so there is no write mode to
+#                grant. The prompt would need `--allow-all-tools` to write, the one
+#                flag that adapter never passes.
 #
 # Every runtime gets `patch`, because a patch is text: it comes back through the
 # read-only consult path and the host applies it. That mode adds no write surface.
@@ -43,6 +47,7 @@ RUNTIME_CAPABILITIES: dict[Runtime, frozenset[ExecutionMode]] = {
     "claude": frozenset({"consultation", "patch"}),
     "opencode": frozenset({"consultation", "patch"}),
     "antigravity": frozenset({"consultation", "patch"}),
+    "copilot": frozenset({"consultation", "patch"}),
 }
 
 # Runtimes whose `isolated_write` is supplied from outside the runtime, by `sandbox`.
@@ -67,6 +72,10 @@ _UNSUPPORTED: dict[tuple[Runtime, ExecutionMode], str] = {
     ("antigravity", "isolated_write"): (
         "writing through antigravity requires `--dangerously-skip-permissions`, "
         "which its adapter refuses by construction"
+    ),
+    ("copilot", "isolated_write"): (
+        "its adapter consults with every tool disabled and has no write path; "
+        "use `patch` and apply the result on the host"
     ),
 }
 

@@ -12,6 +12,7 @@ Orchestrator's reach beyond the machine goes only through the agent CLIs you hav
 - Claude Code (Anthropic)
 - Antigravity (Google)
 - OpenCode, for the provider behind the model you configure
+- GitHub Copilot (GitHub, and the model provider behind the model it picks)
 
 It does not contact any of them directly, and it holds no API key.
 
@@ -27,7 +28,9 @@ Credential-shaped values are masked on a best-effort basis, but when masking hap
 
 Pattern matching can miss a secret that has no recognizable shape, so do not rely on it to catch one. A review's preview also lists lines holding a long random-looking token as `suspect_hits`, a guess that only warns.
 
-Each agent CLI also keeps its own history, for example `~/.codex/sessions/`. Orchestrator cannot redact or delete those files. Use the vendor's own tools for them.
+Each agent CLI also keeps its own history, for example `~/.codex/sessions/`. Orchestrator cannot redact or delete those files. Use the vendor's own tools for them. GitHub Copilot's history sits under Orchestrator's own directory, in `~/.orchestrator-mcp/copilot/home`, with the prompts and answers unmasked.
+
+The GitHub Copilot CLI also sends its own telemetry to GitHub: GitHub's help for `COPILOT_OFFLINE` lists telemetry among the network access that setting turns off. Orchestrator does not turn it off and does not see what it carries.
 
 ## What is stored on your machine
 
@@ -39,6 +42,11 @@ Each agent CLI also keeps its own history, for example `~/.codex/sessions/`. Orc
   Every stored copy has credential-shaped values masked. `store_full_content: false` keeps metadata only, but workflows need full content.
 - **Configuration**: `~/.orchestrator-mcp/config.yaml`, plus `~/.orchestrator-mcp/agents.yaml` if you use the dashboard editor.
 - **OpenCode working directories**: `~/.orchestrator-mcp/opencode/<agent>`, which hold only the configuration Orchestrator writes for that runtime.
+- **GitHub Copilot's state**: `~/.orchestrator-mcp/copilot`.
+  - `home` is the `COPILOT_HOME` Copilot runs under: its configuration, logs and session store, one session directory for each consultation, and, on a host with no system keychain, the sign-in token where GitHub's documentation puts it. The session directories and the store hold each prompt and answer as sent, unmasked, and nothing prunes them.
+  - Each run also gets a scratch directory beside it, empty, which is deleted when the run ends.
+
+  Both are mode `0700`. Your own `~/.copilot` is neither read nor written.
 - **`isolated_write` workflow steps** use `~/.orchestrator-mcp/worktrees` for two things:
   - **A throwaway worktree for each step.** It is removed when the step ends. The exception is a worktree whose diff could not be captured, which is kept as the only copy of that work.
   - **A private copy of each step's raw patch**, mode `0600`, kept so a lost response can be recovered. Unlike the database, this copy is not masked, because a masked patch does not apply.
@@ -60,13 +68,14 @@ Orchestrator reads its own configuration and database, plus:
 - a workflow's `workdir`, which must be a git repository under a configured `workflow.roots` entry;
 - two fields from agent CLI history, both to identify the model that answered:
   - from the Codex session it just ran, the model, plus Codex's latest rate-limit figures;
-  - from `opencode export` of the OpenCode session it just ran, the model.
+  - from `opencode export` of the OpenCode session it just ran, the model;
+- nothing from GitHub Copilot's history: the model that answered comes from the output of the run itself, the turn's token counts from a usage file that run writes into its scratch directory, and a session it resumes is checked for and not opened.
 
 It does not read your assistant's conversation history or memory. What it knows of a conversation is what arrives as tool arguments.
 
 ## Retention and deletion
 
-The `isolated_write` files above expire after 7 days. Database records stay until you delete them, unless you set `retention_days` in the `consult:` block: then, at each server start and roughly daily while it runs, finished consultations, reviews and workflows with no activity for that many days are deleted. Delete them yourself with these tools:
+The `isolated_write` files above expire after 7 days. GitHub Copilot's history is never pruned: delete `~/.orchestrator-mcp/copilot/home` to clear it, which on a host with no keychain takes the sign-in with it, and a consultation that used it can then no longer be continued. Database records stay until you delete them, unless you set `retention_days` in the `consult:` block: then, at each server start and roughly daily while it runs, finished consultations, reviews and workflows with no activity for that many days are deleted. Delete them yourself with these tools:
 
 - `orchestrator_delete_consultation`
 - `orchestrator_delete_review`

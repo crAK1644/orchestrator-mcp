@@ -1,12 +1,13 @@
-"""One turn, five parsers, one set of numbers.
+"""One turn, six parsers, one set of numbers.
 
 `Usage` fixes what its three fields count -- see the docstring on the model -- because
 the rollups add them across agents and the dashboard prints the sum in one column. Each
 CLI reports something different: Claude calls the uncached remainder the input, Codex
 folds cache and reasoning into its two headline figures as breakdowns, Antigravity and
-Opencode report theirs disjoint, and Antigravity's own total leaves out the thinking it
-just reported. An adapter that passes any of those through produces a number that
-cannot be compared with the one beside it.
+Opencode report theirs disjoint, Antigravity's own total leaves out the thinking it
+just reported, and Copilot keeps a running total for the whole session beside the one
+figure that belongs to this turn. An adapter that passes any of those through produces
+a number that cannot be compared with the one beside it.
 
 So the test is not that each parser reads its own envelope correctly -- the per-runtime
 files cover that. It is that the *same turn*, described the way each runtime describes
@@ -24,6 +25,7 @@ from orchestrator_mcp.consult.adapters import (
     antigravity_cli,
     claude_cli,
     codex_cli,
+    copilot_cli,
     opencode_cli,
 )
 from orchestrator_mcp.consult.adapters.base import (
@@ -71,6 +73,15 @@ TURN = {
                     "cache_write_input_tokens": 0, "output_tokens": 500,
                     "reasoning_output_tokens": 400}}],
     ),
+    # No cache or reasoning figure to sort: the last call's input already holds the cached
+    # share and its output the thinking. The trap is `modelMetrics` beside them, which
+    # is the whole session so far -- on a resumed turn it is the larger number.
+    "copilot": (
+        copilot_cli._usage,
+        {"lastCallInputTokens": 2000, "lastCallOutputTokens": 500,
+         "modelMetrics": {"gpt-5.6-luna": {"usage": {"inputTokens": 3800,
+                                                      "outputTokens": 900}}}},
+    ),
 }
 
 
@@ -101,7 +112,7 @@ def test_a_total_always_equals_its_own_parts(runtime):
     assert usage.total_tokens == usage.prompt_tokens + usage.completion_tokens
 
 
-# The same five envelopes with a count each runtime could plausibly get wrong: a string
+# The same six envelopes with a count each runtime could plausibly get wrong: a string
 # where a number belonged, a null, a list. Not hypothetical -- Antigravity writes `N/A`.
 GARBAGE = {
     "claude": (claude_cli._usage, {"usage": {"input_tokens": "N/A", "output_tokens": None,
@@ -114,6 +125,7 @@ GARBAGE = {
                                                   "cache": {"read": "N/A", "write": None}}}),
     "codex": (codex_cli._usage, [{"usage": {"input_tokens": "N/A", "output_tokens": ["?"]}}]),
     "codex-code": (codex_code._usage, [{"usage": {"input_tokens": "N/A", "output_tokens": ["?"]}}]),
+    "copilot": (copilot_cli._usage, {"lastCallInputTokens": "N/A", "lastCallOutputTokens": ["?"]}),
 }
 
 

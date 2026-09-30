@@ -30,9 +30,9 @@ from .contract import (
 )
 from .identity import host_identity_conflict
 
-# The two runtimes whose adapters accept `source_mode=web`. opencode and antigravity
-# refuse it outright -- not conditionally on `web_search:` -- so an agent on either
-# cannot take a step that needs the web however it is configured.
+# The two runtimes whose adapters accept `source_mode=web`. opencode, copilot and
+# antigravity refuse it outright -- not conditionally on `web_search:` -- so an agent on
+# any of them cannot take a step that needs the web however it is configured.
 WEB_RUNTIMES = frozenset({"codex", "claude"})
 
 

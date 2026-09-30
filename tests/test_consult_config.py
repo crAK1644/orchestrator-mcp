@@ -274,7 +274,10 @@ def test_the_example_config_still_loads(tmp_path):
     # duplicate id the moment one of them is called `codex-sol`, as the example's is.
     doc["consult"]["managed_agents_path"] = str(tmp_path / "agents.yaml")
     config = load_consult_config(doc)
-    assert sorted(config.agents) == ["claude-opus", "codex-sol", "gemini-reviewer", "nemotron-ultra"]
+    assert sorted(config.agents) == [
+        "claude-opus", "codex-sol", "copilot", "gemini-reviewer", "nemotron-ultra"
+    ]
+    assert config.agents["copilot"].runtime == "copilot"
     assert config.review.reviewers == ["codex-sol"]
     assert config.dashboard.enabled is False
 
@@ -323,7 +326,13 @@ def test_the_adapter_is_built_with_the_agent_s_own_timeout():
 
 @pytest.mark.parametrize(
     "runtime,command",
-    [("claude", "claude"), ("codex", "codex"), ("opencode", "opencode"), ("antigravity", "ag")],
+    [
+        ("claude", "claude"),
+        ("codex", "codex"),
+        ("opencode", "opencode"),
+        ("antigravity", "ag"),
+        ("copilot", "copilot"),
+    ],
 )
 def test_every_runtime_honours_the_override(runtime, command):
     config = ConsultConfig(

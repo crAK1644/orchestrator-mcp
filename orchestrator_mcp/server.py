@@ -448,8 +448,8 @@ def _instructions(consult: ConsultConfig) -> str:
     tools; the descriptions carry everything else.
     """
     lines = [
-        "Consult a different coding agent -- Codex, Claude Code, OpenCode or "
-        "Antigravity, signed in on this machine -- and get its answer back as a "
+        "Consult a different coding agent -- Codex, Claude Code, OpenCode, GitHub "
+        "Copilot or Antigravity, signed in on this machine -- and get its answer back as a "
         "structured envelope. Work is never routed back to the host's own execution "
         "identity.",
         "- Second opinion: `orchestrator_consult`. Send the returned "
@@ -488,8 +488,8 @@ def _add_consult_tools(server: MCPServer, service: ConsultService) -> None:
 
     _flatten(consult, service.request_model, ConsultResponse)
     consult.__doc__ = (
-        "Consult another vendor's coding agent -- Codex, Claude Code, OpenCode, or "
-        "experimental Antigravity -- running under its own account, and get back a "
+        "Consult another vendor's coding agent -- Codex, Claude Code, OpenCode, GitHub "
+        "Copilot, or experimental Antigravity -- running under its own account, and get back a "
         "structured second opinion.\n\n"
         "Keep the `consultation_id` from the response and send it back on every later "
         "call about the same topic: that is what continues the same conversation on "
@@ -1308,7 +1308,7 @@ _USAGE = """orchestrator-mcp-server -- an MCP server, spoken to over stdin by an
 
 There is nothing to run here by hand. Configure it in the client, which spawns it and
 holds the conversation; `ORCHESTRATOR_HOST_RUNTIME` must name the runtime that client
-is (`codex`, `claude`, `antigravity`, `opencode`) so the server can leave that agent
+is (`codex`, `claude`, `antigravity`, `opencode`, `copilot`) so the server can leave that agent
 out of its own routing.
 
   init --host RUNTIME [--path P]

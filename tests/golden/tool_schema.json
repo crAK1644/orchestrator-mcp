@@ -202,7 +202,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
@@ -746,7 +747,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
@@ -996,7 +998,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
@@ -1085,7 +1088,8 @@
             "codex",
             "claude",
             "antigravity",
-            "opencode"
+            "opencode",
+            "copilot"
           ],
           "title": "Host Runtime",
           "type": "string"
@@ -1138,7 +1142,8 @@
             "codex",
             "claude",
             "antigravity",
-            "opencode"
+            "opencode",
+            "copilot"
           ],
           "title": "Target Runtime",
           "type": "string"
@@ -2548,7 +2553,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
@@ -3682,7 +3688,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
@@ -4802,7 +4809,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
@@ -6033,7 +6041,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
@@ -7103,7 +7112,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
@@ -8189,7 +8199,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
@@ -9251,7 +9262,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
@@ -9535,7 +9547,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
@@ -9624,7 +9637,8 @@
             "codex",
             "claude",
             "antigravity",
-            "opencode"
+            "opencode",
+            "copilot"
           ],
           "title": "Host Runtime",
           "type": "string"
@@ -10460,7 +10474,8 @@
                 "codex",
                 "claude",
                 "antigravity",
-                "opencode"
+                "opencode",
+                "copilot"
               ],
               "title": "Runtime",
               "type": "string"
