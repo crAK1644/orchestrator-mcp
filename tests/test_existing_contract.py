@@ -55,6 +55,7 @@ CONSULT_TOOLS = {
     "orchestrator_list_consult_agents",
     "orchestrator_get_consultation",
     "orchestrator_list_consultations",
+    "orchestrator_search_consultations",
     "orchestrator_delete_consultation",
     "orchestrator_request_delete_all_consultations",
     "orchestrator_delete_all_consultations",

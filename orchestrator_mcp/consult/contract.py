@@ -289,6 +289,36 @@ class ConsultationListing(BaseModel):
     updated_at: str
 
 
+class SearchHit(BaseModel):
+    """One stored prompt or answer that matched. The excerpt is masked and short: the rest
+    is behind `consultation_id`, or `review_id` when a reviewer wrote it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    consultation_id: str
+    turn: int
+    part: Literal["prompt", "answer"]
+    agent_id: str
+    model: str
+    capability: str
+    conversation_label: str | None = None
+    review_id: str | None = None
+    created_at: str
+    excerpt: str
+
+
+class SearchResult(BaseModel):
+    """What `orchestrator_search_consultations` returns: best match first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    days: int | None = None
+    searched: int = Field(ge=0)
+    hits: list[SearchHit]
+    note: str | None = None
+
+
 class ConsultationDeleteApproval(BaseModel):
     """An exact snapshot of ordinary consultation history offered for deletion."""
 

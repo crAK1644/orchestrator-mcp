@@ -357,7 +357,7 @@ line for most mistakes, several for a schema violation, never a traceback.
 
 ### Reports from the terminal
 
-Four read-only commands print what the database already holds. They run instead of the
+Five read-only commands print what the database already holds. They run instead of the
 server, read the same config for its `database_path`, and open the file read-only: they
 never migrate it, so a database from an older version gets a sentence telling you to
 start the server once.
@@ -366,6 +366,7 @@ start the server once.
 orchestrator-mcp-server usage [--days 30] [--json]      # turns, tokens and cost per agent and model
 orchestrator-mcp-server history [--limit 20] [--kind review] [--json]   # recent records, with their ids
 orchestrator-mcp-server scorecard [--days 30] [--json]  # how each reviewer answered, and what became of its findings
+orchestrator-mcp-server search WORD... [--days N] [--limit 10] [--json]   # stored prompts and answers that hold every word
 orchestrator-mcp-server export ID                       # one record and everything it owns, as JSON
 ```
 
@@ -378,6 +379,18 @@ update them. A reviewer's hit rate appears once ten findings are decided. Rechec
 reviews are left out so the same finding is not counted twice, and a review with no
 synthesis on record (not finalized yet, or `store_full_content: false`, under which
 finalizing is refused) is counted as asked but not judged.
+
+`search` answers "which agent told me that?". A stored prompt or answer matches when it
+holds every word, best match first, and a word also matches its other endings (`search`
+finds `searched`). Each hit shows a short excerpt with the matching words in «marks», the
+agent and model, the date, and the id to `export`. A reviewer's hit names its review.
+Words are only words: `AND`, `NEAR`, `*`, `:` and quotes mean nothing special, and a query
+is at most 200 characters. `--limit` is at most 25 and `--days` defaults to all of it.
+The index is built in memory for each call from the text as it would be printed, so a
+credential in an old row can be neither read nor searched for, and nothing is added to the
+database. That costs about a fifth of a second for each megabyte of stored text. It finds
+nothing when `store_full_content` is `false`, which keeps no text, and says so. The same
+search is the read-only tool `orchestrator_search_consultations`.
 
 `export` takes a full id or a unique prefix of at least eight characters from `history`.
 It prints the record as stored, run through the same masking as everything else, without
@@ -438,6 +451,7 @@ The PyPI distribution is named `orchestrator-mcp-server`; the shorter PyPI name 
 | `orchestrator_list_consult_agents` | Show configured agents, routing scores, installation, and login readiness. |
 | `orchestrator_get_consultation` | Retrieve a stored consultation, its turns, usage, and routing decision. |
 | `orchestrator_list_consultations` | Recent ordinary consultations, newest first. Metadata only. |
+| `orchestrator_search_consultations` | Find past prompts and answers, reviews and workflow steps included, that hold some words. Best match first, with masked excerpts and the ids to read the rest. Read-only. |
 | `orchestrator_delete_consultation` | Delete one ordinary consultation and its local turns. |
 | `orchestrator_request_delete_all_consultations` / `orchestrator_delete_all_consultations` | Preview and confirm deletion of an exact ordinary-history snapshot. |
 
