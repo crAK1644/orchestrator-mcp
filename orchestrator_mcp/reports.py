@@ -67,23 +67,31 @@ def open_readonly(path: Path) -> tuple[sqlite3.Connection | None, str]:
     """The database read-only, or `(None, why not)`. It never raises `SystemExit`.
 
     `connect` is this for a terminal. The MCP server cannot exit, so its tool takes the
-    reason and hands it to the model as text.
+    reason and hands it to the model as text. A path SQLite cannot open is a reason too.
     """
     path = Path(path)
     if not path.exists():
         return None, f"no database at {path} yet; nothing has been consulted"
-    # `as_uri` percent-encodes, which a bare f-string would not: a `?` or `#` in the
-    # path would otherwise end it early.
-    db = sqlite3.connect(
-        f"{path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False
-    )
-    db.row_factory = sqlite3.Row
-    # A SELECT alone opens no transaction, so each statement would read the database as
-    # it stood at that moment. Another server may finalize or delete between them; an
-    # explicit BEGIN makes the first read pin one snapshot for the whole report.
-    db.execute("BEGIN")
-    if reason := ledger_problem(db):
-        db.close()
+    db = None
+    try:
+        # `as_uri` percent-encodes, which a bare f-string would not: a `?` or `#` in the
+        # path would otherwise end it early.
+        db = sqlite3.connect(
+            f"{path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False
+        )
+        db.row_factory = sqlite3.Row
+        # A SELECT alone opens no transaction, so each statement would read the database as
+        # it stood at that moment. Another server may finalize or delete between them; an
+        # explicit BEGIN makes the first read pin one snapshot for the whole report.
+        db.execute("BEGIN")
+        reason = ledger_problem(db)
+    except sqlite3.Error as error:
+        # A directory, or a file this user cannot read, passes `exists()`. SQLite refuses it
+        # only here, at the first read, and `ledger_problem` lets that error out.
+        reason = f"cannot open the database at {path}: {error}"
+    if reason:
+        if db is not None:
+            db.close()
         return None, reason
     return db, ""
 
@@ -508,7 +516,8 @@ def _speed_advice(
     The router is asked as `select` would be, so the first agent it names is where the
     config sends that kind of question. `review` is left out: reviewers are named in the
     config, not routed. Only rows of the model configured today are compared, since what
-    an older model did says nothing about the one that would answer now.
+    an older model did says nothing about the one that would answer now. The averages are
+    compared as `strengths` holds them at this point, unrounded.
     """
     router = ConsultRouter(config, host)
     table = {(g["capability"], g["agent_id"], g["model"]): g for g in groups}
@@ -538,9 +547,9 @@ def _speed_advice(
             best = min(faster, key=lambda g: (g["avg_latency_ms"], g["agent_id"]))
             advice.append(
                 f"For {capability}, {best['agent_id']} ({best['model']}) averaged "
-                f"{best['avg_latency_ms']:,} ms over {best['answered']} answers, and "
+                f"{round(best['avg_latency_ms']):,} ms over {best['answered']} answers, and "
                 f"{routed['agent_id']} ({routed['model']}), where the config routes it, "
-                f"{routed['avg_latency_ms']:,} ms over {routed['answered']}; "
+                f"{round(routed['avg_latency_ms']):,} ms over {routed['answered']}; "
                 f"{best['agent_id']} failed no more often."
             )
     return advice
@@ -585,9 +594,9 @@ def strengths(
             "errored": row["errored"],
             "error_rate": row["errored"] / asked if asked >= MIN_ASKED else None,
             "top_error": _top_code(row["error_codes"]),
-            "avg_latency_ms": (
-                None if row["avg_latency_ms"] is None else round(row["avg_latency_ms"])
-            ),
+            # Exact until the advice has compared them, rounded after: 3999.6 ms would read as
+            # 4000 and pass a 2x test it is under.
+            "avg_latency_ms": row["avg_latency_ms"],
             "decided": None,
             "precision": None,
             **spend,
@@ -612,6 +621,9 @@ def strengths(
     ]
     if config is not None:
         advice += _speed_advice(groups, config, host)
+    for g in groups:
+        if g["avg_latency_ms"] is not None:
+            g["avg_latency_ms"] = round(g["avg_latency_ms"])
     return {
         "days": days,
         "groups": groups,

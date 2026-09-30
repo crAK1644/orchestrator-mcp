@@ -16,6 +16,10 @@ One line per change a user would notice. The full notes for each version are on 
   failed at least 30% of five or more asks, or when another configured agent answered at
   least twice as fast at no higher failure rate than the one your config routes to. It only
   prints: nothing is changed, and it does not say whose answers were better.
+- The report commands print `cannot open the database at PATH: ...` when `database_path` names
+  a directory or a file this user cannot read. `usage`, `history`, `scorecard` and `export`
+  used to end in a traceback there, and `orchestrator_search_consultations` returns the same
+  sentence as its note.
 
 ## 0.10.1 — 2026-09-30
 

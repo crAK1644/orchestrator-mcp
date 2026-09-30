@@ -23,6 +23,7 @@ from orchestrator_mcp.reports import (
     MAX_HITS,
     NOT_MIGRATED,
     _parser,
+    connect,
     render_search,
     search,
     search_path,
@@ -324,6 +325,16 @@ def test_a_database_that_cannot_be_read_is_a_note_because_the_server_cannot_exit
     assert missing["hits"] == [] and "no database" in notes[0]
     assert "not a readable database" in notes[1]
     assert NOT_MIGRATED in notes[2]
+
+
+def test_a_path_that_exists_but_is_no_database_is_a_note_and_a_sentence(tmp_path):
+    # A directory passes the missing-file check, and SQLite only refuses it at the first read.
+    result = search_path(tmp_path, "zebra")
+    with pytest.raises(SystemExit) as done:
+        connect(tmp_path)
+
+    assert result["hits"] == [] and "cannot open the database" in result["note"]
+    assert "cannot open the database" in str(done.value)
 
 
 async def test_a_python_without_fts5_says_so_and_stops(config):
