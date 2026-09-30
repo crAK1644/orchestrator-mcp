@@ -3,7 +3,7 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
-## Unreleased
+## 0.10.3 — 2026-09-30
 
 - `runtime: copilot` consults the GitHub Copilot CLI, for answers only. Every tool is switched
   off and the run happens in an empty scratch directory, under a `COPILOT_HOME` of its own in
