@@ -295,7 +295,7 @@ with the same entry under `"mcpServers"` instead of `"servers"`.
 }
 ```
 
-Neither editor is one of the four runtimes, so name the one whose models its chat runs:
+Neither editor is one of the five runtimes, so name the one whose models its chat runs:
 `claude` for Claude, `codex` for GPT. That agent is then left out of the routing, and a
 question is never handed back to the model that asked it.
 
@@ -515,7 +515,7 @@ The selected CLI runs under its existing login and returns one response envelope
 | `consultation_id` | Handle for continuing the same native conversation. |
 | `content` | Answer, assumptions, uncertainties, follow-up questions, and sources. |
 | `route` | Agent, runtime, model, score, priority, and whether it was selected explicitly. |
-| `usage` | Token counts when the CLI reports them. |
+| `usage` | Token counts and, where the CLI reports a price, `cost_usd` (null when it does not). `counts_incomplete` lists every reason a count is not a straight measurement, such as a zero this server put in place of a count it could not read. |
 | `latency_ms` | End-to-end elapsed time. |
 | `error` | Stable error code, message, agent, and sometimes a command the user must run. |
 
@@ -562,6 +562,7 @@ Agent configuration:
 | `web_search` | `false` | Permit `source_mode: web` for this agent. |
 | `reasoning_effort` | unset | `low`, `medium`, `high`, `xhigh`, or `max`; Codex only. |
 | `timeout_s` | unset | Limit for one turn with this agent, overriding `consult.timeout_s`. |
+| `execution_modes` | `[consultation]` | What a workflow step may ask this agent to do: `consultation`, `patch` or `isolated_write`. Operator trust, not capability: a step gets a mode only if it is listed here and the runtime can do it. See [Execution modes](#execution-modes-and-what-each-one-can-reach). |
 
 `context_paths` uses the same reader as a review's (strict resolve, `O_NOFOLLOW` walk, no
 FIFOs, no symlinks out), against its own list:
@@ -851,7 +852,7 @@ refusal names which side said no.
 |---|---|---|
 | `codex` | **supported** | `sandbox_mode: workspace-write` with `approval_policy: never` is enforced by the CLI at OS level: a command aimed outside the worktree comes back `Operation not permitted` from the kernel, not from the model declining. Network is off, `/tmp` and `$TMPDIR` are excluded from the writable set. |
 | `opencode` | **supported where the sandbox holds** | Its own permission set isolates *configuration*, not filesystem effects, so the bound is Orchestrator's OS-level sandbox (seatbelt on macOS): writes are held to the worktree, and its runtime state is redirected into it and removed before the diff is read. **The network is open**, because the model is hosted: weaker than Codex, whose network is off. Stored `opencode auth` credentials are not carried in, so only providers that need none (such as OpenCode's free catalogue) work. Bubblewrap cannot grant that network yet, so Linux still refuses, and the refusal at startup says why. |
-| `claude` | refused | Same bar as OpenCode: its permission modes are requests, not kernel bounds. |
+| `claude` | refused | Its permission modes are requests, not kernel bounds, so it would need Orchestrator's OS-level sandbox as OpenCode does. Where that sandbox holds (macOS) it is still refused, because Orchestrator has no write adapter for Claude Code; Linux also cannot grant it the network. Use `patch`. |
 | `antigravity` | refused | Writing needs `--dangerously-skip-permissions`, the one flag the adapter refuses by construction. |
 | `copilot` | refused | Its adapter consults with every tool disabled and has no write path. Use `patch` and apply the diff on the host. |
 
@@ -1009,7 +1010,7 @@ scope, accepted plan, authored brief and prior findings as a JSON payload. An au
 brief is data inside that payload, and no field turns it into contract text.
 
 That is **code ownership, not a transport-level enforcement boundary**. Claude Code has
-a real system-prompt channel; Codex, OpenCode and GitHub Copilot receive one compiled text, so there the
+a real system-prompt channel; Codex, OpenCode, GitHub Copilot and Antigravity receive one compiled text, so there the
 ordering is a prompt convention a determined model could argue with. Saying so is more
 useful than overclaiming.
 
@@ -1095,7 +1096,7 @@ storage or request latency.
 > [!WARNING]
 > **Redaction covers every retained database copy, but what gets transmitted depends on the flow.** An ordinary consultation sends its original material while storing a scrubbed copy. Reviews normally send the masked copy; `secrets="send_as_is"` is the explicit path that sends the original. Workflow step material is redacted before both storage and transmission. Detection is best-effort pattern matching rather than a scanner with perfect recall, so a secret with no recognizable shape can survive it. Keep the database private, or set `store_full_content: false` where the selected feature permits it.
 >
-> **Vendor history is outside all of this.** Material sent to a reviewer also lands in that reviewer's own CLI history — Codex writes `~/.codex/sessions/`, and the others keep their own logs. Orchestrator cannot redact or erase those files. It does read from them, in three places and for two fields: the Codex adapter opens the rollout file for the session it just ran to recover the model identity the CLI does not otherwise report, and opens the newest rollout to read the latest Codex CLI rate-limit numbers; the OpenCode adapter runs `opencode export` on the session it just ran, for the same reason — the model identity is absent from that runtime's event stream. Nothing else is taken from any of them. GitHub Copilot's state lives under `~/.orchestrator-mcp/copilot/home`, one session directory per consultation, which Orchestrator looks for before resuming a session and never prunes.
+> **Vendor history is outside all of this.** Material sent to a reviewer also lands in that reviewer's own CLI history — Codex writes `~/.codex/sessions/`, and the others keep their own logs. Orchestrator cannot redact or erase those files. It does read from them, in three places and for two fields: the Codex adapter opens the rollout file for the session it just ran to recover the model identity the CLI does not otherwise report, and opens the newest rollout to read the latest Codex CLI rate-limit numbers; the OpenCode adapter runs `opencode export` on the session it just ran, for the same reason — the model identity is absent from that runtime's event stream. Nothing else is taken from any of them. GitHub Copilot's state lives under `~/.orchestrator-mcp/copilot/home`, one session directory per consultation, which Orchestrator looks for before resuming a session and never prunes. In that home it also reads `mcp-config.json` for the names of MCP servers to switch off, and writes one setting, `disableAllHooks`, into `settings.json`.
 
 Two more limits worth knowing:
 
@@ -1104,12 +1105,14 @@ Two more limits worth knowing:
 
 Orchestrator checks structure, routing, permissions, and model identity where observable. It cannot prove that a model's factual claims are true.
 
+<a id="opencode-runtime--deepseek-qwen-kimi"></a>
+
 <details>
 <summary><strong>OpenCode runtime — DeepSeek, Qwen, Kimi</strong></summary>
 
 <br>
 
-[OpenCode](https://opencode.ai) is one CLI in front of many hosted providers, which is how models the other three runtimes do not carry become reachable without Orchestrator holding a key. Models are addressed as `provider/model`:
+[OpenCode](https://opencode.ai) is one CLI in front of many hosted providers, which is how models the other runtimes do not carry become reachable without Orchestrator holding a key. Models are addressed as `provider/model`:
 
 ```yaml
     nemotron-ultra:
@@ -1203,7 +1206,11 @@ consult:
   dashboard:
     enabled: true
     editable: false
+    host: 127.0.0.1   # loopback only; `localhost` also works
+    port: 8765        # 1-65535
 ```
+
+A `host` that is not a loopback address is refused when the config loads, because the pages show every stored prompt and answer.
 
 Start it separately:
 
@@ -1211,7 +1218,7 @@ Start it separately:
 ORCHESTRATOR_CONFIG=/absolute/path/to/config.yaml orchestrator-mcp-dashboard
 ```
 
-Open [http://127.0.0.1:8765](http://127.0.0.1:8765).
+Open [http://127.0.0.1:8765](http://127.0.0.1:8765), or wherever `host` and `port` point. The navigation has Monitor, Workflows, Reviews and Scorecard, all read-only; Agents and Reviewers appear only with `editable: true`.
 
 `/workflows` lists every workflow; a workflow's page shows its state, fix rounds against the cap, the bindings frozen at start, and the step timeline in the order it happened, with each step linking to its consultation and its review. Those consultations are reachable nowhere else. The workflow pages are read-only: deletion stays on the MCP tools, where the confirmation token is.
 
@@ -1227,18 +1234,22 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 
 | Setting | Default | Meaning |
 |---|---|---|
+| `agents` | required | The consult agents, keyed by id; at least one. Their options are under [How consultation works](#how-consultation-works), in the collapsed *Consult request fields and agent options*. |
 | `database_path` | `~/.orchestrator-mcp/consultations.sqlite3` | Consultation, review, and workflow history. |
 | `managed_agents_path` | `~/.orchestrator-mcp/agents.yaml` | Agents written by the dashboard. |
 | `timeout_s` | `180` | Limit for one consultation turn. |
 | `preflight_ttl_s` | `300` | How long a *ready* login check is reused before the CLI is probed again. Only a ready answer is cached; `0` probes once per turn. |
 | `web_turn_limit` | `8` | Assistant turns allowed in web mode. Enforced by the Claude runtime only. |
+| `score_margin` | `0` | How many points below the top capability score an agent may be and still win on `priority`, 0 to 100. `0` keeps the plain score order. See [How consultation works](#how-consultation-works). |
 | `store_full_content` | `true` | Set false to keep metadata and routing only — except a review's goal and context, which are stored either way. Reviews cannot be finalized under it — see below. |
 | `retention_days` | absent | Days of no activity after which finished history is deleted, at each server start and then roughly daily while it runs: workflows that are completed, failed, cancelled or `needs_attention`; reviews not running; ordinary consultations. A running or leased record stays. Absent keeps everything. |
+| `context_roots` | empty | Directories `context_paths` may read on a consultation. Empty means the argument is not in the tool schema at all. |
+| `personas` | none | Your own named emphases for `persona`, or a reworded built-in of the same name. A name is a lowercase slug of up to 32 characters; its text is 1 to 2,000. The six ready-made styles need no config. |
 | `review` | absent | Configured reviewers; absent means no review tools. |
 | `workflow` | absent | The three-phase workflow; absent means no workflow tools. Requires `store_full_content: true`. |
 | `host` | runtime from the environment | Asserted host runtime, and the host model that makes same-runtime routing possible. |
 | `spend` | no ceiling | Dollar and turn ceilings, per consultation, per review, and per workflow. See below. |
-| `dashboard` | off | Loopback history UI and optional agent editor. |
+| `dashboard` | off | Loopback history UI (`host`, `port`) and optional agent editor. See [Local dashboard](#local-dashboard). |
 
 ### Spending ceilings
 

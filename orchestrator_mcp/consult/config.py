@@ -410,8 +410,9 @@ class ConsultConfig(BaseModel):
     # Files `orchestrator_consult` may read for a caller through `context_paths` must
     # resolve beneath one of these. Empty means the argument is not advertised at all.
     context_roots: list[Path] = Field(default_factory=list)
-    # Named emphases a caller may ask for with `persona`. Empty means the argument is
-    # not advertised at all, same as `context_roots`.
+    # Named emphases a caller may ask for with `persona`, beside the ready-made ones in
+    # `styles.STYLES`; an entry of the same name rewords one. The argument is in the
+    # schema either way, unlike `context_paths`.
     personas: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("personas")
