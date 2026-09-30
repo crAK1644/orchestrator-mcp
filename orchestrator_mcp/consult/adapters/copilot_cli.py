@@ -22,10 +22,15 @@ What the allowlist does not stop is the CLI's own startup. A server in the home'
 `mcp-config.json` was launched and connected on every run and on the readiness check, its
 tool listed among the disabled ones ("Disabled tools: ... real-marker-touch_marker"), so
 the model could not call it. `--disable-mcp-server` does stop the launch, takes a name and
-no pattern, and so `_mcp_off` reads the names out of that file. A hook in the home's
-`config.json` ran on `sessionStart` and `userPromptSubmitted`, and no flag stops that. Nor
-does anything here look at what a plugin brings. The home is for the login and the
-sessions; the README says to keep it that way.
+no pattern, and so `_mcp_off` reads the names out of that file. A hook ran on
+`sessionStart` and `userPromptSubmitted`, and no flag or variable stops that. The setting
+`disableAllHooks` does. The CLI keeps the user's settings in `settings.json` and, on a run,
+moves any it finds in `config.json` there, leaving that file to what it manages. Hooks in
+either file ran without the setting; with it in `settings.json` none ran, and the request
+was answered all the same. `_hooks_off` puts it there before every run and every
+readiness check. Whether it also covers what a plugin brings was not tried, and nothing
+here looks at one. The home is for the login and the sessions; the README says to keep it
+that way.
 
 The exit code means something here: 1 for a model the account cannot use (`Model "X"
 from --model flag is not available.`) and 1 when signed out (`No authentication
@@ -99,9 +104,15 @@ from .base import (
     usage_count,
 )
 
-# ponytail: the directory checks and the envelope are opencode's, imported from there.
-# Move them to `base.py` if a third adapter wants them.
-from .opencode_cli import ENVELOPE, _refuse_shared, _refuse_writable_ancestors, repair
+# ponytail: the directory checks, the file write and the envelope are opencode's, imported
+# from there. Move them to `base.py` if a third adapter wants them.
+from .opencode_cli import (
+    ENVELOPE,
+    _refuse_shared,
+    _refuse_writable_ancestors,
+    _write,
+    repair,
+)
 
 # How long a preflight gets. It never reaches a model.
 PREFLIGHT_TIMEOUT_S = 30.0
@@ -374,7 +385,38 @@ def _isolated() -> tuple[Path, dict[str, str]]:
     _refuse_writable_ancestors(root.parent)
     _private(root)
     home = _private(root / "home")
+    _hooks_off(home)
     return root, child_env({"COPILOT_HOME": str(home)})
+
+
+def _hooks_off(home: Path) -> None:
+    """`disableAllHooks` on in the home's `settings.json`, keeping whatever else it holds.
+
+    A hook in the home runs at the start of a session and on every prompt, and this
+    setting is all that stops it: see the module docstring. It is written only when it is
+    not already true, so a file that is right stays as its writer left it. One that cannot
+    be read as a JSON object is refused rather than overwritten. It is the operator's, and
+    running the CLI over it would be running with whatever hooks it names.
+    """
+    path = home / "settings.json"
+    try:
+        settings = json.loads(path.read_text())
+    except FileNotFoundError:
+        settings = {}
+    except (OSError, ValueError):
+        settings = None
+    # ponytail: a file with comments is refused, not parsed, and nothing locks it against
+    # the CLI rewriting it between this read and write. The next run puts the setting back;
+    # add a JSONC reader if someone keeps comments in this file.
+    if not isinstance(settings, dict):
+        raise AdapterError(
+            ConsultErrorCode.TRANSPORT_ERROR,
+            f"`{path}` cannot be read as a JSON object, so this server cannot switch the "
+            "Copilot CLI's hooks off in it, and it will not run the CLI with them on; fix "
+            "or remove it",
+        )
+    if settings.get("disableAllHooks") is not True:
+        _write(path, json.dumps({**settings, "disableAllHooks": True}, indent=2) + "\n")
 
 
 def _mcp_off(home: Path) -> list[str]:
@@ -382,9 +424,8 @@ def _mcp_off(home: Path) -> list[str]:
 
     `--available-tools` switches off a server's tools and leaves the server running. The
     flag stops the launch, but takes a name, so the names come from the file
-    `copilot mcp add` writes. A server that file does not list is not stopped, and a hook
-    is not either: see the module docstring. The `=` form, so that a name that opens with
-    a dash is still a value.
+    `copilot mcp add` writes. A server that file does not list is not stopped. The `=`
+    form, so that a name that opens with a dash is still a value.
     """
     config = _load(home / "mcp-config.json")
     servers = config.get("mcpServers") if isinstance(config, dict) else None

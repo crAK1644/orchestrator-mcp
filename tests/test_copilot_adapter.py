@@ -458,6 +458,84 @@ async def test_no_server_is_named_when_the_home_configures_none_it_can_read(stub
     assert switched_off(copilot_stub.calls(record)[0]) == []
 
 
+HOOKS = {"sessionStart": [{"type": "command", "bash": "echo started"}]}
+
+
+def seed_settings(home: Path, text: object) -> Path:
+    """A `settings.json` in the home consultations run under, where the CLI keeps the user's settings."""
+    state = home / "copilot" / "home"
+    state.mkdir(parents=True, exist_ok=True)
+    path = state / "settings.json"
+    path.write_text(text if isinstance(text, str) else json.dumps(text))
+    return path
+
+
+async def test_the_clis_hooks_are_switched_off_before_a_run_and_before_a_check(stub, adapter, home):
+    """A hook in the home ran on `sessionStart` and on every prompt, and no flag stops one.
+    `disableAllHooks` in `settings.json` does, with the hook in either settings file. Five
+    live runs on 1.0.89: the two without the setting ran both hooks, the three with it ran
+    none and answered all the same. It has to be there when the CLI starts, so what is
+    asserted is what the stub found at the call."""
+    record = stub(runs=[ok()])
+    await adapter.preflight(agent())
+    await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    check, run = copilot_stub.calls(record)
+    assert json.loads(check["settings"]) == json.loads(run["settings"]) == {"disableAllHooks": True}
+    # Readable by this user only, as `_write` leaves it.
+    assert (home / "copilot" / "home" / "settings.json").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("before", [{}, {"disableAllHooks": False}], ids=["absent", "false"])
+async def test_what_else_the_settings_hold_is_kept_when_the_switch_is_added(stub, adapter, home, before):
+    held = {"hooks": HOOKS, "experimental": False, "model": "auto", **before}
+    seed_settings(home, held)
+    record = stub(runs=[ok()])
+    await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert json.loads(copilot_stub.calls(record)[0]["settings"]) == {**held, "disableAllHooks": True}
+
+
+async def test_a_settings_file_that_already_says_so_is_not_rewritten(stub, adapter, home):
+    """Its layout is its writer's, and nothing replaces a file a CLI is about to read."""
+    text = '{"disableAllHooks":true,"hooks":{}}'
+    path = seed_settings(home, text)
+    stub(runs=[ok()])
+    await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert path.read_text() == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["{not json", "[]", "null", '// written by hand\n{"disableAllHooks": false}'],
+    ids=["unparseable", "a list", "null", "comments"],
+)
+async def test_a_settings_file_it_cannot_read_is_refused_and_left_alone(stub, adapter, home, text):
+    """It is the operator's, and the CLI would go on to run whatever hooks it names. Not
+    the stance on `mcp-config.json` above, where a file this cannot read costs a server
+    that starts but whose tools are off."""
+    path = seed_settings(home, text)
+    record = stub(runs=[ok()])
+
+    with pytest.raises(AdapterError) as excinfo:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert excinfo.value.code is ConsultErrorCode.TRANSPORT_ERROR
+    assert str(path) in str(excinfo.value)
+    assert path.read_text() == text
+    assert not copilot_stub.calls(record)
+
+
+async def test_readiness_is_refused_over_a_settings_file_it_cannot_read_too(stub, adapter, home):
+    seed_settings(home, "{not json")
+    record = stub()
+
+    with pytest.raises(AdapterError):
+        await adapter.preflight(agent())
+    assert not copilot_stub.calls(record)
+
+
 async def test_every_run_gets_an_empty_working_directory_of_its_own_that_is_then_gone(
     stub, adapter, home
 ):

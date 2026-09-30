@@ -5,6 +5,11 @@ One line per change a user would notice. The full notes for each version are on 
 
 ## Unreleased
 
+- A hook in the Copilot home no longer runs on a consultation or a readiness check. The CLI
+  ran one on session start and on every prompt and has no flag to stop it, so the server now
+  sets `disableAllHooks` in the home's `settings.json` before each run, keeping whatever else
+  that file holds. A `settings.json` it cannot read as a JSON object, comments included, is
+  named and refused rather than overwritten. Plugins were not examined.
 - A chunked Antigravity run, and an OpenCode run that took several steps or a repair turn, no
   longer lose the note that a count did not read. The server substitutes a zero for a count
   it cannot parse and says so in `counts_incomplete`; adding turns together dropped that note,
