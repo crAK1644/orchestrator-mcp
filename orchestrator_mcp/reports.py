@@ -1,5 +1,5 @@
 """Read-only reports over the consultation database: `usage`, `history`, `scorecard`,
-`export` and `search`.
+`strengths`, `export` and `search`.
 
 These run instead of the server, from a terminal, and open the file `mode=ro` -- never
 through `ConsultStore`, which migrates. A database older than this version therefore
@@ -17,15 +17,16 @@ import json
 import re
 import sqlite3
 import textwrap
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NoReturn
 
-from .consult.config import load_consult_config
+from .consult.config import ConsultConfig, host_runtime, load_consult_config
 from .consult.errors import ConsultErrorCode
+from .consult.routing import ConsultRouter
 
 # `_spend` and `_ORDINARY_SQL` stay private to the store, which owns both rules; a report
 # that wrote its own copy of either would be the second place to get them wrong.
@@ -41,6 +42,12 @@ NOT_MIGRATED = (
 # Below this many decided findings a reviewer's hit rate is anecdote, not a rate.
 MIN_DECIDED = 10
 MIN_PREFIX = 8
+# `strengths`: an error rate is shown from this many asks, and advice names an agent only
+# from as many. It also needs FAIL_SHARE of the asks failing, or answers FASTER_BY times
+# quicker than the agent the config routes to.
+MIN_ASKED = 5
+FAIL_SHARE = 0.3
+FASTER_BY = 2.0
 # The dashboard's own cap on `days`; a `timedelta` overflows a `datetime` far beyond it.
 MAX_DAYS = 3650
 MAX_LIMIT = 1000
@@ -451,6 +458,222 @@ def render_scorecard(report: dict[str, Any]) -> str:
     )
 
 
+# --- strengths ----------------------------------------------------------------
+
+# Codes that say an agent was not set up, not that it answered badly. `doctor` checks them.
+_SETUP_CODES = frozenset(
+    code.value
+    for code in (
+        ConsultErrorCode.AGENT_NOT_INSTALLED,
+        ConsultErrorCode.CONNECTION_REQUIRED,
+        ConsultErrorCode.CONFIGURED_MODEL_UNAVAILABLE,
+        ConsultErrorCode.AGENT_UNAVAILABLE,
+        ConsultErrorCode.WEB_SEARCH_UNAVAILABLE,
+    )
+)
+
+# Turns somebody asked. One that never started, or that the spend ceiling stopped before any
+# attempt, is left out as `_SCORED` leaves it out: counted, it would call an agent that was
+# never tried a failure.
+_ASKED = (
+    "COALESCE(t.error_code, '') NOT IN "
+    f"('{ConsultErrorCode.NOT_STARTED.value}', '{ConsultErrorCode.SPEND_LIMIT_REACHED.value}')"
+)
+
+
+def _top_code(codes: str | None) -> str | None:
+    """The commonest of some `char(31)`-joined error codes, the first alphabetically on a tie."""
+    counts = Counter(code for code in (codes or "").split("\x1f") if code)
+    if not counts:
+        return None
+    return _clean(min(counts.items(), key=lambda item: (-item[1], item[0]))[0]) or None
+
+
+def _failure_advice(entry: dict[str, Any]) -> str:
+    code = entry["top_error"]
+    text = (
+        f"{entry['agent_id']} ({entry['model']}) failed {entry['errored']} of {entry['asked']} "
+        f"asks for {entry['capability']}" + (f", most often `{code}`." if code else ".")
+    )
+    if code in _SETUP_CODES:
+        text += " That is setup, not a weakness: run `orchestrator-mcp-server doctor`."
+    return text
+
+
+def _speed_advice(
+    groups: list[dict[str, Any]], config: ConsultConfig, host: str
+) -> list[str]:
+    """Where another agent has answered a kind of question much quicker than the routed one.
+
+    The router is asked as `select` would be, so the first agent it names is where the
+    config sends that kind of question. `review` is left out: reviewers are named in the
+    config, not routed. Only rows of the model configured today are compared, since what
+    an older model did says nothing about the one that would answer now.
+    """
+    router = ConsultRouter(config, host)
+    table = {(g["capability"], g["agent_id"], g["model"]): g for g in groups}
+
+    def today(capability: str, agent_id: str) -> dict[str, Any] | None:
+        row = table.get((capability, _clean(agent_id), _clean(config.agents[agent_id].model)))
+        # A speed is over answers, so it needs this many of them.
+        if row and row["answered"] >= MIN_ASKED and row["avg_latency_ms"] is not None:
+            return row
+        return None
+
+    advice = []
+    for capability in sorted({g["capability"] for g in groups} - {"review"}):
+        order = router.select_many(capability, len(config.agents))
+        routed = today(capability, order[0]) if order else None
+        if routed is None:
+            continue
+        rate = routed["errored"] / routed["asked"]
+        faster = [
+            other
+            for agent_id in order[1:]
+            if (other := today(capability, agent_id))
+            and other["errored"] / other["asked"] <= rate
+            and routed["avg_latency_ms"] >= FASTER_BY * other["avg_latency_ms"]
+        ]
+        if faster:
+            best = min(faster, key=lambda g: (g["avg_latency_ms"], g["agent_id"]))
+            advice.append(
+                f"For {capability}, {best['agent_id']} ({best['model']}) averaged "
+                f"{best['avg_latency_ms']:,} ms over {best['answered']} answers, and "
+                f"{routed['agent_id']} ({routed['model']}), where the config routes it, "
+                f"{routed['avg_latency_ms']:,} ms over {routed['answered']}; "
+                f"{best['agent_id']} failed no more often."
+            )
+    return advice
+
+
+def strengths(
+    db: sqlite3.Connection,
+    days: int = 30,
+    config: ConsultConfig | None = None,
+    host: str = "",
+) -> dict[str, Any]:
+    """Per kind of question, agent and model: whether it answered, how fast and at what cost.
+
+    Nothing here says an answer was good. The one signal of that is a reviewer's hit rate,
+    taken from `scorecard` rather than counted again. With a `config`, `advice` also says
+    where the router sends a kind of question and whether another agent has been much
+    quicker at it. Advice is only ever printed: nothing here edits the config, and only an
+    agent configured now, on the model configured now, is named.
+    """
+    hit_rates = {(r["agent_id"], r["model"]): r for r in scorecard(db, days)["reviewers"]}
+    groups: list[dict[str, Any]] = []
+    for row in db.execute(
+        "SELECT c.capability AS capability, c.target_agent_id AS agent_id, "
+        f"c.target_model AS model, {SPEND_COLUMNS}, "
+        "COALESCE(SUM(t.error_code IS NULL), 0) AS answered, "
+        "COALESCE(SUM(t.error_code IS NOT NULL), 0) AS errored, "
+        # A failed turn's clock is a timeout or a crash, not how long an answer takes.
+        "AVG(CASE WHEN t.error_code IS NULL THEN t.latency_ms END) AS avg_latency_ms, "
+        "GROUP_CONCAT(t.error_code, char(31)) AS error_codes "
+        "FROM consultation_turns t JOIN consultations c ON c.id = t.consultation_id "
+        f"WHERE t.created_at >= ? AND {_ASKED} GROUP BY 1, 2, 3 ORDER BY 1, 2, 3",
+        (_cutoff(days),),
+    ):
+        spend = _spend_fields(_spend(row))
+        asked = spend.pop("turns")
+        entry: dict[str, Any] = {
+            "capability": _clean(row["capability"]),
+            "agent_id": _clean(row["agent_id"]),
+            "model": _clean(row["model"]),
+            "asked": asked,
+            "answered": row["answered"],
+            "errored": row["errored"],
+            "error_rate": row["errored"] / asked if asked >= MIN_ASKED else None,
+            "top_error": _top_code(row["error_codes"]),
+            "avg_latency_ms": (
+                None if row["avg_latency_ms"] is None else round(row["avg_latency_ms"])
+            ),
+            "decided": None,
+            "precision": None,
+            **spend,
+        }
+        found = hit_rates.get((entry["agent_id"], entry["model"]))
+        if entry["capability"] == "review" and found:
+            entry["decided"], entry["precision"] = found["decided"], found["precision"]
+        groups.append(entry)
+
+    configured = (
+        None
+        if config is None
+        else {(_clean(a.agent_id), _clean(a.model)) for a in config.agents.values()}
+    )
+    advice = [
+        _failure_advice(g)
+        for g in groups
+        if g["error_rate"] is not None
+        and g["error_rate"] >= FAIL_SHARE
+        # An agent or model the config no longer holds is history, not something to act on.
+        and (configured is None or (g["agent_id"], g["model"]) in configured)
+    ]
+    if config is not None:
+        advice += _speed_advice(groups, config, host)
+    return {
+        "days": days,
+        "groups": groups,
+        "advice": advice,
+        "caveats": tallied(note for g in groups for note in g["caveats"]),
+    }
+
+
+STRENGTHS_NOTE = (
+    "This counts asks, answers, errors, speed and cost. It does not say whose answers were "
+    "better: only `review` rows carry a signal of that, the hit rate from the scorecard, "
+    "which counts first-round reviews only and so can rest on fewer asks than the row "
+    "shows. Every consultation counts, a reviewer's and a workflow step's included, and "
+    "agents were not asked the same questions. Latency is over answered turns only. An "
+    f"error rate is shown from {MIN_ASKED} asks, a hit rate from {MIN_DECIDED} decided "
+    "findings."
+)
+
+
+STRENGTHS_HEADERS = (
+    "capability", "agent", "model", "asked", "answered", "errored", "error rate", "hit rate",
+    "avg latency", "cost",
+)  # fmt: skip
+
+
+def strengths_cells(entry: dict[str, Any]) -> tuple[str, ...]:
+    if entry["error_rate"] is not None:
+        error = f"{entry['error_rate']:.0%}"
+    else:
+        error = f"n<{MIN_ASKED}"
+    if entry["precision"] is not None:
+        hit = f"{entry['precision']:.0%}"
+    else:
+        hit = "-" if entry["decided"] is None else f"n<{MIN_DECIDED}"
+    return (
+        entry["capability"],
+        entry["agent_id"],
+        entry["model"],
+        str(entry["asked"]),
+        str(entry["answered"]),
+        str(entry["errored"]),
+        error,
+        hit,
+        "-" if entry["avg_latency_ms"] is None else f"{entry['avg_latency_ms']} ms",
+        cost_text(entry),
+    )
+
+
+def render_strengths(report: dict[str, Any]) -> str:
+    if not report["groups"]:
+        return f"No turns in the last {report['days']} days."
+    text = f"Last {report['days']} days\n" + _table(
+        STRENGTHS_HEADERS, [strengths_cells(g) for g in report["groups"]]
+    )
+    if report["advice"]:
+        text += (
+            "\n\nWorth a look. Nothing here is applied; the config is yours to change."
+            + _notes(report["advice"])
+        )
+    return text + "\n\n" + textwrap.fill(STRENGTHS_NOTE, 100) + _notes(report["caveats"])
+
+
 # --- export -------------------------------------------------------------------
 
 # Never printed. A session id is a credential for resuming a conversation (the dashboard
@@ -769,6 +992,9 @@ def _parser() -> argparse.ArgumentParser:
     command("scorecard", "how each reviewer answered and what became of its findings").add_argument(
         "--days", type=_count(MAX_DAYS), default=30, help="how far back to look (default 30)"
     )
+    command("strengths", "how each agent has answered each kind of question").add_argument(
+        "--days", type=_count(MAX_DAYS), default=30, help="how far back to look (default 30)"
+    )
     command("export", "one record and everything it owns, as JSON", json_flag=False).add_argument(
         "id", help=f"a full id or a prefix of at least {MIN_PREFIX} characters, from `history`"
     )
@@ -802,6 +1028,13 @@ def run(args: Sequence[str], load_config) -> int:
             case "scorecard":
                 report = scorecard(db, options.days)
                 print(json.dumps(report, indent=2) if options.json else render_scorecard(report))
+            case "strengths":
+                try:
+                    host = host_runtime()
+                except ConfigError:
+                    host = ""  # a plain terminal has no host of its own to leave out
+                report = strengths(db, options.days, consult, host)
+                print(json.dumps(report, indent=2) if options.json else render_strengths(report))
             case "export":
                 print(json.dumps(export(db, options.id), indent=2))
             case "search":

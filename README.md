@@ -357,7 +357,7 @@ line for most mistakes, several for a schema violation, never a traceback.
 
 ### Reports from the terminal
 
-Five read-only commands print what the database already holds. They run instead of the
+Six read-only commands print what the database already holds. They run instead of the
 server, read the same config for its `database_path`, and open the file read-only: they
 never migrate it, so a database from an older version gets a sentence telling you to
 start the server once.
@@ -366,6 +366,7 @@ start the server once.
 orchestrator-mcp-server usage [--days 30] [--json]      # turns, tokens and cost per agent and model
 orchestrator-mcp-server history [--limit 20] [--kind review] [--json]   # recent records, with their ids
 orchestrator-mcp-server scorecard [--days 30] [--json]  # how each reviewer answered, and what became of its findings
+orchestrator-mcp-server strengths [--days 30] [--json]  # how each agent answered each kind of question, how fast, at what cost
 orchestrator-mcp-server search WORD... [--days N] [--limit 10] [--json]   # stored prompts and answers that hold every word
 orchestrator-mcp-server export ID                       # one record and everything it owns, as JSON
 ```
@@ -379,6 +380,22 @@ update them. A reviewer's hit rate appears once ten findings are decided. Rechec
 reviews are left out so the same finding is not counted twice, and a review with no
 synthesis on record (not finalized yet, or `store_full_content: false`, under which
 finalizing is refused) is counted as asked but not judged.
+
+`strengths` answers "who is good at what?". Per kind of question (`coding`, `research`,
+`review` and so on), agent and model it counts the turns asked, answered and failed, the
+average time an answer took, and the cost. Every consultation counts, a reviewer's and a
+workflow step's included; a turn that never started, or that the spend ceiling stopped,
+does not. A failure rate appears from five asks, and a `review` row also carries the
+scorecard's hit rate. Under the table, lines name what may be worth a look and change
+nothing: an agent that failed at least 30% of five or more asks for a kind of question,
+with its commonest error (a setup error such as `connection_required` is called setup and
+points at `doctor`); and a kind of question that your config routes to an agent which took
+at least twice as long per answer as another configured agent that failed no more often,
+five answers each, on the models configured today. An agent or model the config no longer
+holds is never suggested. The routing is worked out as the server would, leaving out the
+host's own runtime when `ORCHESTRATOR_HOST_RUNTIME` names one. None of this says whose
+answers were better: only `review` rows carry a signal of that, and agents were not asked
+the same questions.
 
 `search` answers "which agent told me that?". A stored prompt or answer matches when it
 holds every word, best match first, and a word also matches its other endings (`search`

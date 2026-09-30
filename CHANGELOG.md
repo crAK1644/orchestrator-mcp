@@ -10,6 +10,12 @@ One line per change a user would notice. The full notes for each version are on 
   word, best match first, as masked excerpts with the ids to read the rest. Nothing is
   written to the database and no migration is needed; the index is built in memory for
   each call, so a credential in an old row is neither printed nor searchable.
+- `strengths [--days N] [--json]` shows, for each kind of question, agent and model, how
+  many turns were asked, answered and failed, how long an answer took and what it cost,
+  with the scorecard's hit rate on `review` rows. Under the table it says when an agent
+  failed at least 30% of five or more asks, or when another configured agent answered at
+  least twice as fast at no higher failure rate than the one your config routes to. It only
+  prints: nothing is changed, and it does not say whose answers were better.
 
 ## 0.10.1 — 2026-09-30
 

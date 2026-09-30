@@ -1322,6 +1322,8 @@ out of its own routing.
                  recent consultations, reviews and workflows, with their ids
   scorecard [--days N] [--json]
                  how each reviewer answered, and what became of its findings
+  strengths [--days N] [--json]
+                 how each agent has answered each kind of question (read-only)
   export ID      one record and everything it owns, as JSON (an id or a prefix)
   search WORD... [--days N] [--limit N] [--json]
                  stored prompts and answers that hold every word (read-only)
@@ -1336,7 +1338,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise SystemExit(cli.init(args[1:]))
     if args == ["doctor"]:
         raise SystemExit(cli.doctor(load_config))
-    if args[:1] and args[0] in {"usage", "history", "scorecard", "export", "search"}:
+    if args[:1] and args[0] in {"usage", "history", "scorecard", "strengths", "export", "search"}:
         raise SystemExit(reports.run(args, load_config))
     # The unknown one first: `--help --helpp` is a typo either way, and answering the
     # flag it did spell right would send the reader off believing the other one took.
