@@ -60,7 +60,8 @@ def failed(
 
 
 async def seed(consult_config, agent_id, capability, outcomes, *, model=None, runtime=None):
-    """One real consultation per outcome, each with one turn: `(latency_ms, error code)`.
+    """One real consultation per outcome, each with one turn: `(latency_ms, error code)`,
+    plus a third item, its `cost_usd`, for a turn that reported a price.
 
     Straight through the store, so every column is what the store writes. An agent the
     config no longer holds takes its `runtime` and `model` from the caller.
@@ -76,7 +77,7 @@ async def seed(consult_config, agent_id, capability, outcomes, *, model=None, ru
     )
     store = await ConsultStore(consult_config.database_path).open()
     try:
-        for latency, code in outcomes:
+        for latency, code, *price in outcomes:
             consultation_id = uuid4()
             await store.create_consultation(
                 consultation_id=consultation_id,
@@ -95,6 +96,7 @@ async def seed(consult_config, agent_id, capability, outcomes, *, model=None, ru
                 "compiled",
                 latency_ms=latency,
                 error_code=code,
+                cost_usd=price[0] if price else None,
             )
     finally:
         await store.close()
@@ -164,6 +166,19 @@ async def test_cost_is_a_price_only_when_every_turn_reported_one(config):
     text = render_strengths(report(consult_config, strengths))
 
     assert "$0.0125" in text and "unknown" in text and "$0.0000" not in text
+
+
+async def test_a_group_with_one_unpriced_turn_shows_no_total(config):
+    consult_config = config()
+    # One turn reported a price and one did not, in the same kind, agent and model.
+    await seed(consult_config, "codex-sol", "coding", [(100, None, 0.0125), (100, None)])
+
+    result = report(consult_config, strengths)
+
+    (group,) = result["groups"]
+    assert group["asked"] == 2 and group["cost_usd"] is None
+    assert group["known_cost_usd"] == 0.0125
+    assert "unknown (>= $0.0125)" in render_strengths(result)
 
 
 async def test_a_database_with_no_turns_says_so(config):
@@ -308,6 +323,45 @@ async def test_speed_advice_thresholds(config, routed, other, advised):
         )
 
     assert bool(advice_for(consult_config)) is advised
+
+
+@pytest.mark.parametrize(
+    ("routed", "other", "advised"),
+    [
+        # 3999.6 ms against 2000: under twice, though the table prints 3999.6 as 4000.
+        ([3999, 3999, 4000, 4000, 4000], [2000] * 5, False),
+        # 4000.2 against 2000.2: twice is 4000.4, though both print as a clean 2 to 1.
+        ([4000] * 4 + [4001], [2000] * 4 + [2001], False),
+        # 4000.4 against 2000.2: exactly twice, with nothing whole about either.
+        ([4000, 4000, 4000, 4001, 4001], [2000] * 4 + [2001], True),
+    ],
+)
+async def test_speed_advice_compares_the_averages_and_not_the_milliseconds_they_print_as(
+    config, routed, other, advised
+):
+    consult_config = config()
+    for agent_id, latencies in (("codex-sol", routed), ("claude-opus", other)):
+        await seed(consult_config, agent_id, "coding", [(ms, None) for ms in latencies])
+
+    assert bool(advice_for(consult_config)) is advised
+
+
+async def test_the_quickest_is_picked_on_exact_averages_when_two_print_the_same(config):
+    consult_config = config(
+        agents={
+            "codex-sol": agent("codex", "gpt-5.6-sol", 10),
+            "oc-a": agent("opencode", "a-1", 20),
+            "oc-b": agent("opencode", "b-1", 30),
+        }
+    )
+    await seed(consult_config, "codex-sol", "coding", answered(5000))
+    # 2000.4 and 1999.6 both print as 2,000 ms. Rounded first, they tie and the name picks oc-a.
+    await seed(consult_config, "oc-a", "coding", [(ms, None) for ms in (2000, 2000, 2000, 2000, 2002)])
+    await seed(consult_config, "oc-b", "coding", [(ms, None) for ms in (1999, 1999, 2000, 2000, 2000)])
+
+    (line,) = advice_for(consult_config)
+
+    assert line.startswith("For coding, oc-b (b-1) averaged 2,000 ms")
 
 
 async def test_the_fastest_of_several_is_the_one_named(config):
