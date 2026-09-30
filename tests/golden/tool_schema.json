@@ -97,6 +97,24 @@
           "default": null,
           "description": "Free-text label recorded with the consultation.",
           "title": "Conversation Label"
+        },
+        "persona": {
+          "default": null,
+          "description": "A named emphasis for this turn only: it sets tone and what to weigh, never the protocol. Ready-made: skeptic (doubt the premise first); security (read as an attacker would); simplify (the smallest change that works); plain (plain words for a newcomer); case-for (argue the strongest honest case for); case-against (argue the strongest honest case against). The operator's own names are accepted too. A resumed consultation's agent remembers earlier turns, so leaving it out later does not unsay it.",
+          "enum": [
+            "case-against",
+            "case-for",
+            "plain",
+            "security",
+            "simplify",
+            "skeptic",
+            null
+          ],
+          "title": "Persona",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -532,6 +550,24 @@
           "minimum": 2,
           "title": "Count",
           "type": "integer"
+        },
+        "persona": {
+          "default": null,
+          "description": "A named emphasis for this turn only: it sets tone and what to weigh, never the protocol. Ready-made: skeptic (doubt the premise first); security (read as an attacker would); simplify (the smallest change that works); plain (plain words for a newcomer); case-for (argue the strongest honest case for); case-against (argue the strongest honest case against). The operator's own names are accepted too. A resumed consultation's agent remembers earlier turns, so leaving it out later does not unsay it.",
+          "enum": [
+            "case-against",
+            "case-for",
+            "plain",
+            "security",
+            "simplify",
+            "skeptic",
+            null
+          ],
+          "title": "Persona",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

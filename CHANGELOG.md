@@ -3,6 +3,13 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
+## Unreleased
+
+- `persona` no longer waits for `consult.personas`. Six ready-made styles ship in the
+  server: `skeptic`, `security`, `simplify`, `plain`, `case-for` and `case-against`. A
+  `consult.personas` entry of the same name replaces the wording. The argument is now in
+  the schema of both consult tools for everyone, so the tool schema changes once.
+
 ## 0.10.0 — 2026-09-30
 
 - `orchestrator_review` takes `diff_ref` (`A..B`, `A...B` or one commit) and `diff_repo`: the

@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from ..contract import MAX_ERROR_CHARS, MAX_REVIEWERS, Usage
 from .errors import ConsultErrorCode
+from .styles import STYLES
 
 # The consultation capabilities are a fixed vocabulary, not the operator's
 # `capabilities:` block: an agent's score is only meaningful against a name that
@@ -338,18 +339,20 @@ def _context_paths_field() -> dict[str, Any]:
 def _persona_field(names: list[str]) -> dict[str, Any]:
     """The argument that asks an agent to lean a named way for this turn.
 
-    Added only when `consult.personas:` is set, for the reason `context_paths` is.
+    Always present, unlike `context_paths`: the ready-made styles need no config, and
+    the operator's own `consult.personas:` names join them in the enum.
     """
+    ready = "; ".join(f"{name} ({summary})" for name, (summary, _) in STYLES.items())
     return {
         "persona": (
             Literal[tuple(names)] | None,  # type: ignore[valid-type]
             Field(
                 default=None,
                 description=(
-                    "A named emphasis from the operator's config, for this turn only: it "
-                    "sets tone and what to weigh, never the protocol. A resumed "
-                    "consultation's agent remembers earlier turns, so leaving it out later "
-                    "does not unsay it."
+                    "A named emphasis for this turn only: it sets tone and what to weigh, "
+                    f"never the protocol. Ready-made: {ready}. The operator's own names "
+                    "are accepted too. A resumed consultation's agent remembers earlier "
+                    "turns, so leaving it out later does not unsay it."
                 ),
                 json_schema_extra=_agent_enum(names),
             ),
@@ -358,7 +361,7 @@ def _persona_field(names: list[str]) -> dict[str, Any]:
 
 
 def build_consult_request(
-    agent_ids: list[str], context_paths: bool = False, personas: list[str] | None = None
+    agent_ids: list[str], personas: list[str], context_paths: bool = False
 ) -> type[ConsultRequest]:
     """Specialize `ConsultRequest` to the configured agents."""
     if not agent_ids:
@@ -376,12 +379,12 @@ def build_consult_request(
             ),
         ),
         **(_context_paths_field() if context_paths else {}),
-        **(_persona_field(personas) if personas else {}),
+        **_persona_field(personas),
     )
 
 
 def build_consult_many_request(
-    agent_ids: list[str], context_paths: bool = False, personas: list[str] | None = None
+    agent_ids: list[str], personas: list[str], context_paths: bool = False
 ) -> type[BaseModel]:
     """`ConsultRequest` for a panel: every member starts fresh, under the group's label,
     so no `consultation_id`, no `conversation_label`, and a list of agents or a count
@@ -413,7 +416,7 @@ def build_consult_many_request(
             ),
         ),
         **(_context_paths_field() if context_paths else {}),
-        **(_persona_field(personas) if personas else {}),
+        **_persona_field(personas),
     )
 
 
