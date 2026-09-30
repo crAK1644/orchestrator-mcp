@@ -8,11 +8,12 @@ past those two is scripted, one entry of `runs` for each call that got that far 
 last one repeating.
 
 It records argv, stdin, the working directory, the environment as the child actually
-received it, what sat in that directory, and the mode of `COPILOT_HOME`. The working
-directory is one the adapter deletes on the way out, so this is the only place a test
-can see it. Like the real CLI it creates `<COPILOT_HOME>/session-state/<id>`, and a lock
-beside it, for any signed-in run that names a session -- one it goes on to refuse over the
-model included -- which is what a later `resume` looks for.
+received it, what sat in that directory, the mode of `COPILOT_HOME` and what its
+`settings.json` said when the call started. The working directory is one the adapter
+deletes on the way out, so this is the only place a test can see it. Like the real CLI it
+creates `<COPILOT_HOME>/session-state/<id>`, and a lock beside it, for any signed-in run
+that names a session -- one it goes on to refuse over the model included -- which is what
+a later `resume` looks for.
 
 A script cannot know which session id the adapter will pass, and the real CLI echoes it
 back in its last event, so `__SESSION__` in a scripted stdout becomes `--session-id`.
@@ -64,6 +65,7 @@ if not refused:
         "env": dict(os.environ),
         "cwd_entries": sorted(os.listdir(".")),
         "home_mode": (home.stat().st_mode & 0o777) if home and home.is_dir() else None,
+        "settings": (home / "settings.json").read_text() if home and (home / "settings.json").is_file() else None,
         "session_known": bool(home and session and (home / "session-state" / session).is_dir()),
         "served": not refused,
     }})
