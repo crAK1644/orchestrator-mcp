@@ -3,7 +3,7 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
-## Unreleased
+## 0.10.1 — 2026-09-30
 
 - `persona` no longer waits for `consult.personas`. Six ready-made styles ship in the
   server: `skeptic`, `security`, `simplify`, `plain`, `case-for` and `case-against`. A
