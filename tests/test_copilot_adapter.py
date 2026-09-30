@@ -92,11 +92,13 @@ def stream(
     tool_requests: list | None = None,
     before: tuple[dict, ...] = (),
     session: str | None = "__SESSION__",
+    exit_code: object = 0,
 ) -> str:
     """One turn as the CLI streams it.
 
     `__SESSION__` is what the stub replaces with the `--session-id` it was given, which
     is what the real CLI echoes in its last event. `session=None` leaves that event out.
+    `exit_code` is what that event says about the run, whatever the process itself exits.
     """
     message = {
         "content": text,
@@ -120,7 +122,7 @@ def stream(
     ]
     if session is not None:
         events.append(
-            {"type": "result", "sessionId": session, "exitCode": 0, "usage": {"premiumRequests": 1}}
+            {"type": "result", "sessionId": session, "exitCode": exit_code, "usage": {"premiumRequests": 1}}
         )
     return jsonl(*events)
 
@@ -409,6 +411,51 @@ async def test_the_environment_carries_the_home_and_none_of_the_users_credential
     assert env["COPILOT_HOME"] == str(home / "copilot" / "home")
     assert [name for name in env if name.startswith("COPILOT_")] == ["COPILOT_HOME"]
     assert "GH_TOKEN" not in env and "GITHUB_TOKEN" not in env
+
+
+def configure(home: Path, config: object) -> None:
+    """A `mcp-config.json` in the home consultations run under, as `copilot mcp add` writes one."""
+    state = home / "copilot" / "home"
+    state.mkdir(parents=True)
+    (state / "mcp-config.json").write_text(config if isinstance(config, str) else json.dumps(config))
+
+
+def switched_off(call: dict) -> list[str]:
+    return [a for a in call["argv"] if a.startswith("--disable-mcp-server")]
+
+
+async def test_mcp_servers_the_home_configures_are_switched_off_by_name(stub, adapter, home):
+    """`--available-tools` disables a server's tools and leaves the server running. Found
+    against the real CLI: one in this file was launched and connected on every run, and on
+    the readiness check that costs nothing, its tool listed as disabled. The flag that stops
+    the launch takes a name and no pattern, so the names are read out of the file."""
+    configure(home, {"mcpServers": {"zeta": {"command": "z"}, "alpha": {"command": "a"}, "-x": {}}})
+    record = stub(runs=[ok()])
+    await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    await adapter.preflight(agent())
+
+    calls = copilot_stub.calls(record)
+    assert len(calls) == 2
+    for call in calls:
+        # `=` form, so that a name that opens with a dash is a value and not another flag.
+        assert switched_off(call) == [
+            "--disable-mcp-server=-x", "--disable-mcp-server=alpha", "--disable-mcp-server=zeta",
+        ]
+
+
+@pytest.mark.parametrize(
+    "config",
+    [None, "{}", '{"mcpServers": {}}', '{"mcpServers": null}', '{"mcpServers": []}', "[]", "{not json"],
+    ids=["no file", "empty", "no servers", "null", "a list", "not an object", "unparseable"],
+)
+async def test_no_server_is_named_when_the_home_configures_none_it_can_read(stub, adapter, home, config):
+    """Nothing to switch off is not an error, and a file this cannot read is not a reason
+    to lose the consultation: the CLI is the one that reads it for real."""
+    if config is not None:
+        configure(home, config)
+    record = stub(runs=[ok()])
+    await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert switched_off(copilot_stub.calls(record)[0]) == []
 
 
 async def test_every_run_gets_an_empty_working_directory_of_its_own_that_is_then_gone(
@@ -822,6 +869,53 @@ async def test_a_repair_turn_that_fails_is_reported_as_what_it_was(stub, adapter
     with pytest.raises(AdapterError) as excinfo:
         await adapter.start(agent(), prompt(), SourceMode.MODEL)
     assert excinfo.value.code is ConsultErrorCode.AGENT_UNAVAILABLE
+
+
+@pytest.mark.parametrize("model", ["auto", "gpt-5.6-sol"])
+async def test_a_repaired_answer_is_not_credited_to_the_reply_it_replaced(stub, adapter, model):
+    """The first reply named its model and was thrown away. The repair wrote the answer
+    that comes back and named none, so nothing says which model that was: lending it the
+    first reply's name would mark it verified against a call that did not produce it."""
+    named = ROUTED if model == "auto" else model
+    stub(models=(model,), runs=[
+        ok(text=BROKEN, answered=named, routed=None),
+        ok(answered=None, routed=None),
+    ])
+    result = await adapter.start(agent(model=model), prompt(), SourceMode.MODEL)
+
+    assert result.content.answer == "blue"
+    assert result.model_used == model and not result.model_verified
+
+
+async def test_the_model_that_wrote_the_repair_is_the_one_recorded(stub, adapter):
+    stub(runs=[
+        ok(text=BROKEN, answered="gpt-5.6-terra", routed=None),
+        ok(answered=ROUTED, routed=None),
+    ])
+    result = await adapter.start(agent(), prompt(), SourceMode.MODEL)
+    assert result.model_used == ROUTED and result.model_verified
+
+
+# --- a run that contradicts itself ------------------------------------------
+
+
+@pytest.mark.parametrize("code", [1, 2, 130])
+async def test_a_last_event_that_reports_a_failed_run_is_not_an_answer(stub, adapter, code):
+    """The process exited 0 and its own closing event says the run did not succeed. The
+    two disagree, and an answer out of a run that says it failed is not handed back."""
+    record = stub(runs=[{"stdout": stream(exit_code=code), "usage": USAGE}])
+    with pytest.raises(AdapterError) as excinfo:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert excinfo.value.code is ConsultErrorCode.AGENT_UNAVAILABLE
+    assert f"exit code {code}" in str(excinfo.value)
+    assert len(copilot_stub.calls(record)) == 1  # not repaired: it was not a malformed answer
+
+
+async def test_a_last_event_with_no_exit_code_is_still_an_answer(stub, adapter):
+    """The check is for a contradiction, not for a field a future CLI may drop."""
+    stub(runs=[{"stdout": stream(exit_code=None), "usage": USAGE}])
+    assert (await adapter.start(agent(), prompt(), SourceMode.MODEL)).content.answer == "blue"
 
 
 # --- usage ------------------------------------------------------------------
