@@ -227,6 +227,13 @@ class ConsultManyResponse(BaseModel):
         description="Recorded on every member as the label `group <group_id>`."
     )
     results: list[ConsultResponse]
+    sides: dict[str, Literal["for", "against"]] | None = Field(
+        default=None,
+        description=(
+            "With `both_sides`: which agent argued which side, whether or not it "
+            "answered. Otherwise null."
+        ),
+    )
 
 
 class ConsultAgentInfo(BaseModel):
@@ -413,6 +420,20 @@ def build_consult_many_request(
                 ge=2,
                 le=MAX_REVIEWERS,
                 description="How many to ask when `target_agents` is empty.",
+            ),
+        ),
+        both_sides=(
+            bool,
+            Field(
+                default=False,
+                description=(
+                    "Ask exactly two agents to argue opposite sides of the proposal in "
+                    "`prompt`: the first argues for it, the second against, each "
+                    "answering alone. Name them in `target_agents` (reverse the list to "
+                    "swap sides) or omit it for the top two by score, ignoring `count`. "
+                    "You weigh the two cases; the server never picks a winner. Not "
+                    "together with `persona`."
+                ),
             ),
         ),
         **(_context_paths_field() if context_paths else {}),

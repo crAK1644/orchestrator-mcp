@@ -551,6 +551,12 @@
           "title": "Count",
           "type": "integer"
         },
+        "both_sides": {
+          "default": false,
+          "description": "Ask exactly two agents to argue opposite sides of the proposal in `prompt`: the first argues for it, the second against, each answering alone. Name them in `target_agents` (reverse the list to swap sides) or omit it for the top two by score, ignoring `count`. You weigh the two cases; the server never picks a winner. Not together with `persona`.",
+          "title": "Both Sides",
+          "type": "boolean"
+        },
         "persona": {
           "default": null,
           "description": "A named emphasis for this turn only: it sets tone and what to weigh, never the protocol. Ready-made: skeptic (doubt the premise first); security (read as an attacker would); simplify (the smallest change that works); plain (plain words for a newcomer); case-for (argue the strongest honest case for); case-against (argue the strongest honest case against). The operator's own names are accepted too. A resumed consultation's agent remembers earlier turns, so leaving it out later does not unsay it.",
@@ -940,6 +946,26 @@
           },
           "title": "Results",
           "type": "array"
+        },
+        "sides": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "enum": [
+                  "for",
+                  "against"
+                ],
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "With `both_sides`: which agent argued which side, whether or not it answered. Otherwise null.",
+          "title": "Sides"
         }
       },
       "required": [

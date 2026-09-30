@@ -434,7 +434,7 @@ The PyPI distribution is named `orchestrator-mcp-server`; the shorter PyPI name 
 | Tool | Purpose |
 |---|---|
 | `orchestrator_consult` | Start or continue a structured consultation. |
-| `orchestrator_consult_many` | Ask 2 to 5 agents the same question at once — named, or the top `count` by score — and get one envelope each for the host to merge. Costs one consultation per agent; each is resumable by its own `consultation_id`, and all share the label `group <group_id>`. |
+| `orchestrator_consult_many` | Ask 2 to 5 agents the same question at once — named, or the top `count` by score — and get one envelope each for the host to merge. Costs one consultation per agent; each is resumable by its own `consultation_id`, and all share the label `group <group_id>`. `both_sides` makes it a two-sided argument (see below). |
 | `orchestrator_list_consult_agents` | Show configured agents, routing scores, installation, and login readiness. |
 | `orchestrator_get_consultation` | Retrieve a stored consultation, its turns, usage, and routing decision. |
 | `orchestrator_list_consultations` | Recent ordinary consultations, newest first. Metadata only. |
@@ -563,6 +563,17 @@ only: a resumed consultation's agent remembers earlier turns, so leaving `person
 does not unsay it. It is not on reviews or workflow steps, which have prompts of their own.
 The stored turn's compiled prompt shows exactly what was sent, and a credential-shaped value
 pasted into a persona is masked before it goes out.
+
+`orchestrator_consult_many` with `both_sides: true` asks exactly two agents to argue a
+proposal from opposite sides. The first gets the `case-for` persona and the second
+`case-against`; the task and context are otherwise the same bytes, and neither sees the
+other. Name the two in `target_agents`, or omit it and the top two by score are asked
+(`count` is ignored). The first named always argues "for", so reverse the list to swap: the
+order can matter, so for a decision that does, ask both ways. The response adds `sides`, a
+map from agent id to `for` or `against` that is present even when a side failed. A side
+failing leaves the other's answer, and `persona` is refused alongside it. The server never
+picks a winner: each side was told which case to make, so read the two as arguments, not as
+either agent's verdict.
 
 </details>
 

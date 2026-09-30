@@ -9,6 +9,9 @@ One line per change a user would notice. The full notes for each version are on 
   server: `skeptic`, `security`, `simplify`, `plain`, `case-for` and `case-against`. A
   `consult.personas` entry of the same name replaces the wording. The argument is now in
   the schema of both consult tools for everyone, so the tool schema changes once.
+- `orchestrator_consult_many` takes `both_sides`: exactly two agents argue opposite sides of
+  the proposal in `prompt`, the first for and the second against, each answering alone.
+  `sides` in the response says who argued which. The server never picks a winner.
 
 ## 0.10.0 — 2026-09-30
 
