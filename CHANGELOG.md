@@ -3,6 +3,14 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
+## Unreleased
+
+- `search WORD... [--days N] [--limit N] [--json]` and the read-only tool
+  `orchestrator_search_consultations` find the stored prompts and answers that hold every
+  word, best match first, as masked excerpts with the ids to read the rest. Nothing is
+  written to the database and no migration is needed; the index is built in memory for
+  each call, so a credential in an old row is neither printed nor searchable.
+
 ## 0.10.1 — 2026-09-30
 
 - `persona` no longer waits for `consult.personas`. Six ready-made styles ship in the

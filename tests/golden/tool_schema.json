@@ -1306,6 +1306,177 @@
       "type": "object"
     }
   },
+  "orchestrator_search_consultations": {
+    "input_schema": {
+      "properties": {
+        "query": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Query",
+          "type": "string"
+        },
+        "days": {
+          "anyOf": [
+            {
+              "maximum": 3650,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Days"
+        },
+        "limit": {
+          "default": 10,
+          "maximum": 25,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "title": "search_consultationsArguments",
+      "type": "object"
+    },
+    "output_schema": {
+      "$defs": {
+        "SearchHit": {
+          "additionalProperties": false,
+          "description": "One stored prompt or answer that matched. The excerpt is masked and short: the rest\nis behind `consultation_id`, or `review_id` when a reviewer wrote it.",
+          "properties": {
+            "consultation_id": {
+              "title": "Consultation Id",
+              "type": "string"
+            },
+            "turn": {
+              "title": "Turn",
+              "type": "integer"
+            },
+            "part": {
+              "enum": [
+                "prompt",
+                "answer"
+              ],
+              "title": "Part",
+              "type": "string"
+            },
+            "agent_id": {
+              "title": "Agent Id",
+              "type": "string"
+            },
+            "model": {
+              "title": "Model",
+              "type": "string"
+            },
+            "capability": {
+              "title": "Capability",
+              "type": "string"
+            },
+            "conversation_label": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Conversation Label"
+            },
+            "review_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Review Id"
+            },
+            "created_at": {
+              "title": "Created At",
+              "type": "string"
+            },
+            "excerpt": {
+              "title": "Excerpt",
+              "type": "string"
+            }
+          },
+          "required": [
+            "consultation_id",
+            "turn",
+            "part",
+            "agent_id",
+            "model",
+            "capability",
+            "created_at",
+            "excerpt"
+          ],
+          "title": "SearchHit",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "What `orchestrator_search_consultations` returns: best match first.",
+      "properties": {
+        "query": {
+          "title": "Query",
+          "type": "string"
+        },
+        "days": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Days"
+        },
+        "searched": {
+          "minimum": 0,
+          "title": "Searched",
+          "type": "integer"
+        },
+        "hits": {
+          "items": {
+            "$ref": "#/$defs/SearchHit"
+          },
+          "title": "Hits",
+          "type": "array"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "query",
+        "searched",
+        "hits"
+      ],
+      "title": "SearchResult",
+      "type": "object"
+    }
+  },
   "orchestrator_delete_consultation": {
     "input_schema": {
       "properties": {
