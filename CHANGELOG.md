@@ -3,6 +3,19 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
+## Unreleased
+
+- `runtime: copilot` consults the GitHub Copilot CLI, for answers only. Every tool is switched
+  off and the run happens in an empty scratch directory, under a `COPILOT_HOME` of its own in
+  `~/.orchestrator-mcp/copilot` that your `~/.copilot` never touches. `isolated_write` and web
+  mode are refused. Sign in once with the command a signed-out consultation returns; the
+  readiness check costs no request.
+- A free Copilot plan serves the model `auto` only, and the response names the model Copilot
+  routed the call to. Copilot reports no price, so its cost reads as unknown and a dollar
+  ceiling cannot count it; a turn ceiling can. Its session history keeps prompts and answers
+  unmasked and is never pruned (see PRIVACY.md). `copilot` is also accepted as
+  `ORCHESTRATOR_HOST_RUNTIME`, and joins the runtime enums, so the tool schema changes once.
+
 ## 0.10.2 — 2026-09-30
 
 - `search WORD... [--days N] [--limit N] [--json]` and the read-only tool

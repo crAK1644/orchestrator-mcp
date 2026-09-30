@@ -54,7 +54,7 @@ Capability = Literal[
     "testing",
     "synthesis",
 ]
-Runtime = Literal["codex", "claude", "antigravity", "opencode"]
+Runtime = Literal["codex", "claude", "antigravity", "opencode", "copilot"]
 
 # How a delegated agent is allowed to produce work. `consultation` is the only mode
 # the consult path itself knows about, and it is what every agent gets by default:

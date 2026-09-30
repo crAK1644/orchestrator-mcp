@@ -106,6 +106,7 @@ def test_a_mode_the_operator_never_granted_refuses_on_the_operator_s_side():
     [
         ("claude", "no write adapter"),
         ("antigravity", "--dangerously-skip-permissions"),
+        ("copilot", "no write path"),
     ],
 )
 def test_each_runtime_refuses_isolated_write_with_its_own_reason(
@@ -283,8 +284,13 @@ def test_a_host_only_step_cannot_be_given_to_an_agent():
     assert "host-only" in str(raised.value)
 
 
-def test_a_step_needing_the_web_refuses_a_runtime_that_has_none():
-    agents = {"flash": workflow_agent("opencode", "deepseek-v4-flash-free", 10, web_search=True)}
+@pytest.mark.parametrize(
+    "runtime,model", [("opencode", "deepseek-v4-flash-free"), ("copilot", "auto")]
+)
+def test_a_step_needing_the_web_refuses_a_runtime_that_has_none(runtime, model):
+    """`web_search: true` is not enough: the Copilot adapter refuses the web mode whatever
+    is configured, so the step must not be routed to it and fail later."""
+    agents = {"flash": workflow_agent(runtime, model, 10, web_search=True)}
     with pytest.raises(WorkflowError) as raised:
         router(agents).resolve("research", StepBinding(agent="flash"), want_web=True)
     assert "offers no web mode" in str(raised.value)

@@ -1,6 +1,6 @@
 # Orchestrator for Claude Code
 
-Ask other coding agents for help without leaving Claude Code. The agents are Codex, Antigravity and OpenCode, and there are three ways to use them:
+Ask other coding agents for help without leaving Claude Code. The agents are Codex, Antigravity, OpenCode and GitHub Copilot, and there are three ways to use them:
 
 - a second opinion from one of them;
 - a code review from several at once;
@@ -14,6 +14,7 @@ Each agent runs through its own CLI, signed in under your account. Orchestrator 
 - At least one of these must be installed and logged in:
   - [Codex CLI](https://github.com/openai/codex)
   - [OpenCode](https://opencode.ai)
+  - [GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli), which [signs in separately](https://github.com/crAK1644/orchestrator-mcp#github-copilot-runtime) to a copy of its state that Orchestrator keeps
   - [Antigravity](https://antigravity.google/), which is experimental
 
 What you send an agent goes to that agent's provider under your login, and the usage is billed to your account there. Before you install, read:
@@ -29,7 +30,7 @@ What you send an agent goes to that agent's provider under your login, and the u
 /orchestrator-mcp:setup
 ```
 
-`/orchestrator-mcp:setup` writes a starter config at `~/.orchestrator-mcp/config.yaml` from the Codex and Antigravity CLIs it finds, then checks each one's login. OpenCode goes in by hand: copy its agent from [`config.example.yaml`](https://github.com/crAK1644/orchestrator-mcp/blob/main/config.example.yaml).
+`/orchestrator-mcp:setup` writes a starter config at `~/.orchestrator-mcp/config.yaml` from the Codex and Antigravity CLIs it finds, then checks each one's login. OpenCode and GitHub Copilot go in by hand: copy their agents from [`config.example.yaml`](https://github.com/crAK1644/orchestrator-mcp/blob/main/config.example.yaml).
 
 When it finishes, reconnect `plugin:orchestrator-mcp:orchestrator` in `/mcp`, or restart Claude Code. Until you do, the server offers one tool, `orchestrator_setup`, which tells you the same thing.
 
