@@ -92,6 +92,15 @@ def test_every_ready_made_style_fits_the_rules_an_operators_own_must(name):
     assert summary and len(summary) <= 40
 
 
+@pytest.mark.parametrize("name", ["case-for", "case-against"])
+def test_a_side_says_nothing_of_another_agent_because_it_also_works_alone(name):
+    # `persona="case-for"` on a plain consult has no opposing agent to be argued elsewhere.
+    text = STYLES[name][1].lower()
+
+    assert "elsewhere" not in text
+    assert "other side" not in text and "another agent" not in text
+
+
 async def test_the_argument_exists_with_no_config_and_offers_the_ready_made_styles(build):
     service = await build(personas={})
 
