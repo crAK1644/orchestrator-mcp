@@ -3,7 +3,7 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
-## Unreleased
+## 0.10.2 — 2026-09-30
 
 - `search WORD... [--days N] [--limit N] [--json]` and the read-only tool
   `orchestrator_search_consultations` find the stored prompts and answers that hold every
