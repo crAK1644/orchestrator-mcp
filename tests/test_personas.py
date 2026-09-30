@@ -1,9 +1,9 @@
 """`persona` on consult: a named emphasis the operator wrote, asked for per turn.
 
 What these pin down is where the text goes and what it cannot do: it rides the system
-half after the protocol, never the payload; it is redacted on the way; it exists as an
-argument only once `consult.personas:` is set; and with no persona the compiled prompt
-is byte for byte what it was before the feature.
+half after the protocol, never the payload; it is redacted on the way; the ready-made
+styles are offered with no config and an operator's entry of the same name rewords one;
+and with no persona the compiled prompt is byte for byte what it was before the feature.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from orchestrator_mcp.consult.config import ConsultConfig
+from orchestrator_mcp.consult.config import NAME_SLUG, ConsultConfig
 from orchestrator_mcp.consult.contract import SourceMode
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.consult.prompts import (
@@ -19,6 +19,7 @@ from orchestrator_mcp.consult.prompts import (
     SYSTEM_CONTRACT,
     compile_prompt,
 )
+from orchestrator_mcp.consult.styles import STYLES
 
 from .conftest import agent, consult_block
 from .test_consult_service import StubAdapter, StubService
@@ -82,21 +83,51 @@ def test_no_persona_leaves_the_compiled_prompt_exactly_as_it_was(mode):
     assert compiled.system == f"{SYSTEM_CONTRACT}\n\n{MODE_SECTIONS[mode]}"
 
 
-async def test_the_argument_exists_only_when_personas_are_configured(build):
-    without = await build(personas={})
-    with_them = await build()
+@pytest.mark.parametrize("name", sorted(STYLES))
+def test_every_ready_made_style_fits_the_rules_an_operators_own_must(name):
+    summary, text = STYLES[name]
 
-    assert "persona" not in without.request_model.model_json_schema()["properties"]
-    assert "persona" not in without.many_request_model.model_json_schema()["properties"]
-    for model in (with_them.request_model, with_them.many_request_model):
-        assert model.model_json_schema()["properties"]["persona"]["enum"] == [
-            "kind",
-            "skeptic",
-            None,
-        ]
+    assert NAME_SLUG.fullmatch(name)
+    assert 1 <= len(text) <= 400
+    assert summary and len(summary) <= 40
 
-    refused = await without.consult(capability="coding", prompt="q", persona="skeptic")
-    assert refused.error.code is ConsultErrorCode.INVALID_REQUEST
+
+async def test_the_argument_exists_with_no_config_and_offers_the_ready_made_styles(build):
+    service = await build(personas={})
+
+    for model in (service.request_model, service.many_request_model):
+        schema = model.model_json_schema()["properties"]["persona"]
+        assert schema["enum"] == [*sorted(STYLES), None]
+        assert all(summary in schema["description"] for summary, _ in STYLES.values())
+
+
+async def test_a_config_entry_adds_a_name_and_the_same_name_rewords_a_style(build):
+    adapter = StubAdapter()
+    service = await build(adapter)  # PERSONAS: `skeptic` (a style too) and `kind`
+
+    for model in (service.request_model, service.many_request_model):
+        enum = model.model_json_schema()["properties"]["persona"]["enum"]
+        assert enum == [*sorted({*STYLES, "kind"}), None]
+
+    response = await service.consult(capability="coding", prompt="q", persona="skeptic")
+
+    assert response.ok
+    assert f"Persona: skeptic\n{PERSONAS['skeptic']}\n" in adapter.prompts[0]
+    assert STYLES["skeptic"][1] not in adapter.prompts[0]
+
+
+async def test_a_ready_made_style_reaches_the_agent_with_no_config_at_all(build):
+    adapter = StubAdapter()
+    service = await build(adapter, personas={})
+
+    response = await service.consult(capability="coding", prompt="q", persona="security")
+
+    assert response.ok
+    (prompt,) = adapter.prompts
+    assert f"Persona: security\n{STYLES['security'][1]}\n" in prompt
+    assert prompt.index(SYSTEM_CONTRACT) < prompt.index("Persona: security")
+    (turn,) = await service.store.turns(response.consultation_id)
+    assert f"Persona: security\n{STYLES['security'][1]}" in turn.compiled_prompt
 
 
 async def test_an_unknown_persona_is_refused_before_anything_is_sent(build):

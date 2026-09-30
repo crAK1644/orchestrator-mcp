@@ -512,7 +512,7 @@ Request fields:
 | `source_mode` | no | `auto`, `document`, `web`, or `model`. |
 | `consultation_id` | no | Return the previous ID to continue the conversation. |
 | `target_agent` | no | Choose one configured agent instead of automatic routing. |
-| `persona` | no | One of the names under `consult.personas`, for this turn only. Exists only once `consult.personas` is set. |
+| `persona` | no | A ready-made style or one of the names under `consult.personas`, for this turn only. |
 | `conversation_label` | no | Label stored with the consultation, up to 200 characters. |
 
 Agent configuration:
@@ -544,13 +544,17 @@ the heading the agent sees, so an absolute path can disclose a username or direc
 layout. `orchestrator_consult_many` reads the files once and gives every member the same
 bytes.
 
-`persona` asks for one of your own named emphases, written once in config:
+`persona` asks an agent to lean a named way for one turn. Six styles are built in, with no
+config: `skeptic` (doubt the premise first), `security` (read as an attacker would),
+`simplify` (the smallest change that works), `plain` (plain words for a newcomer), and
+`case-for` and `case-against` (argue one side honestly, keeping doubts in `uncertainties`).
+Write your own once in config, or reword a built-in by using its name:
 
 ```yaml
 consult:
   personas:
     skeptic: Doubt the premise before answering. Say what evidence would change your mind.
-    security: Read as an attacker would. Rank findings by what an attacker gains.
+    migrations: Check every schema change for a lock and a way back.
 ```
 
 The text joins the system half of the prompt after the protocol and states that it cannot

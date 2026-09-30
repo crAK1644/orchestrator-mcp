@@ -45,12 +45,13 @@ consult:
                             # argument out of the tool schema altogether. Unlike a
                             # review there is no preview step, so a file holding
                             # something credential-shaped is refused, not masked.
-  personas: {}              # named emphases a caller may ask for with `persona`,
-                            # for that turn only. Names are lowercase letters,
+  personas: {}              # your own named emphases, added to the built-in ones
+                            # (skeptic, security, simplify, plain, case-for,
+                            # case-against) that a caller may ask for with `persona`,
+                            # for that turn only. A name that matches a built-in
+                            # replaces its wording. Names are lowercase letters,
                             # digits, - and _ (max 32); text is 1 to 2000 characters.
-                            # Empty leaves the argument out of the tool schema.
-                            #   skeptic: Doubt the premise before answering.
-                            #   security: Read as an attacker would; rank by gain.
+                            #   migrations: Check every schema change for a lock.
 
   # Ceilings, all optional and all off by default. Checked before a request goes
   # out, so what they buy is that the *next* request after the ceiling is crossed is

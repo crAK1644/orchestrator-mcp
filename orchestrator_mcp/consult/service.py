@@ -60,6 +60,7 @@ from .routing import (
     resolve_source_mode,
 )
 from .store import ConsultStore, StoreError
+from .styles import STYLES
 
 log = get_logger(__name__)
 
@@ -88,10 +89,13 @@ class ConsultService:
         self.router = ConsultRouter(config, host_runtime)
         self.store = store or ConsultStore(config.database_path, config.store_full_content)
         paths_enabled = bool(config.context_roots)
-        personas = sorted(config.personas)
-        self.request_model = build_consult_request(sorted(config.agents), paths_enabled, personas)
+        # The ready-made styles, with the operator's own on top: a config entry of the
+        # same name rewords one.
+        self.personas = {name: text for name, (_, text) in STYLES.items()} | config.personas
+        personas = sorted(self.personas)
+        self.request_model = build_consult_request(sorted(config.agents), personas, paths_enabled)
         self.many_request_model = build_consult_many_request(
-            sorted(config.agents), paths_enabled, personas
+            sorted(config.agents), personas, paths_enabled
         )
         # What every turn is passed through on its way into the database, and only
         # there -- the adapter is still handed the caller's own text, because a
@@ -695,9 +699,8 @@ class ConsultService:
         capability = request.capability
         await self._within_ceiling(consultation_id, agent)
         sequence = await self.store.next_sequence(consultation_id)
-        # Like `context_paths`, the field exists only when configured.
-        name = getattr(request, "persona", None)
-        persona = (name, self.config.personas[name]) if name else None
+        name = request.persona
+        persona = (name, self.personas[name]) if name else None
         prompt = compile_prompt(
             capability, source_mode, request.prompt, request.context, turn=sequence, persona=persona
         )
