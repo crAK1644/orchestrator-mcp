@@ -3,7 +3,7 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
-## Unreleased
+## 0.10.4 — 2026-10-01
 
 - Deleting a consultation removes its GitHub Copilot session directory and its lock in the
   Copilot home, which held the prompts and answers unmasked and was never pruned. So does
