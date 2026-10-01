@@ -78,6 +78,45 @@ async def consult(store, state, runtime="copilot", *, bound=True, **owner) -> st
     return session
 
 
+async def a_review(store, state):
+    """A review that owns one reviewer's consultation, and the session that left."""
+    reviews = ReviewStore(store)
+    review_id = uuid4()
+    await reviews.create_review(
+        review_id=review_id, mode="standard", goal="look", context=None, material=[],
+        material_sha256="a" * 64, raw_sha256="b" * 64, reviewer_snapshot=[{"agent_id": "rev"}],
+        confirm_token="token", secret_hits=[], web_requested=False, parent_review_id=None,
+    )
+    owned = await consult(store, state)
+    await reviews.record_reviewer_result(
+        str(review_id), "rev", status="ok", consultation_id=owned
+    )
+    return reviews, review_id, owned
+
+
+async def a_workflow(tmp_path, store, state):
+    """A finished workflow that owns one step's consultation, and the session that left."""
+    workflows = WorkflowStore(store)
+    workflow_id = str(uuid4())
+    await workflows.create_workflow(
+        workflow_id, "goal", str(tmp_path), "claude", None, {}, {}, "hash", None
+    )
+    step = await consult(store, state, workflow_id=workflow_id)
+    await store._run(lambda: store._db.execute("UPDATE workflow_runs SET status = 'completed'"))
+    return workflows, workflow_id, step
+
+
+async def hold(store, consultation_id: str, expires_in: float = 600) -> None:
+    """The lease a turn holds on its consultation while it runs. A negative `expires_in`
+    is one a crashed process left behind."""
+    await store._run(
+        lambda: store._db.execute(
+            "INSERT INTO consultation_leases VALUES (?, 'x', ?)",
+            (consultation_id, time.time() + expires_in),
+        )
+    )
+
+
 # --- the consultation tools -------------------------------------------------
 
 
@@ -110,11 +149,7 @@ async def test_only_a_copilot_consultation_names_a_copilot_session(store, state)
 
 async def test_a_refused_delete_keeps_the_session(store, state):
     busy = await consult(store, state)
-    await store._run(
-        lambda: store._db.execute(
-            "INSERT INTO consultation_leases VALUES (?, 'x', ?)", (busy, time.time() + 600)
-        )
-    )
+    await hold(store, busy)
 
     with pytest.raises(StoreError) as refused:
         await store.delete_consultation(busy)
@@ -180,17 +215,8 @@ async def test_a_directory_the_user_cannot_empty_is_left_and_the_delete_still_su
 
 
 async def test_deleting_a_review_removes_its_reviewers_sessions(store, state):
-    reviews = ReviewStore(store)
-    review_id = uuid4()
-    await reviews.create_review(
-        review_id=review_id, mode="standard", goal="look", context=None, material=[],
-        material_sha256="a" * 64, raw_sha256="b" * 64, reviewer_snapshot=[{"agent_id": "rev"}],
-        confirm_token="token", secret_hits=[], web_requested=False, parent_review_id=None,
-    )
-    owned, other = await consult(store, state), await consult(store, state)
-    await reviews.record_reviewer_result(
-        str(review_id), "rev", status="ok", consultation_id=owned
-    )
+    reviews, review_id, owned = await a_review(store, state)
+    other = await consult(store, state)
 
     assert await reviews.delete_review(review_id) == 1
 
@@ -199,18 +225,66 @@ async def test_deleting_a_review_removes_its_reviewers_sessions(store, state):
 
 
 async def test_deleting_a_workflow_removes_its_steps_sessions(tmp_path, store, state):
-    workflows = WorkflowStore(store)
-    workflow_id = str(uuid4())
-    await workflows.create_workflow(
-        workflow_id, "goal", str(tmp_path), "claude", None, {}, {}, "hash", None
-    )
-    step, other = await consult(store, state, workflow_id=workflow_id), await consult(store, state)
-    await store._run(lambda: store._db.execute("UPDATE workflow_runs SET status = 'completed'"))
+    workflows, workflow_id, step = await a_workflow(tmp_path, store, state)
+    other = await consult(store, state)
 
     assert await workflows.delete_workflow(workflow_id) == 1
 
     assert left(state, step) == []
     assert len(left(state, other)) == 2
+
+
+# --- a turn in flight -------------------------------------------------------
+#
+# A reviewer's consultation can be resumed on its own through `orchestrator_consult`, and
+# that turn takes a lease on the consultation and none on the review. The owner's delete
+# has to honor it as the consultation's own delete does, or the CLI is left writing to a
+# session directory that has just been removed.
+
+
+async def test_a_review_is_not_deleted_under_a_reviewers_turn_in_flight(store, state):
+    reviews, review_id, owned = await a_review(store, state)
+    await hold(store, owned)
+
+    with pytest.raises(StoreError) as refused:
+        await reviews.delete_review(review_id)
+
+    assert refused.value.code is ConsultErrorCode.SESSION_BUSY
+    assert len(left(state, owned)) == 2
+    await reviews.get_review(review_id)
+    await store.get_consultation(owned)
+
+    await store._run(lambda: store._db.execute("DELETE FROM consultation_leases"))
+    assert await reviews.delete_review(review_id) == 1
+    assert left(state, owned) == []
+
+
+async def test_a_workflow_is_not_deleted_under_a_steps_turn_in_flight(tmp_path, store, state):
+    workflows, workflow_id, step = await a_workflow(tmp_path, store, state)
+    await hold(store, step)
+
+    with pytest.raises(StoreError) as refused:
+        await workflows.delete_workflow(workflow_id)
+
+    assert refused.value.code is ConsultErrorCode.SESSION_BUSY
+    assert len(left(state, step)) == 2
+    await workflows.get_workflow(workflow_id)
+    await store.get_consultation(step)
+
+    await store._run(lambda: store._db.execute("DELETE FROM consultation_leases"))
+    assert await workflows.delete_workflow(workflow_id) == 1
+    assert left(state, step) == []
+
+
+async def test_a_lease_that_lapsed_does_not_hold_a_delete(store, state):
+    """A process that died mid-turn leaves its lease row behind, and it expires rather than
+    being released. It must not keep a review undeletable."""
+    reviews, review_id, owned = await a_review(store, state)
+    await hold(store, owned, expires_in=-1)
+
+    assert await reviews.delete_review(review_id) == 1
+
+    assert left(state, owned) == []
 
 
 # --- the retention sweep ----------------------------------------------------
@@ -231,6 +305,30 @@ async def test_the_retention_sweep_removes_the_sessions_of_what_it_deletes(tmp_p
 
     assert left(state, stale) == []
     assert len(left(state, fresh)) == 2
+    await swept.close()
+
+
+async def test_the_retention_sweep_leaves_a_review_whose_reviewer_has_a_turn_in_flight(
+    tmp_path, state
+):
+    """Resuming a reviewer's consultation touches the consultation and not the review, so
+    the review still reads as untouched for as long as the retention window says."""
+    database = tmp_path / "consultations.sqlite3"
+    first = await ConsultStore(database).open()
+    reviews, review_id, owned = await a_review(first, state)
+    await hold(first, owned)
+    await first._run(
+        lambda: first._db.execute(
+            "UPDATE reviews SET updated_at = '2026-01-01T00:00:00Z' WHERE id = ?",
+            (str(review_id),),
+        )
+    )
+    await first.close()
+
+    swept = await ConsultStore(database, retention_days=30).open()
+
+    await ReviewStore(swept).get_review(review_id)
+    assert len(left(state, owned)) == 2
     await swept.close()
 
 

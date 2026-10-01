@@ -39,7 +39,7 @@ The GitHub Copilot CLI also sends its own telemetry to GitHub: GitHub's help for
   - reviews: plans, reviewer results, your synthesis, and fix rounds;
   - workflows: steps, artifacts and test reports.
 
-  Every stored copy has credential-shaped values masked. `store_full_content: false` keeps metadata only, but workflows need full content.
+  Every stored copy has credential-shaped values masked. `store_full_content: false` keeps metadata only, except a review's goal and context, which are stored either way because the approved plan is read back to send it. Workflows need full content.
 - **Configuration**: `~/.orchestrator-mcp/config.yaml`, plus `~/.orchestrator-mcp/agents.yaml` if you use the dashboard editor.
 - **OpenCode working directories**: `~/.orchestrator-mcp/opencode/<agent>`, which hold only the configuration Orchestrator writes for that runtime.
 - **GitHub Copilot's state**: `~/.orchestrator-mcp/copilot`.

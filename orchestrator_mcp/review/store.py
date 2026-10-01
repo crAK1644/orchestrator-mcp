@@ -39,6 +39,7 @@ from ..consult.store import (
     _renewing_lease,
     copilot_sessions,
     forget_copilot_sessions,
+    refuse_leased,
     still_stale,
 )
 from ..contract import scrub_json
@@ -793,6 +794,8 @@ def delete_tree(
             tree,
         )
     ]
+    # A reviewer's consultation can be resumed on its own, which takes no review lease.
+    refuse_leased(db, consultations)
 
     db.execute(f"DELETE FROM review_consultations WHERE review_id IN ({marks})", tree)
     if consultations:

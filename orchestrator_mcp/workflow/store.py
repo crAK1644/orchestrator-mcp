@@ -42,6 +42,7 @@ from ..consult.store import (
     _renewing_lease,
     copilot_sessions,
     forget_copilot_sessions,
+    refuse_leased,
     still_stale,
 )
 from ..contract import scrub_json
@@ -872,6 +873,7 @@ class WorkflowStore:
                 )
             ]
             if consultations:
+                refuse_leased(db, consultations)
                 sessions.extend(copilot_sessions(db, consultations))
                 held = ",".join("?" * len(consultations))
                 for table in ("consultation_turns", "routing_decisions", "consultation_leases"):
