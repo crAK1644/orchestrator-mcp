@@ -30,12 +30,46 @@ def test_init_writes_a_config_the_server_accepts(installed, tmp_path, capsys):
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     config = yaml.safe_load(target.read_text())
     parsed = load_consult_config(config)
-    assert set(parsed.agents) == {"codex-sol", "claude-opus", "gemini-reviewer"}
-    # The host never reviews itself: the best of the rest does.
+    assert set(parsed.agents) == {"codex-sol", "claude-opus", "gemini-reviewer", "copilot"}
+    # The host never reviews itself: the best of the rest does, and Copilot, scored lowest, is last.
     assert parsed.review.reviewers == ["codex-sol"]
-    assert parsed.review.deep_reviewers == ["codex-sol", "gemini-reviewer"]
+    assert parsed.review.deep_reviewers == ["codex-sol", "gemini-reviewer", "copilot"]
     assert "workflow" not in config
     assert "claude mcp add orchestrator" in capsys.readouterr().out
+
+
+def test_init_writes_copilot_on_auto_and_prints_how_to_sign_in(installed, tmp_path, capsys):
+    """`auto` is the one model every plan serves, so it cannot be one a plan lacks. The login
+    line names the home Copilot runs under, which a login made for ~/.copilot does not cover."""
+    target = tmp_path / "c.yaml"
+
+    assert cli.init(["--host", "claude", "--path", str(target)]) == 0
+
+    copilot = yaml.safe_load(target.read_text())["consult"]["agents"]["copilot"]
+    assert (copilot["runtime"], copilot["model"], copilot["command"]) == (
+        "copilot", "auto", "/opt/bin/copilot",
+    )
+    out = capsys.readouterr().out
+    assert "COPILOT_HOME=" in out and "/opt/bin/copilot login" in out
+
+
+def test_init_does_not_ask_the_host_to_sign_in_to_itself(installed, tmp_path, capsys):
+    assert cli.init(["--host", "copilot", "--path", str(tmp_path / "c.yaml")]) == 0
+
+    assert "copilot login" not in capsys.readouterr().out
+
+
+def test_init_lets_copilot_be_the_one_reviewer(monkeypatch, tmp_path):
+    """A machine with nothing but Copilot beside the host is not turned away."""
+    monkeypatch.setattr(
+        cli, "_find", lambda c: f"/opt/bin/{c[0]}" if c[0] in ("claude", "copilot") else None
+    )
+    target = tmp_path / "c.yaml"
+
+    assert cli.init(["--host", "claude", "--path", str(target)]) == 0
+
+    parsed = load_consult_config(yaml.safe_load(target.read_text()))
+    assert parsed.review.reviewers == ["copilot"]
 
 
 def test_init_never_overwrites(installed, tmp_path, capsys):

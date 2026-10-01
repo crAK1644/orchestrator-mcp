@@ -130,7 +130,7 @@ Google's Gemini CLI stopped serving free and Google AI Pro/Ultra accounts on Jun
 /orchestrator-mcp:setup
 ```
 
-`/orchestrator-mcp:setup` writes `~/.orchestrator-mcp/config.yaml` from the agent CLIs it finds, then runs `doctor` on it. It finds Codex and Antigravity; OpenCode and GitHub Copilot go into the config by hand, from their agents in [`config.example.yaml`](config.example.yaml). Then reconnect `plugin:orchestrator-mcp:orchestrator` in `/mcp`, or restart Claude Code: `/reload-plugins` keeps the server that started without a config.
+`/orchestrator-mcp:setup` writes `~/.orchestrator-mcp/config.yaml` from the agent CLIs it finds, then runs `doctor` on it. It finds Codex, Antigravity and GitHub Copilot; OpenCode goes into the config by hand, from its agent in [`config.example.yaml`](config.example.yaml). Then reconnect `plugin:orchestrator-mcp:orchestrator` in `/mcp`, or restart Claude Code: `/reload-plugins` keeps the server that started without a config.
 
 If you added the server earlier with `claude mcp add orchestrator`, remove that entry (`claude mcp remove orchestrator -s <scope>`, with the scope `claude mcp get orchestrator` shows), or two copies of the server run side by side.
 
@@ -160,7 +160,7 @@ These are the normal Codex and Claude Code login flows. Orchestrator checks read
 
 For OpenCode, sign in once with `opencode auth login` for whichever provider you plan to consult. Hosted providers only — this server does not run a model on your machine. See the [OpenCode runtime](#opencode-runtime--deepseek-qwen-kimi) section below.
 
-For GitHub Copilot, sign in to the copy of its state that Orchestrator runs it under, not to your own: `COPILOT_HOME=$HOME/.orchestrator-mcp/copilot/home copilot login`. A consultation that finds it signed out returns that command in `required_action`. It needs a Copilot plan; see the [GitHub Copilot runtime](#github-copilot-runtime) section below.
+For GitHub Copilot, sign in to the copy of its state that Orchestrator runs it under, not to your own: `COPILOT_HOME=$HOME/.orchestrator-mcp/copilot/home copilot login`. `init` prints that command when it writes a Copilot agent, and a consultation that finds it signed out returns it in `required_action`. It needs a Copilot plan; see the [GitHub Copilot runtime](#github-copilot-runtime) section below.
 
 ### 2. Write a starter config
 
@@ -168,12 +168,15 @@ For GitHub Copilot, sign in to the copy of its state that Orchestrator runs it u
 orchestrator-mcp-server init --host claude   # or codex: the client you run it under
 ```
 
-`init` finds the Codex, Claude Code and Antigravity CLIs installed here, writes
+`init` finds the Codex, Claude Code, GitHub Copilot and Antigravity CLIs installed here, writes
 `~/.orchestrator-mcp/config.yaml` (mode `0600`, never over an existing file; `--path`
 picks another), and prints the exact line for step 3. It picks the best reviewer
-that is not the host. It writes no `workflow:` block, because only you can choose the
-directories a workflow may work in, and no OpenCode or GitHub Copilot agent, because
-their model names change too often for a template; add them by hand from
+that is not the host. Copilot is scored below the others, so it is the reviewer only
+when it is the only CLI beside the host, and it comes last under `deep_reviewers`. Its
+agent is written on `model: auto`, the one model every plan serves, so the name cannot go
+stale, and `init` prints the sign-in command from step 1. It writes no `workflow:` block,
+because only you can choose the directories a workflow may work in, and no OpenCode
+agent, because its model names change too often for a template; add one by hand from
 [`config.example.yaml`](config.example.yaml).
 
 <details>

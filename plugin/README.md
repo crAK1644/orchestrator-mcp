@@ -30,7 +30,7 @@ What you send an agent goes to that agent's provider under your login, and the u
 /orchestrator-mcp:setup
 ```
 
-`/orchestrator-mcp:setup` writes a starter config at `~/.orchestrator-mcp/config.yaml` from the Codex and Antigravity CLIs it finds, then checks each one's login. OpenCode and GitHub Copilot go in by hand: copy their agents from [`config.example.yaml`](https://github.com/crAK1644/orchestrator-mcp/blob/main/config.example.yaml).
+`/orchestrator-mcp:setup` writes a starter config at `~/.orchestrator-mcp/config.yaml` from the Codex, Antigravity and GitHub Copilot CLIs it finds, then checks each one's login. Copilot signs in to a copy of its state that Orchestrator keeps, so setup prints that command rather than a plain `copilot login`. OpenCode goes in by hand: copy its agent from [`config.example.yaml`](https://github.com/crAK1644/orchestrator-mcp/blob/main/config.example.yaml).
 
 When it finishes, reconnect `plugin:orchestrator-mcp:orchestrator` in `/mcp`, or restart Claude Code. Until you do, the server offers one tool, `orchestrator_setup`, which tells you the same thing.
 

@@ -11,6 +11,11 @@ One line per change a user would notice. The full notes for each version are on 
   a delete that committed removes one. A directory that cannot be removed is left, and the
   delete still succeeds. What else the CLI keeps in that home, and sessions of consultations
   deleted before this release, stay until you delete the home.
+- `init` writes a GitHub Copilot agent when it finds `copilot`, on `model: auto`, the one model
+  every plan serves, so its name cannot go stale, and prints the sign-in command for the
+  Copilot home. Copilot scores 60 for `review`, below Codex, Claude Code and Antigravity, so it
+  is the reviewer only when it is the only CLI beside the host, a machine `init` used to turn
+  away. `/orchestrator-mcp:setup` has OpenCode left as its one by-hand step.
 - A hook in the Copilot home no longer runs on a consultation or a readiness check. The CLI
   ran one on session start and on every prompt and has no flag to stop it, so the server now
   sets `disableAllHooks` in the home's `settings.json` before each run, keeping whatever else
