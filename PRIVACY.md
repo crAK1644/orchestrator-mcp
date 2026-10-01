@@ -28,7 +28,7 @@ Credential-shaped values are masked on a best-effort basis, but when masking hap
 
 Pattern matching can miss a secret that has no recognizable shape, so do not rely on it to catch one. A review's preview also lists lines holding a long random-looking token as `suspect_hits`, a guess that only warns.
 
-Each agent CLI also keeps its own history, for example `~/.codex/sessions/`. Orchestrator cannot redact or delete those files. Use the vendor's own tools for them. GitHub Copilot's history sits under Orchestrator's own directory, in `~/.orchestrator-mcp/copilot/home`, with the prompts and answers unmasked.
+Each agent CLI also keeps its own history, for example `~/.codex/sessions/`. Orchestrator cannot redact or delete those files. Use the vendor's own tools for them. GitHub Copilot's history sits under Orchestrator's own directory, in `~/.orchestrator-mcp/copilot/home`, with the prompts and answers unmasked. Orchestrator removes a consultation's session from it when it deletes the consultation; [Retention and deletion](#retention-and-deletion) says what stays.
 
 The GitHub Copilot CLI also sends its own telemetry to GitHub: GitHub's help for `COPILOT_OFFLINE` lists telemetry among the network access that setting turns off. Orchestrator does not turn it off and does not see what it carries.
 
@@ -43,7 +43,7 @@ The GitHub Copilot CLI also sends its own telemetry to GitHub: GitHub's help for
 - **Configuration**: `~/.orchestrator-mcp/config.yaml`, plus `~/.orchestrator-mcp/agents.yaml` if you use the dashboard editor.
 - **OpenCode working directories**: `~/.orchestrator-mcp/opencode/<agent>`, which hold only the configuration Orchestrator writes for that runtime.
 - **GitHub Copilot's state**: `~/.orchestrator-mcp/copilot`.
-  - `home` is the `COPILOT_HOME` Copilot runs under: its configuration, logs and session store, one session directory for each consultation, and, on a host with no system keychain, the sign-in token where GitHub's documentation puts it. The session directories and the store hold each prompt and answer as sent, unmasked, and nothing prunes them.
+  - `home` is the `COPILOT_HOME` Copilot runs under: its configuration, logs and session store, one session directory for each consultation, and, on a host with no system keychain, the sign-in token where GitHub's documentation puts it. The session directories and the store hold each prompt and answer as sent, unmasked. Deleting a consultation removes its session directory and the lock beside it, and nothing else in `home`.
   - Each run also gets a scratch directory beside it, empty, which is deleted when the run ends.
 
   Both are mode `0700`. Your own `~/.copilot` is neither read nor written by Orchestrator. Put nothing in `home` but the sign-in. Orchestrator writes one setting there, `disableAllHooks` in `settings.json` (mode `0600`, keeping whatever else that file holds), so that a hook does not run on a consultation, and it refuses to run over a `settings.json` it cannot read as a JSON object. An MCP server that `mcp-config.json` lists is switched off for each run, by name. Orchestrator neither looks for plugins nor limits them.
@@ -75,13 +75,20 @@ It does not read your assistant's conversation history or memory. What it knows 
 
 ## Retention and deletion
 
-The `isolated_write` files above expire after 7 days. GitHub Copilot's history is never pruned: delete `~/.orchestrator-mcp/copilot/home` to clear it, which on a host with no keychain takes the sign-in with it, and a consultation that used it can then no longer be continued. Database records stay until you delete them, unless you set `retention_days` in the `consult:` block: then, at each server start and roughly daily while it runs, finished consultations, reviews and workflows with no activity for that many days are deleted. Delete them yourself with these tools:
+The `isolated_write` files above expire after 7 days. Database records stay until you delete them, unless you set `retention_days` in the `consult:` block: then, at each server start and roughly daily while it runs, finished consultations, reviews and workflows with no activity for that many days are deleted. Delete them yourself with these tools:
 
 - `orchestrator_delete_consultation`
 - `orchestrator_delete_review`
 - `orchestrator_delete_workflow`
 
 For bulk deletion, `orchestrator_request_delete_all_consultations`, `orchestrator_request_delete_all` and `orchestrator_request_delete_all_workflows` each preview a delete and return a token, which you pass to the matching `delete_all` tool. To remove everything at once, delete the database file.
+
+A deleted consultation's GitHub Copilot session goes with it, however it was deleted: by one of these tools, with the review or workflow that owned it, or by `retention_days`. That is its session directory under `~/.orchestrator-mcp/copilot/home` and the lock beside it, removed once the delete has committed. One that cannot be removed is left, and the delete still succeeds. Nothing else in `home` is touched:
+
+- what else the CLI keeps there, which Orchestrator does not open;
+- a session whose consultation is not in the database, such as one left by a consultation deleted before this release, or by deleting the database file.
+
+Delete `home` to clear all of it. On a host with no keychain that takes the sign-in with it, and a consultation that used it can then no longer be continued.
 
 The `usage`, `history`, `scorecard`, `strengths`, `search` and `export` commands of `orchestrator-mcp-server` read that database from a terminal and print it, `export` prints the prompts and answers of one record, and `search` prints short excerpts of the ones that hold the words you give it. The `orchestrator_search_consultations` tool returns the same excerpts to the host model, so old prompts and answers can reach it through a search as they can through `orchestrator_get_consultation`; it only reads, and keeps no index of its own. Stored text is masked as it is printed, which also covers records written before a pattern existed, but masking is best effort: treat the output like the database itself.
 

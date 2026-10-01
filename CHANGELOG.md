@@ -5,6 +5,12 @@ One line per change a user would notice. The full notes for each version are on 
 
 ## Unreleased
 
+- Deleting a consultation removes its GitHub Copilot session, the directory and its lock in
+  the Copilot home, which held the prompts and answers unmasked and was never pruned. So does
+  deleting the review or workflow that owns it, and so does the `retention_days` sweep. Only
+  a delete that committed removes one. A directory that cannot be removed is left, and the
+  delete still succeeds. What else the CLI keeps in that home, and sessions of consultations
+  deleted before this release, stay until you delete the home.
 - A hook in the Copilot home no longer runs on a consultation or a readiness check. The CLI
   ran one on session start and on every prompt and has no flag to stop it, so the server now
   sets `disableAllHooks` in the home's `settings.json` before each run, keeping whatever else

@@ -40,6 +40,8 @@ from ..consult.store import (
     ConsultStore,
     StoreError,
     _renewing_lease,
+    copilot_sessions,
+    forget_copilot_sessions,
     still_stale,
 )
 from ..contract import scrub_json
@@ -820,6 +822,7 @@ class WorkflowStore:
         was issued cannot be swept up when it is spent.
         """
         db = self._db
+        sessions: list[str] = []
         db.execute("BEGIN IMMEDIATE")
         try:
             if confirmation_sha is not None:
@@ -860,7 +863,7 @@ class WorkflowStore:
                 # `detach_unapproved` is what makes that safe: it clears the child's
                 # `parent_review_id` before the parent goes, so the deferred foreign
                 # key commits and the recheck survives as a root of its own.
-                delete_tree(db, reviews, detach_unapproved=True)
+                delete_tree(db, reviews, detach_unapproved=True, sessions=sessions)
 
             consultations = [
                 row[0]
@@ -869,6 +872,7 @@ class WorkflowStore:
                 )
             ]
             if consultations:
+                sessions.extend(copilot_sessions(db, consultations))
                 held = ",".join("?" * len(consultations))
                 for table in ("consultation_turns", "routing_decisions", "consultation_leases"):
                     db.execute(
@@ -882,6 +886,7 @@ class WorkflowStore:
             db.execute("ROLLBACK")
             raise
         db.execute("COMMIT")
+        forget_copilot_sessions(sessions)
         for workflow_id in tree:
             remove_workflow_patches_now(workflow_id)
         return len(tree)

@@ -467,6 +467,40 @@ def still_stale(
     ]
 
 
+def copilot_sessions(db: sqlite3.Connection, ids: list[str]) -> list[str]:
+    """The Copilot sessions these consultations own, read before their rows go.
+
+    A first turn names its session after the consultation, so one that failed before the
+    session id was bound left a directory under the consultation's own id."""
+    marks = ",".join("?" * len(ids))
+    return [
+        name
+        for row in db.execute(
+            f"SELECT id, native_session_id FROM consultations "
+            f"WHERE id IN ({marks}) AND target_runtime = 'copilot'",
+            ids,
+        )
+        for name in row
+        if name
+    ]
+
+
+def forget_copilot_sessions(sessions: list[str]) -> None:
+    """Remove those sessions' directories, once the delete that named them has committed.
+
+    Never raises: the rows are gone, and a directory that stays is the lesser failure."""
+    if not sessions:
+        return
+    try:
+        # Imported here: the adapters package is above this module, and most deletes have
+        # nothing of Copilot's to remove.
+        from .adapters.copilot_cli import forget_sessions
+
+        forget_sessions(sessions)
+    except Exception:
+        log.warning("could not remove Copilot session directories", exc_info=True)
+
+
 class StoreError(CodedFailure):
     """A refusal with a code the caller's envelope can carry."""
 
@@ -1300,6 +1334,7 @@ class ConsultStore:
                 db.execute("COMMIT")
                 return 0
             existing_marks = ",".join("?" * len(existing))
+            sessions = copilot_sessions(db, existing)
             for table in ("consultation_turns", "routing_decisions", "consultation_leases"):
                 db.execute(
                     f"DELETE FROM {table} WHERE consultation_id IN ({existing_marks})", existing
@@ -1311,6 +1346,7 @@ class ConsultStore:
             db.execute("ROLLBACK")
             raise
         db.execute("COMMIT")
+        forget_copilot_sessions(sessions)
         return deleted
 
     # --- retention ----------------------------------------------------------
