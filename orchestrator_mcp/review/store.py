@@ -37,6 +37,8 @@ from ..consult.store import (
     ConsultStore,
     StoreError,
     _renewing_lease,
+    copilot_sessions,
+    forget_copilot_sessions,
     still_stale,
 )
 from ..contract import scrub_json
@@ -631,6 +633,7 @@ class ReviewStore:
         the order they come out in cannot live inside a transaction of its own.
         """
         db = self._db
+        sessions: list[str] = []
         db.execute("BEGIN IMMEDIATE")
         try:
             if confirmation_sha is not None:
@@ -679,11 +682,12 @@ class ReviewStore:
                 db.execute("COMMIT")
                 return 0
             refuse_workflow_owned(db, tree)
-            removed = delete_tree(db, tree, detach_unapproved=not expand)
+            removed = delete_tree(db, tree, detach_unapproved=not expand, sessions=sessions)
         except Exception:
             db.execute("ROLLBACK")
             raise
         db.execute("COMMIT")
+        forget_copilot_sessions(sessions)
         return removed
 
     def _descendants(self, roots: list[str]) -> list[str]:
@@ -734,7 +738,11 @@ def refuse_workflow_owned(db: sqlite3.Connection, tree: list[str]) -> None:
 
 
 def delete_tree(
-    db: sqlite3.Connection, tree: list[str], *, detach_unapproved: bool = False
+    db: sqlite3.Connection,
+    tree: list[str],
+    *,
+    detach_unapproved: bool = False,
+    sessions: list[str],
 ) -> int:
     """Refuse the tree if any of it is busy, then remove it in order.
 
@@ -742,6 +750,9 @@ def delete_tree(
     caller and the workflow delete is the other, and that one has to take a workflow's
     steps, its consultations and its reviews together or leave part of the workflow
     behind.
+
+    The Copilot sessions of the consultations it removes are added to `sessions`, for the
+    caller to forget once its transaction has committed and not before.
 
     Order matters because `PRAGMA foreign_keys=ON`: `routing_decisions` and
     `consultation_turns` both reference `consultations`, so the consultations go
@@ -785,6 +796,7 @@ def delete_tree(
 
     db.execute(f"DELETE FROM review_consultations WHERE review_id IN ({marks})", tree)
     if consultations:
+        sessions.extend(copilot_sessions(db, consultations))
         held = ",".join("?" * len(consultations))
         for table in ("consultation_turns", "routing_decisions", "consultation_leases"):
             db.execute(f"DELETE FROM {table} WHERE consultation_id IN ({held})", consultations)

@@ -12,7 +12,7 @@ Set up the MCP server this plugin registers. Run each command below with Bash an
 
    On success it ends by printing a `claude mcp add orchestrator ...` command. Do not run it: this plugin already registers the server, and adding it again would run two. A `review: left out` line needs no action: `~/.orchestrator-mcp/agents.yaml` already names the reviewers.
 
-   If it says the file already exists, that is fine; go on to step 2. If it refuses for any other reason -- no reviewer CLI found, or a reviewer that `~/.orchestrator-mcp/agents.yaml` names and the starter config does not define -- quote the refusal and say what fixes it, then go on to step 2 anyway. `init` has no OpenCode or GitHub Copilot template: if one of those is the only other agent here, point the user at its agent, `opencode` or `copilot`, in https://github.com/crAK1644/orchestrator-mcp/blob/main/config.example.yaml to copy into the config by hand.
+   If it says the file already exists, that is fine; go on to step 2. If it refuses for any other reason -- no reviewer CLI found, or a reviewer that `~/.orchestrator-mcp/agents.yaml` names and the starter config does not define -- quote the refusal and say what fixes it, then go on to step 2 anyway. `init` has no OpenCode template: if that is the only other agent here, point the user at its agent, `opencode`, in https://github.com/crAK1644/orchestrator-mcp/blob/main/config.example.yaml to copy into the config by hand.
 
 2. Check it with the same environment the plugin gives the server:
 
@@ -20,6 +20,6 @@ Set up the MCP server this plugin registers. Run each command below with Bash an
    ORCHESTRATOR_CONFIG="$HOME/.orchestrator-mcp/config.yaml" ORCHESTRATOR_HOST_RUNTIME=claude uvx orchestrator-mcp-server@0.10.3 doctor
    ```
 
-3. Quote every `FAIL` line with what fixes it: install the CLI it names, log in to it, or edit the config key it names. Do not edit the config yourself unless the user asks.
+3. Quote every `FAIL` line with what fixes it: install the CLI it names, log in to it, or edit the config key it names. A `copilot` agent that is not signed in needs `COPILOT_HOME=$HOME/.orchestrator-mcp/copilot/home copilot login`, not a plain `copilot login`: the server runs Copilot under a home of its own. `init` prints that line only when it writes the config, so give it to the user either way. Do not edit the config yourself unless the user asks.
 
 4. Finish by telling the user to reconnect `plugin:orchestrator-mcp:orchestrator` in `/mcp`, or to restart Claude Code. `/reload-plugins` is not enough: it keeps the server that started before the config existed.

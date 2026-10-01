@@ -75,8 +75,8 @@ SEVERITIES = get_args(Severity)
 # HTML with no script in it, so the list cannot filter itself when the runtime changes.
 #
 # On antigravity the reasoning level is part of the slug, which is why those read
-# `-high` / `-low`. On codex and claude it is the separate `reasoning_effort` field, so
-# `gpt-5.6-sol` at `max` is that slug plus that level, not a slug of its own.
+# `-high` / `-low`. On codex it is the separate `reasoning_effort` field, so `gpt-5.6-sol`
+# at `max` is that slug plus that level, not a slug of its own. Claude has no level to set.
 MODEL_PRESETS: dict[str, tuple[str, ...]] = {
     "codex": ("gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5"),
     "claude": (

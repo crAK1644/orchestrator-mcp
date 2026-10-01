@@ -5,6 +5,19 @@ One line per change a user would notice. The full notes for each version are on 
 
 ## Unreleased
 
+- Deleting a consultation removes its GitHub Copilot session directory and its lock in the
+  Copilot home, which held the prompts and answers unmasked and was never pruned. So does
+  deleting the review or workflow that owns it, and so does the `retention_days` sweep. Only
+  a delete that committed removes one. A directory that cannot be removed is left, and the
+  delete still succeeds. The CLI's own store there, `session-store.db`, keeps a second copy of
+  each prompt and answer, and nothing Orchestrator does reaches it. That, what else the CLI
+  keeps, and sessions of consultations deleted before this release stay until you delete the
+  home.
+- `init` writes a GitHub Copilot agent when it finds `copilot`, on `model: auto`, the one model
+  every plan serves, so its name cannot go stale, and prints the sign-in command for the
+  Copilot home. Copilot scores 60 for `review`, below Codex, Claude Code and Antigravity, so it
+  is the reviewer only when it is the only CLI beside the host, a machine `init` used to turn
+  away. `/orchestrator-mcp:setup` has OpenCode left as its one by-hand step.
 - A hook in the Copilot home no longer runs on a consultation or a readiness check. The CLI
   ran one on session start and on every prompt and has no flag to stop it, so the server now
   sets `disableAllHooks` in the home's `settings.json` before each run, keeping whatever else
@@ -14,6 +27,9 @@ One line per change a user would notice. The full notes for each version are on 
   longer lose the note that a count did not read. The server substitutes a zero for a count
   it cannot parse and says so in `counts_incomplete`; adding turns together dropped that note,
   so the total looked measured. It now keeps what each turn said, once.
+- README: the configuration table lists every `consult:` setting, the dashboard section names
+  its pages, `host` and `port`, and the `claude` row says why `isolated_write` is refused:
+  Orchestrator has no write adapter for it, even where the sandbox holds. No behavior changed.
 
 ## 0.10.3 — 2026-09-30
 

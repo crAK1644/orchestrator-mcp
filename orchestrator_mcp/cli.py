@@ -17,6 +17,7 @@ from typing import Any, get_args
 
 import yaml
 
+from .consult.adapters import adapter_for
 from .consult.config import HOST_RUNTIME_ENV, host_runtime, load_consult_config
 from .consult.contract import Runtime
 from .consult.managed import managed_path, read_managed_document
@@ -27,9 +28,9 @@ DEFAULT_PATH = "~/.orchestrator-mcp/config.yaml"
 # What `init` offers per runtime: where to look for the CLI, and the agent it writes
 # if one is found. Taken from `config.example.yaml`; the scores are starting points
 # for the user to edit, not measurements.
-# ponytail: no opencode or copilot entry. Their model names rotate (and Copilot's depend
-# on the plan), so any model written here goes stale; add one by hand from
-# `opencode models`, or `auto` for Copilot (config.example.yaml shows how).
+# ponytail: no opencode entry. Its model names rotate, so any model written here goes
+# stale; add one by hand from `opencode models` (config.example.yaml shows how). Copilot
+# has one because `auto` is the single model every plan serves.
 _TEMPLATES: dict[str, tuple[list[str], str, dict[str, Any]]] = {
     "codex": (
         # The ChatGPT desktop app bundles the CLI and does not put it on PATH. Newer
@@ -71,6 +72,19 @@ _TEMPLATES: dict[str, tuple[list[str], str, dict[str, Any]]] = {
             "scores": {"reasoning": 90, "review": 85},
         },
     ),
+    "copilot": (
+        ["copilot"],
+        "copilot",
+        {
+            "runtime": "copilot",
+            "model": "auto",
+            "priority": 50,
+            # Low, because the plan and not this file picks the model. `review` is not in
+            # config.example.yaml; it is here so a machine with only Copilot beside the host
+            # still gets a reviewer instead of a refusal.
+            "scores": {"coding": 60, "reasoning": 60, "review": 60},
+        },
+    ),
 }
 
 
@@ -104,7 +118,7 @@ def starter_config(host: str) -> dict[str, Any]:
     if not others and not managed["review"]:
         raise ConfigError(
             f"no reviewer CLI found besides the host (`{host}`): install and log in to "
-            "one of codex, claude or agy (antigravity), then run init again"
+            "one of codex, claude, copilot or agy (antigravity), then run init again"
         )
     consult: dict[str, Any] = {
         "database_path": "~/.orchestrator-mcp/consultations.sqlite3",
@@ -149,7 +163,7 @@ def init(args: list[str]) -> int:
     target = Path(path).expanduser().absolute()
     try:
         config = starter_config(host)
-        load_consult_config(config)  # never write a file the server would refuse
+        parsed = load_consult_config(config)  # never write a file the server would refuse
     except ConfigError as exc:
         print(f"orchestrator-mcp-server init: {exc}", file=sys.stderr)
         return 1
@@ -189,6 +203,16 @@ def init(args: list[str]) -> int:
     else:
         print(f"  command: orchestrator-mcp-server\n  env: {env}\n")
     print(f"Then check it:\n\n  {env} orchestrator-mcp-server doctor")
+    for agent_id, entry in config["consult"]["agents"].items():
+        if entry["runtime"] == "copilot" and host != "copilot":
+            # Copilot runs under a home of its own, so a login made for `~/.copilot` is not
+            # the one it uses where there is no keychain: the user needs this exact line.
+            agent = parsed.agents[agent_id]
+            print(
+                f"\nIf `doctor` finds {agent_id} signed out, sign in once to the copy of its "
+                "state this server runs it under; your own ~/.copilot is not used:\n\n  "
+                f"{adapter_for(agent, parsed).connect_command(agent)}"
+            )
     return 0
 
 

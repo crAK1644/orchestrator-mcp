@@ -66,7 +66,13 @@ file under it, which is why `connect_command` names the same home. The token var
 credential this server's children are not given; sign in with `login`.
 
 Session state accumulates under that home, one directory per consultation -- a first turn
-the CLI refuses leaves an empty one -- and nothing prunes it.
+the CLI refuses leaves an empty one. Deleting a consultation removes its directory and
+lock (`forget_sessions`), and so does the retention sweep, which deletes through the same
+paths. Nothing removes a directory no consultation in the database names: it may be a turn
+in flight, or belong to another database that shares this home. What else the CLI keeps in
+the home is not looked at, but one thing was measured on 1.0.89: `session-store.db` holds a
+copy of each prompt and answer, unmasked, and outlives the directory. Nothing here removes
+it: `copilot sessions` can only import, and the file is the CLI's own.
 """
 
 from __future__ import annotations
@@ -78,6 +84,7 @@ import shlex
 import shutil
 import stat
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -433,17 +440,32 @@ def _mcp_off(home: Path) -> list[str]:
 
 
 def _forget(home: Path, session: str) -> None:
-    """Remove the session a readiness check made, and the lock beside it.
+    """Remove one session's directory, and the lock beside it.
 
-    The CLI creates both before it looks at the model, so a check it then refuses still
-    leaves them, and the check runs again every time the ready answer expires -- on every
-    turn, while signed out. Only for an id this server made up a moment ago for a run
-    that said nothing: never a consultation's own.
+    The readiness check's own: the CLI creates both before it looks at the model, so a
+    check it then refuses still leaves them, and the check runs again every time the ready
+    answer expires -- on every turn, while signed out. And, through `forget_sessions`, a
+    deleted consultation's. Never one whose consultation is still there.
     """
     state = home / "session-state"
     shutil.rmtree(state / session, ignore_errors=True)
     with contextlib.suppress(OSError):
         (state / ".session-operation-locks" / f"{session}.lock").unlink(missing_ok=True)
+
+
+def forget_sessions(sessions: Iterable[str]) -> None:
+    """Remove the sessions of consultations that were just deleted, and their locks.
+
+    The stores call this once the delete has committed, so one that was refused or rolled
+    back keeps its history. Best effort, like the readiness check's: a directory that
+    cannot be removed stays. Only a name that is a UUID is a session this server made, so
+    anything else in a database row is never turned into a path. Nothing is created: a
+    home that is not there is not an error.
+    """
+    home = _root() / "home"
+    for session in sessions:
+        with contextlib.suppress(ValueError):
+            _forget(home, str(UUID(session)))
 
 
 def _private(path: Path) -> Path:
