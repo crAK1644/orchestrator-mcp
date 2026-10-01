@@ -27,6 +27,13 @@ One line per change a user would notice. The full notes for each version are on 
   longer lose the note that a count did not read. The server substitutes a zero for a count
   it cannot parse and says so in `counts_incomplete`; adding turns together dropped that note,
   so the total looked measured. It now keeps what each turn said, once.
+- Deleting a review or a workflow is refused while a consultation it owns has a turn in
+  flight, as deleting that consultation already was. A reviewer's consultation can be resumed
+  on its own, and its Copilot session directory would otherwise be removed under the running
+  CLI. The `retention_days` sweep skips such a record and tries again later. A lease left by a
+  process that died has expired and does not hold a delete.
+- PRIVACY.md said `store_full_content: false` keeps metadata only. A review's goal and context
+  are stored either way, as the README already said; the sentence now says so.
 - README: the configuration table lists every `consult:` setting, the dashboard section names
   its pages, `host` and `port`, and the `claude` row says why `isolated_write` is refused:
   Orchestrator has no write adapter for it, even where the sandbox holds. No behavior changed.

@@ -1032,7 +1032,7 @@ useful than overclaiming.
 | `orchestrator_list_workflows` | Recent workflows, newest first: id, goal, state. |
 | `orchestrator_workflow_plan_replan` / `orchestrator_workflow_replan` | Change the binding snapshot under the same preview-and-approve handshake. |
 | `orchestrator_workflow_cancel` | Cancel pending work and terminate a child this process owns, with the same caveat `orchestrator_cancel_review` carries about another process's children. |
-| `orchestrator_delete_workflow` | Delete one workflow with its steps, consultations and reviews. Refused while the workflow is open or a step's lease is live. |
+| `orchestrator_delete_workflow` | Delete one workflow with its steps, consultations and reviews. Refused while the workflow is open, a step's lease is live, or a consultation it owns has a turn in flight. |
 | `orchestrator_request_delete_all_workflows` / `orchestrator_delete_all_workflows` | Preview and confirm deletion of an exact workflow snapshot. |
 
 A workflow deletes whole or not at all. Its consultations are excluded from every

@@ -485,6 +485,29 @@ def copilot_sessions(db: sqlite3.Connection, ids: list[str]) -> list[str]:
     ]
 
 
+def refuse_leased(db: sqlite3.Connection, ids: list[str]) -> None:
+    """Refuse a delete that would take a consultation a turn is running on.
+
+    The lease is the mark of a turn in flight, in this process or another. An owner's own
+    checks do not see it: a public `orchestrator_consult` can resume a review's reviewer,
+    and that turn leases the consultation and not the review. Taking its rows, and then its
+    Copilot session, pulls both from under the CLI that is still writing to them. Every
+    delete that removes consultations calls this before it removes any."""
+    if not ids:
+        return
+    marks = ",".join("?" * len(ids))
+    busy = db.execute(
+        f"SELECT consultation_id FROM consultation_leases WHERE "
+        f"consultation_id IN ({marks}) AND expires_at > ? LIMIT 1",
+        [*ids, time.time()],
+    ).fetchone()
+    if busy is not None:
+        raise StoreError(
+            ConsultErrorCode.SESSION_BUSY,
+            f"consultation `{busy[0]}` has a turn in flight; wait for it to finish",
+        )
+
+
 def forget_copilot_sessions(sessions: list[str]) -> None:
     """Remove those sessions' directories, once the delete that named them has committed.
 
@@ -1314,16 +1337,7 @@ class ConsultStore:
                     "that workflow's record of the work, and deleting it would leave the "
                     "workflow reading as intact with a step pointing at nothing",
                 )
-            busy = db.execute(
-                f"SELECT consultation_id FROM consultation_leases WHERE "
-                f"consultation_id IN ({marks}) LIMIT 1",
-                ids,
-            ).fetchone()
-            if busy is not None:
-                raise StoreError(
-                    ConsultErrorCode.SESSION_BUSY,
-                    f"consultation `{busy[0]}` has a turn in flight; wait for it to finish",
-                )
+            refuse_leased(db, ids)
             existing = [
                 row[0]
                 for row in db.execute(
