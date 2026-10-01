@@ -262,9 +262,11 @@ def test_forgetting_in_a_home_that_is_not_there_creates_nothing(tmp_path, state)
 
 
 @pytest.mark.parametrize("name", ["README.md", "PRIVACY.md"])
-def test_the_docs_name_the_store_a_delete_does_not_reach(name):
+def test_the_docs_say_the_clis_own_store_keeps_a_second_copy(name):
     """A session that "goes with" a delete, and a doc that stops there, would promise an
-    erasure the CLI's own `session-store.db` outlives."""
+    erasure the CLI's own `session-store.db` outlives. The name alone would survive a
+    rewrite that claimed the opposite, so the claim is pinned with it."""
     doc = (Path(__file__).resolve().parents[1] / name).read_text()
 
-    assert "session-store.db" in doc
+    assert "`session-store.db`" in doc
+    assert "second copy of each prompt and answer" in doc

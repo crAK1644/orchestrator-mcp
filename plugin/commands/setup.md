@@ -20,6 +20,6 @@ Set up the MCP server this plugin registers. Run each command below with Bash an
    ORCHESTRATOR_CONFIG="$HOME/.orchestrator-mcp/config.yaml" ORCHESTRATOR_HOST_RUNTIME=claude uvx orchestrator-mcp-server@0.10.3 doctor
    ```
 
-3. Quote every `FAIL` line with what fixes it: install the CLI it names, log in to it, or edit the config key it names. A `copilot` agent that is not signed in needs `COPILOT_HOME=$HOME/.orchestrator-mcp/copilot/home copilot login`, not a plain `copilot login`: the server runs Copilot under a home of its own, and `init` printed that line. Do not edit the config yourself unless the user asks.
+3. Quote every `FAIL` line with what fixes it: install the CLI it names, log in to it, or edit the config key it names. A `copilot` agent that is not signed in needs `COPILOT_HOME=$HOME/.orchestrator-mcp/copilot/home copilot login`, not a plain `copilot login`: the server runs Copilot under a home of its own. `init` prints that line only when it writes the config, so give it to the user either way. Do not edit the config yourself unless the user asks.
 
 4. Finish by telling the user to reconnect `plugin:orchestrator-mcp:orchestrator` in `/mcp`, or to restart Claude Code. `/reload-plugins` is not enough: it keeps the server that started before the config existed.
