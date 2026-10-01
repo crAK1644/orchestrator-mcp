@@ -28,7 +28,7 @@ Credential-shaped values are masked on a best-effort basis, but when masking hap
 
 Pattern matching can miss a secret that has no recognizable shape, so do not rely on it to catch one. A review's preview also lists lines holding a long random-looking token as `suspect_hits`, a guess that only warns.
 
-Each agent CLI also keeps its own history, for example `~/.codex/sessions/`. Orchestrator cannot redact or delete those files. Use the vendor's own tools for them. GitHub Copilot's history sits under Orchestrator's own directory, in `~/.orchestrator-mcp/copilot/home`, with the prompts and answers unmasked. Orchestrator removes a consultation's session from it when it deletes the consultation; [Retention and deletion](#retention-and-deletion) says what stays.
+Each agent CLI also keeps its own history, for example `~/.codex/sessions/`. Orchestrator cannot redact or delete those files. Use the vendor's own tools for them. GitHub Copilot's history sits under Orchestrator's own directory, in `~/.orchestrator-mcp/copilot/home`, with the prompts and answers unmasked. Orchestrator removes a consultation's session directory from it when it deletes the consultation, but not the copy of each prompt and answer in the CLI's own store, `session-store.db`; [Retention and deletion](#retention-and-deletion) says what stays.
 
 The GitHub Copilot CLI also sends its own telemetry to GitHub: GitHub's help for `COPILOT_OFFLINE` lists telemetry among the network access that setting turns off. Orchestrator does not turn it off and does not see what it carries.
 
@@ -43,7 +43,7 @@ The GitHub Copilot CLI also sends its own telemetry to GitHub: GitHub's help for
 - **Configuration**: `~/.orchestrator-mcp/config.yaml`, plus `~/.orchestrator-mcp/agents.yaml` if you use the dashboard editor.
 - **OpenCode working directories**: `~/.orchestrator-mcp/opencode/<agent>`, which hold only the configuration Orchestrator writes for that runtime.
 - **GitHub Copilot's state**: `~/.orchestrator-mcp/copilot`.
-  - `home` is the `COPILOT_HOME` Copilot runs under: its configuration, logs and session store, one session directory for each consultation, and, on a host with no system keychain, the sign-in token where GitHub's documentation puts it. The session directories and the store hold each prompt and answer as sent, unmasked. Deleting a consultation removes its session directory and the lock beside it, and nothing else in `home`.
+  - `home` is the `COPILOT_HOME` Copilot runs under: its configuration, logs and session store (`session-store.db`), one session directory for each consultation, and, on a host with no system keychain, the sign-in token where GitHub's documentation puts it. The session directories and the store each hold the prompts and answers as sent, unmasked. Deleting a consultation removes its session directory and the lock beside it, and nothing else in `home`, so the store's copy stays.
   - Each run also gets a scratch directory beside it, empty, which is deleted when the run ends.
 
   Both are mode `0700`. Your own `~/.copilot` is neither read nor written by Orchestrator. Put nothing in `home` but the sign-in. Orchestrator writes one setting there, `disableAllHooks` in `settings.json` (mode `0600`, keeping whatever else that file holds), so that a hook does not run on a consultation, and it refuses to run over a `settings.json` it cannot read as a JSON object. An MCP server that `mcp-config.json` lists is switched off for each run, by name. Orchestrator neither looks for plugins nor limits them.
@@ -83,9 +83,10 @@ The `isolated_write` files above expire after 7 days. Database records stay unti
 
 For bulk deletion, `orchestrator_request_delete_all_consultations`, `orchestrator_request_delete_all` and `orchestrator_request_delete_all_workflows` each preview a delete and return a token, which you pass to the matching `delete_all` tool. To remove everything at once, delete the database file.
 
-A deleted consultation's GitHub Copilot session goes with it, however it was deleted: by one of these tools, with the review or workflow that owned it, or by `retention_days`. That is its session directory under `~/.orchestrator-mcp/copilot/home` and the lock beside it, removed once the delete has committed. One that cannot be removed is left, and the delete still succeeds. Nothing else in `home` is touched:
+A deleted consultation's GitHub Copilot session directory goes with it, however it was deleted: by one of these tools, with the review or workflow that owned it, or by `retention_days`. That is its directory under `~/.orchestrator-mcp/copilot/home` and the lock beside it, removed once the delete has committed. One that cannot be removed is left, and the delete still succeeds. Nothing else in `home` is touched:
 
-- what else the CLI keeps there, which Orchestrator does not open;
+- `session-store.db`, the CLI's own store, which keeps a second copy of each prompt and answer, unmasked. The copy was still there after a delete when checked on CLI 1.0.89. Orchestrator does not open the file, and `retention_days` does not reach it;
+- what else the CLI keeps there, which Orchestrator does not open either;
 - a session whose consultation is not in the database, such as one left by a consultation deleted before this release, or by deleting the database file.
 
 Delete `home` to clear all of it. On a host with no keychain that takes the sign-in with it, and a consultation that used it can then no longer be continued.

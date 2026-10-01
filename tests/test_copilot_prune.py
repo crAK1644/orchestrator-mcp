@@ -3,11 +3,14 @@
 The directory and the lock the CLI keeps under Orchestrator's own `COPILOT_HOME` hold each
 prompt and answer unmasked, so a delete that left them would leave what it was asked to
 erase. The sessions are named in the rows about to go, read before they go and removed only
-once the delete has committed.
+once the delete has committed. The store the CLI keeps beside them, `session-store.db`, holds
+a second copy that none of this reaches, and the docs have to say so.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -129,7 +132,20 @@ async def test_delete_all_removes_every_ordinary_consultations_session(store, st
     assert left(state, first) == left(state, second) == []
 
 
-async def test_a_session_that_cannot_be_removed_does_not_undo_the_delete(store, state, monkeypatch):
+@pytest.fixture
+def logged(caplog, monkeypatch):
+    """The store's warnings, whether or not a server was built first.
+
+    `log.configure` sets `propagate = False` on the package logger and `caplog` listens on
+    the root, so propagation is switched back on for the test."""
+    monkeypatch.setattr(logging.getLogger("orchestrator_mcp"), "propagate", True)
+    caplog.set_level(logging.WARNING, logger="orchestrator_mcp.consult.store")
+    return caplog
+
+
+async def test_a_session_that_cannot_be_removed_does_not_undo_the_delete(
+    store, state, monkeypatch, logged
+):
     def refuse(home, session):
         raise RuntimeError("cannot")
 
@@ -140,6 +156,24 @@ async def test_a_session_that_cannot_be_removed_does_not_undo_the_delete(store, 
 
     with pytest.raises(StoreError):
         await store.get_consultation(doomed)
+    (warning,) = [r for r in logged.records if "Copilot session" in r.getMessage()]
+    assert warning.exc_info[0] is RuntimeError
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root removes a directory it has no bit for")
+async def test_a_directory_the_user_cannot_empty_is_left_and_the_delete_still_succeeds(store, state):
+    """Not a patched failure: a session directory with no write bit, so its files cannot be
+    unlinked. `rmtree` is told to ignore that, so the directory stays and nothing is raised."""
+    stuck = await consult(store, state)
+    (state / stuck).chmod(0o500)
+    try:
+        assert await store.delete_consultation(stuck) == 1
+
+        with pytest.raises(StoreError):
+            await store.get_consultation(stuck)
+        assert (state / stuck / "events.jsonl").exists()
+    finally:
+        (state / stuck).chmod(0o700)
 
 
 # --- what owns consultations ------------------------------------------------
@@ -222,3 +256,15 @@ def test_forgetting_in_a_home_that_is_not_there_creates_nothing(tmp_path, state)
     copilot_cli.forget_sessions([str(uuid4())])
 
     assert not (tmp_path / "copilot").exists()
+
+
+# --- what the docs say ------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["README.md", "PRIVACY.md"])
+def test_the_docs_name_the_store_a_delete_does_not_reach(name):
+    """A session that "goes with" a delete, and a doc that stops there, would promise an
+    erasure the CLI's own `session-store.db` outlives."""
+    doc = (Path(__file__).resolve().parents[1] / name).read_text()
+
+    assert "session-store.db" in doc

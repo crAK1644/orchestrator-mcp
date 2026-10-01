@@ -70,7 +70,9 @@ the CLI refuses leaves an empty one. Deleting a consultation removes its directo
 lock (`forget_sessions`), and so does the retention sweep, which deletes through the same
 paths. Nothing removes a directory no consultation in the database names: it may be a turn
 in flight, or belong to another database that shares this home. What else the CLI keeps in
-the home is not looked at.
+the home is not looked at, but one thing was measured on 1.0.89: `session-store.db` holds a
+copy of each prompt and answer, unmasked, and outlives the directory. Nothing here removes
+it: `copilot sessions` can only import, and the file is the CLI's own.
 """
 
 from __future__ import annotations
