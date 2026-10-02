@@ -10,6 +10,11 @@ from one anywhere else in the review path.
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
+from orchestrator_mcp.consult.adapters.base import AdapterError
 from orchestrator_mcp.consult.errors import ConsultErrorCode
 from orchestrator_mcp.review.contract import MAX_FIX_ROUNDS
 
@@ -19,6 +24,7 @@ from .test_review_service import (  # noqa: F401
     StubAdapter,
     build,
     planned,
+    sql,
 )
 
 SECRET = "sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH"
@@ -374,3 +380,115 @@ async def test_an_unsynthesized_parent_adds_nothing(build):
     await service.run(child.review_id, child.plan.confirm_token)
 
     assert critical_id(run) not in adapters["codex-sol"].prompts[-1]
+
+
+# --- a recheck says which of its parent's findings it left open --------------
+
+TWO_CRITICALS = (
+    'Two things.\n\n```json\n{"findings": ['
+    '{"location": "a.py:1", "severity": "critical", "why": "unbounded read", "fix": "stream it"}, '
+    '{"location": "a.py:9", "severity": "critical", "why": "no timeout", "fix": "add one"}]}\n```'
+)
+
+
+def citing(*refs: str) -> str:
+    findings = [
+        {"location": "a.py:1", "severity": "critical", "why": "still there", "previous": ref}
+        for ref in refs
+    ]
+    return f"```json\n{json.dumps({'findings': findings})}\n```"
+
+
+def statuses(response) -> list[tuple[int, str]]:
+    return [(s.index, s.status) for s in response.finding_status]
+
+
+async def test_a_cited_finding_is_still_open_and_an_uncited_one_resolved(build):
+    adapters = {aid: StubAdapter(TWO_CRITICALS) for aid in REVIEWERS}
+    service = await build(adapters)
+    run = await finalized(service)
+    child = await planned(service, parent_review_id=run.review_id, context="the diff")
+
+    # Planned is not sent: nothing has answered for either finding yet.
+    assert (await service.get(run.review_id)).finding_status == []
+
+    adapters["codex-sol"].answer = citing("P1")
+    await service.run(child.review_id, child.plan.confirm_token)
+    parent = await service.get(run.review_id)
+
+    assert '\\"ref\\": \\"P1\\"' in adapters["codex-sol"].prompts[-1]  # JSON in JSON
+    assert statuses(parent) == [(0, "still_open"), (1, "resolved")]
+    assert {s.recheck_id for s in parent.finding_status} == {str(child.review_id)}
+    # Read beside the summary, never written into it.
+    assert {f.disposition for f in parent.summary.combined_findings} == {"open"}
+
+
+async def test_a_reviewer_that_failed_leaves_every_finding_unknown_until_it_answers(build):
+    adapters = {aid: StubAdapter(TWO_CRITICALS) for aid in REVIEWERS}
+    service = await build(adapters)
+    run = await finalized(service)
+    adapters["codex-sol"].answer = NOTHING
+    adapters["gemini-x"]._error = AdapterError(ConsultErrorCode.TIMEOUT, "slow")
+    child = await planned(
+        service, mode="deep", parent_review_id=run.review_id, context="the diff"
+    )
+    await service.run(child.review_id, child.plan.confirm_token, host_findings=["mine"])
+
+    # One reviewer saying nothing is not every reviewer saying nothing.
+    assert statuses(await service.get(run.review_id)) == [(0, "unknown"), (1, "unknown")]
+
+    adapters["gemini-x"]._error = None
+    adapters["gemini-x"].answer = NOTHING
+    await service.retry(child.review_id)
+
+    assert statuses(await service.get(run.review_id)) == [(0, "resolved"), (1, "resolved")]
+
+
+@pytest.mark.parametrize("cited", ["P9", "p1", "1"])
+async def test_a_ref_that_was_never_sent_resolves_nothing(build, cited):
+    """The reviewer meant some finding and the server cannot tell which, so its
+    silence about the others proves nothing either."""
+    adapters = {aid: StubAdapter(TWO_CRITICALS) for aid in REVIEWERS}
+    service = await build(adapters)
+    run = await finalized(service)
+    child = await planned(service, parent_review_id=run.review_id, context="the diff")
+    adapters["codex-sol"].answer = citing(cited, "P1")
+    await service.run(child.review_id, child.plan.confirm_token)
+
+    assert statuses(await service.get(run.review_id)) == [(0, "still_open"), (1, "unknown")]
+
+
+async def test_a_recheck_planned_before_refs_were_sent_resolves_nothing(build):
+    adapters = {aid: StubAdapter(TWO_CRITICALS) for aid in REVIEWERS}
+    service = await build(adapters)
+    run = await finalized(service)
+    child = await planned(service, parent_review_id=run.review_id, context="the diff")
+    adapters["codex-sol"].answer = NOTHING
+    await service.run(child.review_id, child.plan.confirm_token)
+    assert statuses(await service.get(run.review_id)) == [(0, "resolved"), (1, "resolved")]
+
+    # Every recheck already on disk: its reviewers were never asked to cite anything.
+    await sql(
+        service, "UPDATE reviews SET recheck_refs_json = NULL WHERE id = ?", str(child.review_id)
+    )
+
+    assert statuses(await service.get(run.review_id)) == [(0, "unknown"), (1, "unknown")]
+
+
+async def test_the_newest_recheck_that_was_sent_is_the_one_read(build):
+    adapters = {aid: StubAdapter(TWO_CRITICALS) for aid in REVIEWERS}
+    service = await build(adapters)
+    run = await finalized(service)
+    first = await planned(service, parent_review_id=run.review_id, context="the diff")
+    adapters["codex-sol"].answer = citing("P1", "P2")
+    await service.run(first.review_id, first.plan.confirm_token)
+    second = await planned(service, parent_review_id=run.review_id, context="the next diff")
+    adapters["codex-sol"].answer = citing("P2")
+    await service.run(second.review_id, second.plan.confirm_token)
+    # A third, never sent, says nothing and is passed over.
+    await planned(service, parent_review_id=run.review_id, context="a third diff")
+
+    parent = await service.get(run.review_id)
+
+    assert statuses(parent) == [(0, "resolved"), (1, "still_open")]
+    assert {s.recheck_id for s in parent.finding_status} == {str(second.review_id)}

@@ -32,6 +32,8 @@ from .consult.routing import ConsultRouter
 # that wrote its own copy of either would be the second place to get them wrong.
 from .consult.store import _ORDINARY_SQL, MIGRATIONS, SPEND_COLUMNS, _spend
 from .contract import ConfigError, redact, scrub_json
+from .review.contract import finding_status
+from .review.store import LATEST_RECHECK_SQL
 from .spend import Spend, tallied
 
 NOT_MIGRATED = (
@@ -751,6 +753,27 @@ def _ids(db: sqlite3.Connection, sql: str, *params: str) -> list[str]:
     return [row[0] for row in db.execute(sql, params)]
 
 
+def _finding_status(db: sqlite3.Connection, review: dict[str, Any]) -> list[dict[str, Any]]:
+    """What `orchestrator_get_review` reports beside the summary, from the same rule."""
+    summary = review.get("summary_json")
+    recheck_id = isinstance(summary, dict) and next(
+        iter(_ids(db, LATEST_RECHECK_SQL, review["id"])), None
+    )
+    if not recheck_id:
+        return []
+    recheck = _one(db, "SELECT * FROM reviews WHERE id = ?", recheck_id)
+    return [
+        status.model_dump()
+        for status in finding_status(
+            recheck_id,
+            recheck["recheck_refs_json"],
+            summary.get("combined_findings", []),
+            [s["agent_id"] for s in recheck["reviewer_snapshot_json"]],
+            _many(db, "SELECT * FROM review_consultations WHERE review_id = ?", recheck_id),
+        )
+    ]
+
+
 def export(db: sqlite3.Connection, ident: str) -> dict[str, Any]:
     """Everything stored about one consultation, review or workflow, masked.
 
@@ -777,6 +800,7 @@ def export(db: sqlite3.Connection, ident: str) -> dict[str, Any]:
         document["rechecks"] = _ids(
             db, "SELECT id FROM reviews WHERE parent_review_id = ? ORDER BY created_at", id_
         )
+        document["finding_status"] = _finding_status(db, document["review"])
         if any(r["status"] == "ok" and r["answer"] is None for r in document["reviewers"]):
             document["note"] = _NOT_KEPT
     else:

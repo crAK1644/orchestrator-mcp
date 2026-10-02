@@ -413,6 +413,25 @@ async def test_a_prefix_finds_the_record_and_names_what_it_owns(review_config):
     assert isinstance(document["review"]["summary_json"], dict)
 
 
+async def test_an_export_carries_what_the_newest_recheck_left_open(review_config):
+    consult_config = review_config()
+    parent = str(await make_review(consult_config))
+    cited = '```json\n{"findings": [{"severity": "critical", "previous": "P1"}]}\n```'
+    child = await make_review(
+        consult_config,
+        parent_review_id=parent,
+        finalize=False,
+        adapters={"codex-sol": StubAdapter(cited), "gemini-x": StubAdapter(answer_with(0))},
+    )
+
+    document = report(consult_config, export, parent)
+
+    assert document["finding_status"] == [
+        {"index": 0, "recheck_id": str(child), "status": "still_open"}
+    ]
+    assert report(consult_config, export, str(child))["finding_status"] == []
+
+
 async def test_a_consultation_exports_its_turns(review_config):
     consult_config = review_config()
     response = await consult(consult_config, capability="coding", prompt="what colour")
