@@ -438,17 +438,20 @@ def _hooks_off(home: Path) -> None:
         )
     if settings.get("disableAllHooks") is not True:
         _write(path, json.dumps({**settings, "disableAllHooks": True}, indent=2) + "\n")
-    else:
-        # Left as written, but not as readable: PRIVACY.md says `0600` either way.
+    elif not path.is_symlink():
+        # Left as written, but not as readable: PRIVACY.md says `0600` either way. Not
+        # through a link, whose target is not this home's to tighten.
         path.chmod(0o600)
 
 
 def _turns_hooks_on(path: Path) -> bool:
     """Whether the CLI-managed `config.json` holds a `disableAllHooks` that is not true.
 
-    The CLI writes it as JSON under `//` comment lines. A file that names the key and
-    cannot be read past those is taken as setting it false, since the CLI may read it
-    all the same.
+    The CLI writes it as JSON under `//` comment lines. Parsed before anything is decided,
+    so a key spelled with an escape is still the key, and a mere mention -- in a comment,
+    in a hook's command -- is not one. A file that cannot be read past those lines is
+    taken as setting it false only if it names the key, since the CLI may read it all the
+    same.
     """
     try:
         text = path.read_text()
@@ -456,14 +459,12 @@ def _turns_hooks_on(path: Path) -> bool:
         return False
     except OSError:
         return True
-    if "disableAllHooks" not in text:
-        return False
     body = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
     try:
         config = json.loads(body)
     except ValueError:
-        return True
-    return not isinstance(config, dict) or config.get("disableAllHooks") is not True
+        return "disableAllHooks" in text
+    return isinstance(config, dict) and config.get("disableAllHooks", True) is not True
 
 
 def _mcp_off(home: Path) -> list[str]:

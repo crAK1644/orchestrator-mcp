@@ -509,6 +509,21 @@ async def test_a_settings_file_that_already_says_so_is_not_rewritten(stub, adapt
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+async def test_a_settings_file_that_links_elsewhere_does_not_have_its_target_tightened(
+    stub, adapter, home, tmp_path
+):
+    target = tmp_path / "elsewhere.json"
+    target.write_text('{"disableAllHooks": true}')
+    target.chmod(0o644)
+    path = seed_settings(home, {})
+    path.unlink()
+    path.symlink_to(target)
+    stub(runs=[ok()])
+    await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert target.stat().st_mode & 0o777 == 0o644
+
+
 @pytest.mark.parametrize(
     "text",
     ["{not json", "[]", "null", '// written by hand\n{"disableAllHooks": false}'],
@@ -541,8 +556,13 @@ def seed_config(home: Path, body: dict | str) -> Path:
 
 @pytest.mark.parametrize(
     "body",
-    [{"disableAllHooks": False, "hooks": HOOKS}, {"disableAllHooks": "true"}, '{"disableAllHooks": fa'],
-    ids=["false", "a string", "unreadable"],
+    [
+        {"disableAllHooks": False, "hooks": HOOKS},
+        {"disableAllHooks": "true"},
+        '{"disableAllHooks": fa',
+        r'{"disable\u0041llHooks": false}',
+    ],
+    ids=["false", "a string", "unreadable", "an escaped key"],
 )
 async def test_a_config_file_that_turns_hooks_back_on_is_refused(stub, adapter, home, body):
     """The CLI moves `config.json`'s user keys into `settings.json` as it starts, over what
@@ -564,8 +584,13 @@ async def test_a_config_file_that_turns_hooks_back_on_is_refused(stub, adapter, 
 
 @pytest.mark.parametrize(
     "body",
-    [{"firstLaunchAt": "2026-03-11T00:00:00.000Z"}, {"disableAllHooks": True, "hooks": HOOKS}],
-    ids=["what the CLI leaves", "true"],
+    [
+        {"firstLaunchAt": "2026-03-11T00:00:00.000Z"},
+        {"disableAllHooks": True, "hooks": HOOKS},
+        "// disableAllHooks belongs in settings.json\n{}",
+        {"hooks": {"sessionStart": [{"type": "command", "bash": "echo disableAllHooks"}]}},
+    ],
+    ids=["what the CLI leaves", "true", "named in a comment", "named in a hook"],
 )
 async def test_a_config_file_that_leaves_hooks_off_runs(stub, adapter, home, body):
     seed_config(home, body)

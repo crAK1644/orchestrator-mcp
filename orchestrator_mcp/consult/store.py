@@ -982,52 +982,60 @@ class ConsultStore:
         keep = self.store_full_content
 
         def work() -> None:
-            # First, so a turn that outlived its lease and its consultation -- a delete
-            # lets a lapsed lease go -- is refused by name rather than by the foreign key,
-            # whose IntegrityError reaches the caller as an opaque failure.
-            if not self._db.execute(
-                "UPDATE consultations SET updated_at = ? WHERE id = ?",
-                (_now(), str(consultation_id)),
-            ).rowcount:
-                raise StoreError(
-                    ConsultErrorCode.SESSION_NOT_FOUND,
-                    f"consultation `{consultation_id}` was deleted while its turn was running",
+            # One transaction, so the UPDATE that proves the consultation is still there
+            # and the INSERT that relies on it cannot be split by a delete.
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                # First, so a turn that outlived its lease and its consultation -- a delete
+                # lets a lapsed lease go -- is refused by name rather than by the foreign key,
+                # whose IntegrityError reaches the caller as an opaque failure.
+                if not self._db.execute(
+                    "UPDATE consultations SET updated_at = ? WHERE id = ?",
+                    (_now(), str(consultation_id)),
+                ).rowcount:
+                    raise StoreError(
+                        ConsultErrorCode.SESSION_NOT_FOUND,
+                        f"consultation `{consultation_id}` was deleted while its turn was running",
+                    )
+                self._db.execute(
+                    "INSERT INTO consultation_turns (consultation_id, sequence_number, source_mode, "
+                    "user_prompt, context, compiled_prompt, raw_output, validated_response_json, "
+                    "input_tokens, output_tokens, total_tokens, usage_semantics, cost_usd, counts_incomplete, "
+                    "latency_ms, error_code, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        str(consultation_id),
+                        sequence_number,
+                        source_mode.value,
+                        user_prompt if keep else None,
+                        context if keep else None,
+                        compiled_prompt if keep else None,
+                        raw_output if keep else None,
+                        json.dumps(validated_response) if (keep and validated_response) else None,
+                        input_tokens,
+                        output_tokens,
+                        # Added here rather than accepted, so that a row written under the
+                        # current definition cannot disagree with it. `Usage` says a total
+                        # is its two parts added; a caller free to pass a third number is a
+                        # caller free to write the contradiction this row then blames on
+                        # the rule that came before it, stamped with `USAGE_SEMANTICS`
+                        # asserting it was counted the new way.
+                        input_tokens + output_tokens,
+                        USAGE_SEMANTICS,
+                        cost_usd,
+                        # Kept even under `store_full_content: false`, unlike the bodies
+                        # above. It is not content -- it is the shape of the number in the
+                        # column beside it, and an operator who cannot keep prompts on disk
+                        # still needs to know which of their counts this server invented.
+                        json.dumps(counts_incomplete) if counts_incomplete else None,
+                        latency_ms,
+                        error_code.value if error_code else None,
+                        _now(),
+                    ),
                 )
-            self._db.execute(
-                "INSERT INTO consultation_turns (consultation_id, sequence_number, source_mode, "
-                "user_prompt, context, compiled_prompt, raw_output, validated_response_json, "
-                "input_tokens, output_tokens, total_tokens, usage_semantics, cost_usd, counts_incomplete, "
-                "latency_ms, error_code, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    str(consultation_id),
-                    sequence_number,
-                    source_mode.value,
-                    user_prompt if keep else None,
-                    context if keep else None,
-                    compiled_prompt if keep else None,
-                    raw_output if keep else None,
-                    json.dumps(validated_response) if (keep and validated_response) else None,
-                    input_tokens,
-                    output_tokens,
-                    # Added here rather than accepted, so that a row written under the
-                    # current definition cannot disagree with it. `Usage` says a total
-                    # is its two parts added; a caller free to pass a third number is a
-                    # caller free to write the contradiction this row then blames on
-                    # the rule that came before it, stamped with `USAGE_SEMANTICS`
-                    # asserting it was counted the new way.
-                    input_tokens + output_tokens,
-                    USAGE_SEMANTICS,
-                    cost_usd,
-                    # Kept even under `store_full_content: false`, unlike the bodies
-                    # above. It is not content -- it is the shape of the number in the
-                    # column beside it, and an operator who cannot keep prompts on disk
-                    # still needs to know which of their counts this server invented.
-                    json.dumps(counts_incomplete) if counts_incomplete else None,
-                    latency_ms,
-                    error_code.value if error_code else None,
-                    _now(),
-                ),
-            )
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
 
         await self._run(work)
 
