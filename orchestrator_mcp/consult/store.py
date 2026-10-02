@@ -982,6 +982,17 @@ class ConsultStore:
         keep = self.store_full_content
 
         def work() -> None:
+            # First, so a turn that outlived its lease and its consultation -- a delete
+            # lets a lapsed lease go -- is refused by name rather than by the foreign key,
+            # whose IntegrityError reaches the caller as an opaque failure.
+            if not self._db.execute(
+                "UPDATE consultations SET updated_at = ? WHERE id = ?",
+                (_now(), str(consultation_id)),
+            ).rowcount:
+                raise StoreError(
+                    ConsultErrorCode.SESSION_NOT_FOUND,
+                    f"consultation `{consultation_id}` was deleted while its turn was running",
+                )
             self._db.execute(
                 "INSERT INTO consultation_turns (consultation_id, sequence_number, source_mode, "
                 "user_prompt, context, compiled_prompt, raw_output, validated_response_json, "
@@ -1016,10 +1027,6 @@ class ConsultStore:
                     error_code.value if error_code else None,
                     _now(),
                 ),
-            )
-            self._db.execute(
-                "UPDATE consultations SET updated_at = ? WHERE id = ?",
-                (_now(), str(consultation_id)),
             )
 
         await self._run(work)

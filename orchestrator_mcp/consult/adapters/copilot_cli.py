@@ -28,7 +28,10 @@ no pattern, and so `_mcp_off` reads the names out of that file. A hook ran on
 moves any it finds in `config.json` there, leaving that file to what it manages. Hooks in
 either file ran without the setting; with it in `settings.json` none ran, and the request
 was answered all the same. `_hooks_off` puts it there before every run and every
-readiness check. Whether it also covers what a plugin brings was not tried, and nothing
+readiness check. The move goes over what `settings.json` holds, though: with the setting
+written there and `"disableAllHooks": false` in `config.json`, both hooks ran (1.0.89,
+2026-10-01), so `_hooks_off` refuses that `config.json` rather than run. Whether the
+setting also covers what a plugin brings was not tried, and nothing
 here looks at one. The home is for the login and the sessions; the README says to keep it
 that way.
 
@@ -401,10 +404,21 @@ def _hooks_off(home: Path) -> None:
 
     A hook in the home runs at the start of a session and on every prompt, and this
     setting is all that stops it: see the module docstring. It is written only when it is
-    not already true, so a file that is right stays as its writer left it. One that cannot
+    not already true, so a file that is right keeps its writer's layout. One that cannot
     be read as a JSON object is refused rather than overwritten. It is the operator's, and
     running the CLI over it would be running with whatever hooks it names.
+
+    A `disableAllHooks` in `config.json` that is not true is refused as well: the CLI moves
+    it into `settings.json` as it starts, over the one written here. Only an operator puts
+    the key there, so the file is not rewritten.
     """
+    if _turns_hooks_on(home / "config.json"):
+        raise AdapterError(
+            ConsultErrorCode.TRANSPORT_ERROR,
+            f"`{home / 'config.json'}` sets `disableAllHooks` to something other than true, "
+            "and the Copilot CLI copies that over this server's setting when it starts, so "
+            "its hooks would run on a consultation; remove the key from that file",
+        )
     path = home / "settings.json"
     try:
         settings = json.loads(path.read_text())
@@ -424,6 +438,32 @@ def _hooks_off(home: Path) -> None:
         )
     if settings.get("disableAllHooks") is not True:
         _write(path, json.dumps({**settings, "disableAllHooks": True}, indent=2) + "\n")
+    else:
+        # Left as written, but not as readable: PRIVACY.md says `0600` either way.
+        path.chmod(0o600)
+
+
+def _turns_hooks_on(path: Path) -> bool:
+    """Whether the CLI-managed `config.json` holds a `disableAllHooks` that is not true.
+
+    The CLI writes it as JSON under `//` comment lines. A file that names the key and
+    cannot be read past those is taken as setting it false, since the CLI may read it
+    all the same.
+    """
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    if "disableAllHooks" not in text:
+        return False
+    body = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
+    try:
+        config = json.loads(body)
+    except ValueError:
+        return True
+    return not isinstance(config, dict) or config.get("disableAllHooks") is not True
 
 
 def _mcp_off(home: Path) -> list[str]:

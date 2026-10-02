@@ -497,13 +497,16 @@ async def test_what_else_the_settings_hold_is_kept_when_the_switch_is_added(stub
 
 
 async def test_a_settings_file_that_already_says_so_is_not_rewritten(stub, adapter, home):
-    """Its layout is its writer's, and nothing replaces a file a CLI is about to read."""
+    """Its layout is its writer's, and nothing replaces a file a CLI is about to read. Its
+    mode is still tightened, since PRIVACY.md promises `0600` whoever wrote it."""
     text = '{"disableAllHooks":true,"hooks":{}}'
     path = seed_settings(home, text)
+    path.chmod(0o644)
     stub(runs=[ok()])
     await adapter.start(agent(), prompt(), SourceMode.MODEL)
 
     assert path.read_text() == text
+    assert path.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.parametrize(
@@ -525,6 +528,51 @@ async def test_a_settings_file_it_cannot_read_is_refused_and_left_alone(stub, ad
     assert str(path) in str(excinfo.value)
     assert path.read_text() == text
     assert not copilot_stub.calls(record)
+
+
+CLI_HEADER = "// User settings belong in settings.json.\n// This file is managed automatically.\n"
+
+
+def seed_config(home: Path, body: dict | str) -> Path:
+    path = seed_settings(home, {}).with_name("config.json")
+    path.write_text(CLI_HEADER + (body if isinstance(body, str) else json.dumps(body)))
+    return path
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"disableAllHooks": False, "hooks": HOOKS}, {"disableAllHooks": "true"}, '{"disableAllHooks": fa'],
+    ids=["false", "a string", "unreadable"],
+)
+async def test_a_config_file_that_turns_hooks_back_on_is_refused(stub, adapter, home, body):
+    """The CLI moves `config.json`'s user keys into `settings.json` as it starts, over what
+    is there. Live on 1.0.89, with `disableAllHooks: true` written to `settings.json` and
+    `false` in `config.json`, both hooks ran; a control run without the setting ran them
+    too."""
+    path = seed_config(home, body)
+    text = path.read_text()
+    record = stub(runs=[ok()])
+
+    with pytest.raises(AdapterError) as excinfo:
+        await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert excinfo.value.code is ConsultErrorCode.TRANSPORT_ERROR
+    assert str(path) in str(excinfo.value)
+    assert path.read_text() == text
+    assert not copilot_stub.calls(record)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"firstLaunchAt": "2026-03-11T00:00:00.000Z"}, {"disableAllHooks": True, "hooks": HOOKS}],
+    ids=["what the CLI leaves", "true"],
+)
+async def test_a_config_file_that_leaves_hooks_off_runs(stub, adapter, home, body):
+    seed_config(home, body)
+    record = stub(runs=[ok()])
+    await adapter.start(agent(), prompt(), SourceMode.MODEL)
+
+    assert copilot_stub.calls(record)
 
 
 async def test_readiness_is_refused_over_a_settings_file_it_cannot_read_too(stub, adapter, home):
