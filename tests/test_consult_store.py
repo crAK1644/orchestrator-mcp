@@ -1045,6 +1045,37 @@ async def test_losing_a_consultation_lease_interrupts_the_guarded_turn(
     assert time.perf_counter() - started < 0.5
 
 
+async def test_a_turn_that_fails_to_land_leaves_its_consultation_untouched(store):
+    consultation_id = await new_consultation(store)
+    await store.record_turn(consultation_id, 1, SourceMode.MODEL, "q", None, "c")
+    store._db.execute("UPDATE consultations SET updated_at = 'then'")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        await store.record_turn(consultation_id, 1, SourceMode.MODEL, "q", None, "c")
+    assert store._db.execute("SELECT updated_at FROM consultations").fetchone()[0] == "then"
+
+
+async def test_a_turn_that_outlived_its_lapsed_lease_and_its_consultation_is_refused(store):
+    """A turn that stalls past its lease -- a laptop asleep mid-turn -- can wake to find its
+    consultation deleted, since a delete lets a lapsed lease go. The next renewal and the
+    turn's own record both have to say so, and leave no row behind."""
+    consultation_id = await new_consultation(store)
+    async with store.lease(consultation_id, ttl_s=60):
+        holder = store._db.execute("SELECT holder FROM consultation_leases").fetchone()[0]
+        with pytest.raises(StoreError, match="turn in flight"):  # the positive control
+            await store.delete_consultation(consultation_id)
+        store._db.execute("UPDATE consultation_leases SET expires_at = 1.0")
+        assert await store.delete_consultation(consultation_id) == 1
+
+        with pytest.raises(StoreError, match="lost its execution lease"):
+            store._renew(str(consultation_id), 60, holder)
+        with pytest.raises(StoreError) as refused:
+            await store.record_turn(consultation_id, 1, SourceMode.MODEL, "q", None, "c")
+        assert refused.value.code is ConsultErrorCode.SESSION_NOT_FOUND
+
+    assert store._db.execute("SELECT COUNT(*) FROM consultation_turns").fetchone()[0] == 0
+
+
 async def test_a_body_error_is_not_replaced_by_the_heartbeat(store, monkeypatch):
     consultation_id = await new_consultation(store)
 

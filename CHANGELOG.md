@@ -3,6 +3,17 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
+## Unreleased
+
+- A `disableAllHooks` set to anything but true in the Copilot home's `config.json` no longer
+  turns hooks back on. The CLI moves that file's user settings into `settings.json` as it
+  starts, over the setting the server had just written, and both hooks ran. Such a
+  `config.json` is now named and the run refused. The server also makes `settings.json` mode
+  `0600` when it already had the setting, as PRIVACY.md says, unless it is a link.
+- A turn that ran past its lease, and whose consultation was deleted meanwhile, ends with a
+  `session_not_found` error naming that, not an opaque database failure. Nothing was stored
+  either way. A turn and its consultation's timestamp are now written in one transaction.
+
 ## 0.10.4 — 2026-10-01
 
 - Deleting a consultation removes its GitHub Copilot session directory and its lock in the
