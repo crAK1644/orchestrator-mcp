@@ -387,6 +387,11 @@ reviews are left out so the same finding is not counted twice, and a review with
 synthesis on record (not finalized yet, or `store_full_content: false`, under which
 finalizing is refused) is counted as asked but not judged.
 
+`sole serious` counts the critical and important findings that only that reviewer raised,
+in reviews where at least two reviewers answered, and that the host did not reject. Open
+ones count too, since a recorded fix round does not change a disposition. It is what a
+second reviewer would have missed. A reviewer that never answered beside another shows `-`.
+
 `strengths` answers "who is good at what?". Per kind of question (`coding`, `research`,
 `review` and so on), agent and model it counts the turns asked, answered and failed, the
 average time an answer took, and the cost. Every consultation counts, a reviewer's and a

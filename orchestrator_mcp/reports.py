@@ -331,6 +331,7 @@ def scorecard(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     models: dict[str, dict[str, str]] = defaultdict(dict)
     summaries: dict[str, str | None] = {}
+    answered: dict[str, set[str]] = defaultdict(set)
     unsynthesised = 0
     for row in db.execute(
         "SELECT r.id AS review_id, r.status AS review_status, r.summary_json, rc.agent_id, "
@@ -342,10 +343,12 @@ def scorecard(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
         group = groups.setdefault(
             (row["agent_id"], row["model"]),
             {"asked": 0, "answered": 0, "errored": 0, "kept": 0, "rejected": 0, "open": 0,
-             "with_summary": 0},
+             "sole_serious": 0, "with_summary": 0, "paired": 0},
         )
         group["asked"] += 1
         group["answered" if row["status"] == "ok" else "errored"] += 1
+        if row["status"] == "ok":
+            answered[row["review_id"]].add(row["agent_id"])
         models[row["review_id"]][row["agent_id"]] = row["model"]
         if row["review_id"] not in summaries:
             summaries[row["review_id"]] = row["summary_json"]
@@ -360,17 +363,30 @@ def scorecard(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
 
     for review_id, raw in summaries.items():
         try:
-            findings = json.loads(raw)["combined_findings"] if raw else []
+            findings = json.loads(raw)["combined_findings"] if raw else None
         except (ValueError, KeyError, TypeError):
-            findings = []
-        for finding in findings:
+            findings = None
+        # Alone only means something beside someone else who answered and missed it, and
+        # an unreadable synthesis says nothing about either.
+        paired = findings is not None and len(answered[review_id]) >= 2
+        for agent_id in answered[review_id] if paired else ():
+            groups[(agent_id, models[review_id][agent_id])]["paired"] += 1
+        for finding in findings or ():
             contributors = {i.rsplit("-", 1)[0] for i in finding.get("source_finding_ids", [])}
             outcome = {"fixed": "kept", "accepted_risk": "kept", "rejected": "rejected"}.get(
                 finding.get("disposition"), "open"
             )
+            # Open counts: dispositions mostly stay open, and kept alone would read 0.
+            sole = (
+                paired
+                and len(contributors) == 1
+                and finding.get("severity") in ("critical", "important")
+                and outcome != "rejected"
+            )
             for agent_id in contributors:
                 if (model := models[review_id].get(agent_id)) is not None:
                     groups[(agent_id, model)][outcome] += 1
+                    groups[(agent_id, model)]["sole_serious"] += sole
 
     spend = {
         (row["agent_id"], row["model"]): (_spend(row), round(row["avg_latency_ms"]))
@@ -387,10 +403,14 @@ def scorecard(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
     for (agent_id, model), group in sorted(groups.items()):
         decided = group["kept"] + group["rejected"]
         counted = group.pop("with_summary") > 0
+        paired = group.pop("paired") > 0
         entry: dict[str, Any] = {"agent_id": _clean(agent_id), "model": _clean(model), **group}
         if not counted:
             # Nothing was kept to count, which is not the same as nothing was found.
             entry |= {"kept": None, "rejected": None, "open": None}
+        if not paired:
+            # Never beside another reviewer: nothing it could have caught alone.
+            entry["sole_serious"] = None
         entry["decided"] = decided if counted else None
         entry["precision"] = group["kept"] / decided if decided >= MIN_DECIDED else None
         found = spend.get((agent_id, model))
@@ -410,13 +430,15 @@ SCORECARD_NOTE = (
     "These are the host's dispositions at finalize; this server checks none of them, and a "
     "later recheck does not update them. Counts are per combined finding, once for each "
     "reviewer that raised it, not per raw reviewer finding. A reviewer's hit rate is shown "
-    f"from {MIN_DECIDED} decided findings."
+    f"from {MIN_DECIDED} decided findings. Sole serious counts the critical and important "
+    "findings nobody rejected that this reviewer alone raised, in reviews where at least two "
+    "reviewers answered; '-' means it never reviewed beside another."
 )
 
 
 SCORECARD_HEADERS = (
     "reviewer", "model", "asked", "answered", "errored", "kept", "rejected", "open",
-    "hit rate", "avg latency", "cost",
+    "sole serious", "hit rate", "avg latency", "cost",
 )  # fmt: skip
 
 
@@ -439,6 +461,7 @@ def scorecard_cells(entry: dict[str, Any]) -> tuple[str, ...]:
         count(entry["kept"]),
         count(entry["rejected"]),
         count(entry["open"]),
+        count(entry["sole_serious"]),
         rate,
         "-" if entry["avg_latency_ms"] is None else f"{entry['avg_latency_ms']} ms",
         cost_text(entry) if "known_cost_usd" in entry else "-",

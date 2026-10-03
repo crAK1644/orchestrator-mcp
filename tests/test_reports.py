@@ -20,6 +20,7 @@ import yaml
 from orchestrator_mcp.consult.store import MIGRATIONS
 from orchestrator_mcp.reports import (
     NOT_MIGRATED,
+    SCORECARD_HEADERS,
     _parser,
     connect,
     export,
@@ -29,6 +30,7 @@ from orchestrator_mcp.reports import (
     render_usage,
     run,
     scorecard,
+    scorecard_cells,
     usage,
 )
 from orchestrator_mcp.server import main
@@ -302,6 +304,86 @@ async def test_a_finding_two_reviewers_raised_counts_once_for_each(review_config
     assert {r["agent_id"]: r["kept"] for r in result["reviewers"]} == {
         "codex-sol": 1,
         "gemini-x": 1,
+    }
+
+
+def serious(*findings):
+    """One combined finding per `(severity, disposition, agents)`, citing finding n of
+    each agent named, where n is its place in the list."""
+
+    def build(results):
+        found = {result.agent_id: result.findings for result in results}
+        return [
+            {
+                "problem": f"problem {n}",
+                "severity": severity,
+                "agreed_by": list(agents),
+                "source_finding_ids": [found[agent][n].finding_id for agent in agents],
+                "disposition": disposition,
+                "disposition_reason": "decided",
+            }
+            for n, (severity, disposition, agents) in enumerate(findings)
+        ]
+
+    return build
+
+
+async def test_a_serious_finding_only_one_reviewer_raised_counts_for_it_alone(review_config):
+    consult_config = review_config()
+    await make_review(
+        consult_config,
+        answer=answer_with(5),
+        combined_findings=serious(
+            ("critical", "open", ("codex-sol",)),
+            ("important", "fixed", ("codex-sol",)),
+            ("critical", "fixed", ("codex-sol", "gemini-x")),  # shared: neither alone
+            ("critical", "rejected", ("gemini-x",)),  # rejected: no catch
+            ("minor", "fixed", ("gemini-x",)),  # not serious
+        ),
+    )
+
+    result = report(consult_config, scorecard)
+
+    assert {r["agent_id"]: r["sole_serious"] for r in result["reviewers"]} == {
+        "codex-sol": 2,
+        "gemini-x": 0,
+    }
+    assert "sole serious" in render_scorecard(result)
+
+
+async def test_a_reviewer_that_never_answered_beside_another_has_no_sole_count(review_config):
+    """Alone beside nobody is not a catch, and no chance to make one is not zero."""
+    consult_config = review_config()
+    await make_review(
+        consult_config,
+        adapters={
+            "codex-sol": StubAdapter(answer_with(1)),
+            "gemini-x": StubAdapter(answer_with(1), error=RuntimeError("boom")),
+        },
+        combined_findings=serious(("critical", "open", ("codex-sol",))),
+    )
+
+    codex = reviewer(report(consult_config, scorecard), "codex-sol")
+
+    assert codex["answered"] == 1 and codex["open"] == 1
+    assert codex["sole_serious"] is None
+    assert scorecard_cells(codex)[SCORECARD_HEADERS.index("sole serious")] == "-"
+
+
+async def test_an_unreadable_synthesis_has_no_sole_count(review_config):
+    consult_config = review_config()
+    await make_review(
+        consult_config,
+        answer=answer_with(1),
+        combined_findings=serious(("critical", "open", ("codex-sol",))),
+    )
+    write(consult_config, "UPDATE reviews SET summary_json = '{not json'")
+
+    result = report(consult_config, scorecard)
+
+    assert {r["agent_id"]: r["sole_serious"] for r in result["reviewers"]} == {
+        "codex-sol": None,
+        "gemini-x": None,
     }
 
 
