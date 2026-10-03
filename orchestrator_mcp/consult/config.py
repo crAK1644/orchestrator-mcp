@@ -153,6 +153,9 @@ class ReviewConfig(BaseModel):
     # Who a recheck (`parent_review_id`) asks again. `all` re-asks every reviewer;
     # `raised` asks only those behind a finding the parent left open, and at least one.
     recheck_reviewers: Literal["all", "raised"] = "all"
+    # Mistakes this operator's reviews keep finding, added to every reviewer's
+    # instructions under "Check especially for:". Empty adds nothing.
+    checklist: list[str] = Field(default_factory=list)
 
     @field_validator("roots")
     @classmethod

@@ -322,6 +322,9 @@ async def test_a_recheck_sends_the_parents_open_findings_with_the_diff(build):
     prompt = adapters["codex-sol"].prompts[-1]
     assert "the diff" in prompt and "recheck" in prompt.lower()
     assert critical_id(run) in prompt
+    # A fix patches the instance; the recheck is asked for the class.
+    assert "same mistake elsewhere in the change" in prompt
+    assert "same mistake elsewhere" not in adapters["codex-sol"].prompts[0]
 
 
 async def test_a_finding_already_dealt_with_is_not_carried(build):

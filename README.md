@@ -637,7 +637,12 @@ consult:
     reviewers: [codex]          # standard: exactly one
     deep_reviewers: [codex, claude]  # deep: one to five
     roots: [~/src]              # context_paths and diff_ref are restricted to these trees
+    checklist:                  # optional: added to every reviewer's instructions
+      - a fix that patches the reported line but not the same mistake beside it
 ```
+
+`checklist` is for the mistakes your reviews keep finding. Each entry goes to every
+reviewer under "Check especially for:"; leave it out and the instructions are unchanged.
 
 For a branch review, skip the file: `diff_ref` lets Orchestrator run the diff itself.
 
@@ -719,7 +724,7 @@ Finalization must preserve every machine-readable Critical and Important finding
 
 Reviews default to `web: false`. Reviewers cannot change files or run commands. `orchestrator_apply_fixes` is a plan for work the host agent performs; it never applies a patch itself.
 
-A recheck is a review planned with `parent_review_id`. The server appends the parent's open findings and a recheck brief, so the host sends only the diff instead of the whole tree again. Set `review.recheck_reviewers: raised` to ask again only the reviewers behind an open finding (at least one); the plan lists the others in `reviewers_skipped`. The default `all` asks everyone. A recheck starts a fresh reviewer session rather than resuming the old one: a resumed session re-bills its whole transcript once the provider's prompt cache has expired.
+A recheck is a review planned with `parent_review_id`. The server appends the parent's open findings and a recheck brief, so the host sends only the diff instead of the whole tree again. Set `review.recheck_reviewers: raised` to ask again only the reviewers behind an open finding (at least one); the plan lists the others in `reviewers_skipped`. The default `all` asks everyone. The brief also asks reviewers to look for the same mistake elsewhere in the change for each finding it resolves, since a fix usually patches only the place that was reported. A recheck starts a fresh reviewer session rather than resuming the old one: a resumed session re-bills its whole transcript once the provider's prompt cache has expired.
 
 Each open finding goes to the recheck with a ref (`P1`, `P2`, ...), and every finding a recheck reviewer reports carries `previous`: the ref of the one it reports again, or `"new"`. `orchestrator_get_review` on the parent then lists `finding_status`, read from the newest recheck that reached a reviewer: `still_open` when some reviewer cited the finding, `resolved` only when every reviewer of that recheck answered, its block parsed whole, and each of its findings named a ref it was sent or `"new"`, and `unknown` otherwise. A recheck planned before refs existed reads `unknown` throughout, since its reviewers were never asked to cite. It sits beside the host's `disposition` and never changes it. One hop only: for a finding still open, the recheck's own `finding_status` is the next. `export` carries the same list.
 
