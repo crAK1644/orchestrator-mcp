@@ -5,6 +5,11 @@ One line per change a user would notice. The full notes for each version are on 
 
 ## Unreleased
 
+- A recheck numbers the parent's open findings (`P1`, `P2`, ...) and asks reviewers to mark
+  each finding with the one it reports again, or `"new"`. `orchestrator_get_review` and `export` on the parent then say,
+  per open finding, whether the newest recheck left it `still_open`, `resolved` or `unknown`.
+  `resolved` needs every reviewer of that recheck to have answered in full and marked every
+  finding; rechecks made before this version read `unknown`. The host's dispositions are not changed.
 - A `disableAllHooks` set to anything but true in the Copilot home's `config.json` no longer
   turns hooks back on. The CLI moves that file's user settings into `settings.json` as it
   starts, over the setting the server had just written, and both hooks ran. Such a

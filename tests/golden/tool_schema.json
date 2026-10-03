@@ -2020,6 +2020,19 @@
               "maxLength": 5000,
               "title": "Fix",
               "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Previous"
             }
           },
           "required": [
@@ -2028,6 +2041,39 @@
             "severity"
           ],
           "title": "Finding",
+          "type": "object"
+        },
+        "FindingStatus": {
+          "additionalProperties": false,
+          "description": "What the newest recheck says about one combined finding its parent left open.",
+          "properties": {
+            "index": {
+              "description": "Position in this review's `summary.combined_findings`.",
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "recheck_id": {
+              "maxLength": 500,
+              "title": "Recheck Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "still_open",
+                "resolved",
+                "unknown"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "recheck_id",
+            "status"
+          ],
+          "title": "FindingStatus",
           "type": "object"
         },
         "FixPlan": {
@@ -2754,6 +2800,14 @@
           },
           "maxItems": 100,
           "title": "Rechecks",
+          "type": "array"
+        },
+        "finding_status": {
+          "items": {
+            "$ref": "#/$defs/FindingStatus"
+          },
+          "maxItems": 200,
+          "title": "Finding Status",
           "type": "array"
         },
         "usage": {
@@ -3155,6 +3209,19 @@
               "maxLength": 5000,
               "title": "Fix",
               "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Previous"
             }
           },
           "required": [
@@ -3163,6 +3230,39 @@
             "severity"
           ],
           "title": "Finding",
+          "type": "object"
+        },
+        "FindingStatus": {
+          "additionalProperties": false,
+          "description": "What the newest recheck says about one combined finding its parent left open.",
+          "properties": {
+            "index": {
+              "description": "Position in this review's `summary.combined_findings`.",
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "recheck_id": {
+              "maxLength": 500,
+              "title": "Recheck Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "still_open",
+                "resolved",
+                "unknown"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "recheck_id",
+            "status"
+          ],
+          "title": "FindingStatus",
           "type": "object"
         },
         "FixPlan": {
@@ -3889,6 +3989,14 @@
           },
           "maxItems": 100,
           "title": "Rechecks",
+          "type": "array"
+        },
+        "finding_status": {
+          "items": {
+            "$ref": "#/$defs/FindingStatus"
+          },
+          "maxItems": 200,
+          "title": "Finding Status",
           "type": "array"
         },
         "usage": {
@@ -4276,6 +4384,19 @@
               "maxLength": 5000,
               "title": "Fix",
               "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Previous"
             }
           },
           "required": [
@@ -4284,6 +4405,39 @@
             "severity"
           ],
           "title": "Finding",
+          "type": "object"
+        },
+        "FindingStatus": {
+          "additionalProperties": false,
+          "description": "What the newest recheck says about one combined finding its parent left open.",
+          "properties": {
+            "index": {
+              "description": "Position in this review's `summary.combined_findings`.",
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "recheck_id": {
+              "maxLength": 500,
+              "title": "Recheck Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "still_open",
+                "resolved",
+                "unknown"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "recheck_id",
+            "status"
+          ],
+          "title": "FindingStatus",
           "type": "object"
         },
         "FixPlan": {
@@ -5010,6 +5164,14 @@
           },
           "maxItems": 100,
           "title": "Rechecks",
+          "type": "array"
+        },
+        "finding_status": {
+          "items": {
+            "$ref": "#/$defs/FindingStatus"
+          },
+          "maxItems": 200,
+          "title": "Finding Status",
           "type": "array"
         },
         "usage": {
@@ -5508,6 +5670,19 @@
               "maxLength": 5000,
               "title": "Fix",
               "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Previous"
             }
           },
           "required": [
@@ -5516,6 +5691,39 @@
             "severity"
           ],
           "title": "Finding",
+          "type": "object"
+        },
+        "FindingStatus": {
+          "additionalProperties": false,
+          "description": "What the newest recheck says about one combined finding its parent left open.",
+          "properties": {
+            "index": {
+              "description": "Position in this review's `summary.combined_findings`.",
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "recheck_id": {
+              "maxLength": 500,
+              "title": "Recheck Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "still_open",
+                "resolved",
+                "unknown"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "recheck_id",
+            "status"
+          ],
+          "title": "FindingStatus",
           "type": "object"
         },
         "FixPlan": {
@@ -6242,6 +6450,14 @@
           },
           "maxItems": 100,
           "title": "Rechecks",
+          "type": "array"
+        },
+        "finding_status": {
+          "items": {
+            "$ref": "#/$defs/FindingStatus"
+          },
+          "maxItems": 200,
+          "title": "Finding Status",
           "type": "array"
         },
         "usage": {
@@ -6579,6 +6795,19 @@
               "maxLength": 5000,
               "title": "Fix",
               "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Previous"
             }
           },
           "required": [
@@ -6587,6 +6816,39 @@
             "severity"
           ],
           "title": "Finding",
+          "type": "object"
+        },
+        "FindingStatus": {
+          "additionalProperties": false,
+          "description": "What the newest recheck says about one combined finding its parent left open.",
+          "properties": {
+            "index": {
+              "description": "Position in this review's `summary.combined_findings`.",
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "recheck_id": {
+              "maxLength": 500,
+              "title": "Recheck Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "still_open",
+                "resolved",
+                "unknown"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "recheck_id",
+            "status"
+          ],
+          "title": "FindingStatus",
           "type": "object"
         },
         "FixPlan": {
@@ -7313,6 +7575,14 @@
           },
           "maxItems": 100,
           "title": "Rechecks",
+          "type": "array"
+        },
+        "finding_status": {
+          "items": {
+            "$ref": "#/$defs/FindingStatus"
+          },
+          "maxItems": 200,
+          "title": "Finding Status",
           "type": "array"
         },
         "usage": {
@@ -7666,6 +7936,19 @@
               "maxLength": 5000,
               "title": "Fix",
               "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Previous"
             }
           },
           "required": [
@@ -7674,6 +7957,39 @@
             "severity"
           ],
           "title": "Finding",
+          "type": "object"
+        },
+        "FindingStatus": {
+          "additionalProperties": false,
+          "description": "What the newest recheck says about one combined finding its parent left open.",
+          "properties": {
+            "index": {
+              "description": "Position in this review's `summary.combined_findings`.",
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "recheck_id": {
+              "maxLength": 500,
+              "title": "Recheck Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "still_open",
+                "resolved",
+                "unknown"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "recheck_id",
+            "status"
+          ],
+          "title": "FindingStatus",
           "type": "object"
         },
         "FixPlan": {
@@ -8400,6 +8716,14 @@
           },
           "maxItems": 100,
           "title": "Rechecks",
+          "type": "array"
+        },
+        "finding_status": {
+          "items": {
+            "$ref": "#/$defs/FindingStatus"
+          },
+          "maxItems": 200,
+          "title": "Finding Status",
           "type": "array"
         },
         "usage": {
@@ -8729,6 +9053,19 @@
               "maxLength": 5000,
               "title": "Fix",
               "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Previous"
             }
           },
           "required": [
@@ -8737,6 +9074,39 @@
             "severity"
           ],
           "title": "Finding",
+          "type": "object"
+        },
+        "FindingStatus": {
+          "additionalProperties": false,
+          "description": "What the newest recheck says about one combined finding its parent left open.",
+          "properties": {
+            "index": {
+              "description": "Position in this review's `summary.combined_findings`.",
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "recheck_id": {
+              "maxLength": 500,
+              "title": "Recheck Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "still_open",
+                "resolved",
+                "unknown"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "recheck_id",
+            "status"
+          ],
+          "title": "FindingStatus",
           "type": "object"
         },
         "FixPlan": {
@@ -9463,6 +9833,14 @@
           },
           "maxItems": 100,
           "title": "Rechecks",
+          "type": "array"
+        },
+        "finding_status": {
+          "items": {
+            "$ref": "#/$defs/FindingStatus"
+          },
+          "maxItems": 200,
+          "title": "Finding Status",
           "type": "array"
         },
         "usage": {
@@ -9941,6 +10319,19 @@
               "maxLength": 5000,
               "title": "Fix",
               "type": "string"
+            },
+            "previous": {
+              "anyOf": [
+                {
+                  "maxLength": 500,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Previous"
             }
           },
           "required": [
@@ -9949,6 +10340,39 @@
             "severity"
           ],
           "title": "Finding",
+          "type": "object"
+        },
+        "FindingStatus": {
+          "additionalProperties": false,
+          "description": "What the newest recheck says about one combined finding its parent left open.",
+          "properties": {
+            "index": {
+              "description": "Position in this review's `summary.combined_findings`.",
+              "minimum": 0,
+              "title": "Index",
+              "type": "integer"
+            },
+            "recheck_id": {
+              "maxLength": 500,
+              "title": "Recheck Id",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "still_open",
+                "resolved",
+                "unknown"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "recheck_id",
+            "status"
+          ],
+          "title": "FindingStatus",
           "type": "object"
         },
         "FixPlan": {
@@ -10675,6 +11099,14 @@
           },
           "maxItems": 100,
           "title": "Rechecks",
+          "type": "array"
+        },
+        "finding_status": {
+          "items": {
+            "$ref": "#/$defs/FindingStatus"
+          },
+          "maxItems": 200,
+          "title": "Finding Status",
           "type": "array"
         },
         "usage": {

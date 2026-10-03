@@ -431,6 +431,13 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE consultation_turns ADD COLUMN counts_incomplete TEXT;
     """,
+    # Which `ref` a recheck sent for each of its parent's open findings, as a JSON
+    # `{ref: index}`. NULL on every row already on disk, which is the point: a recheck
+    # sent without refs cannot say a finding was resolved, and only the NULL tells it
+    # apart from a recheck whose reviewers cited nothing.
+    """
+    ALTER TABLE reviews ADD COLUMN recheck_refs_json TEXT;
+    """,
 ]
 
 DEFAULT_PROFILE = "default"

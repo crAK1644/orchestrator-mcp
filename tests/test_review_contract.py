@@ -29,7 +29,9 @@ from orchestrator_mcp.review.contract import (
     ReviewResponse,
     ReviewSummary,
     SecretHit,
+    finding_status,
     missing_serious,
+    open_refs,
     open_serious,
 )
 from orchestrator_mcp.review.service import _parse_findings
@@ -304,6 +306,28 @@ def test_an_id_a_model_invented_is_ignored():
     assert findings[0].finding_id == "rev-1"
 
 
+@pytest.mark.parametrize(
+    ("given", "kept"), [("P2", "P2"), ("  P2 ", "P2"), (2, "2"), ("new", "new"), (None, None), ("", None)]
+)
+def test_a_recheck_citation_is_kept_as_written_or_not_at_all(given, kept):
+    findings, _, _ = _parse_findings("rev", block([{"severity": "minor", "previous": given}]))
+    assert findings[0].previous == kept
+    assert Finding(**findings[0].model_dump()).previous == kept
+
+
+def test_a_finding_that_does_not_say_cites_nothing():
+    findings, _, _ = _parse_findings("rev", block([{"severity": "minor"}]))
+    assert findings[0].previous is None
+
+
+def test_an_item_that_is_not_an_object_is_kept_as_an_uncertain_finding():
+    findings, parsed, _ = _parse_findings("rev", block(["P1 is still broken", 7]))
+    assert parsed
+    assert [(f.severity, f.why, f.previous) for f in findings] == [
+        ("uncertain", "P1 is still broken", None), ("uncertain", "7", None),
+    ]
+
+
 def test_an_unknown_severity_becomes_uncertain_rather_than_a_refusal():
     findings, _, _ = _parse_findings("rev", block([{"severity": "BLOCKER", "why": "w"}]))
     assert findings[0].severity == "uncertain"
@@ -478,3 +502,66 @@ def test_the_reviewer_instructions_pin_the_shape_they_ask_for():
     for required in ('```json', '"findings"', "critical", "important", "minor", "uncertain"):
         assert required in REVIEWER_INSTRUCTIONS
     assert "Do not assign ids" in REVIEWER_INSTRUCTIONS
+
+
+# --- what a recheck says about its parent's open findings ---------------------
+
+COMBINED = [{"disposition": "open"}, {"disposition": "fixed"}, {}]
+
+
+def test_refs_number_the_open_findings_only_in_order():
+    assert open_refs(COMBINED) == {"P1": 0, "P2": 2}
+
+
+def answered(**overrides) -> dict:
+    return {
+        "agent_id": "rev",
+        "status": "ok",
+        "answer": "prose",
+        "findings_json": [{"previous": "P1"}],
+        "findings_parsed": 1,
+        "findings_truncated": 0,
+        **overrides,
+    }
+
+
+def test_an_answer_that_reads_whole_resolves_what_it_left_out():
+    """The control for every `unknown` below: change one field and it stops."""
+    row = answered(findings_json=[{"previous": "P1"}, {"previous": "new"}])
+    statuses = finding_status("child", open_refs(COMBINED), COMBINED, ["rev"], [row])
+    assert [(s.index, s.status) for s in statuses] == [(0, "still_open"), (2, "resolved")]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"status": "failed", "answer": None, "findings_json": None},
+        {"findings_parsed": 0},
+        {"findings_truncated": 1},
+        # Kept under `store_full_content: false`: the shape, and nothing to read.
+        {"answer": None, "findings_json": None},
+        {"findings_json": [{"previous": "P1"}, {"previous": "P7"}]},
+        # It may be the uncited finding, reported again without saying so.
+        {"findings_json": [{"previous": "P1"}, {"previous": None}]},
+        {"agent_id": "someone-else"},
+    ],
+    ids=[
+        "failed", "unparsed", "truncated", "content-not-kept", "unplaceable-ref", "unstated",
+        "no-row",
+    ],
+)
+def test_any_doubt_about_an_answer_leaves_the_uncited_finding_unknown(overrides):
+    statuses = finding_status(
+        "child", open_refs(COMBINED), COMBINED, ["rev"], [answered(**overrides)]
+    )
+    assert statuses[1].status == "unknown"
+    # A citation is evidence whatever else went wrong.
+    if overrides.get("findings_json", True) is not None and "agent_id" not in overrides:
+        assert statuses[0].status == "still_open"
+
+
+def test_an_empty_block_is_stored_as_null_and_still_resolves():
+    statuses = finding_status(
+        "child", open_refs(COMBINED), COMBINED, ["rev"], [answered(findings_json=None)]
+    )
+    assert {s.status for s in statuses} == {"resolved"}

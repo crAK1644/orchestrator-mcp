@@ -74,6 +74,7 @@ from .contract import (
     REVIEWER_INSTRUCTIONS,
     SEVERITY_ORDER,
     Finding,
+    FindingStatus,
     FixPlan,
     FixRound,
     MaterialItem,
@@ -88,7 +89,9 @@ from .contract import (
     ReviewStatus,
     ReviewSummary,
     SecretHit,
+    finding_status,
     missing_serious,
+    open_refs,
 )
 from .diff import read_diff
 from .store import REVIEW_LEASE_SLACK_S, Review, ReviewStore, _now, canonical, sha256
@@ -249,8 +252,9 @@ class ReviewService:
                 material_verified = True
 
         skipped: list[str] = []
+        refs: dict[str, int] | None = None
         if parent_review_id:
-            context, snapshots, skipped = await self._recheck(
+            context, snapshots, skipped, refs = await self._recheck(
                 str(parent_review_id), context, snapshots
             )
 
@@ -342,6 +346,7 @@ class ReviewService:
             parent_review_id=parent_review_id,
             workflow_id=workflow_id,
             step_id=step_id,
+            recheck_refs=refs,
         )
 
         return ReviewResponse(
@@ -354,8 +359,11 @@ class ReviewService:
 
     async def _recheck(
         self, parent_id: str, context: str | None, snapshots: list[ReviewerSnapshot]
-    ) -> tuple[str | None, list[ReviewerSnapshot], list[str]]:
+    ) -> tuple[str | None, list[ReviewerSnapshot], list[str], dict[str, int] | None]:
         """Append the parent's open findings to the context, and narrow the reviewers.
+
+        Each finding goes with a `ref`, which a reviewer cites when it reports that
+        finding again; the refs are returned to be stored with the recheck.
 
         The host sends only the change; this is what the reviewer checks it against.
         A fresh session each time, never a resumed one: a resumed session re-bills its
@@ -366,12 +374,10 @@ class ReviewService:
         if not parent.summary_json:
             # ponytail: an unsynthesized parent has no dispositions to go by, so it
             # contributes nothing; `orchestrator_apply_fixes` needs a synthesis anyway.
-            return context, snapshots, []
-        open_findings = [
-            f
-            for f in json.loads(parent.summary_json).get("combined_findings", [])
-            if f.get("disposition", "open") == "open"
-        ]
+            return context, snapshots, [], None
+        combined = json.loads(parent.summary_json).get("combined_findings", [])
+        refs = open_refs(combined)
+        open_findings = [{**combined[i], "ref": ref} for ref, i in refs.items()]
         block = json.dumps(
             {"recheck_of": parent_id, "previous_findings": open_findings},
             sort_keys=True,
@@ -382,13 +388,13 @@ class ReviewService:
 
         review = self.config.review
         if review is None or review.recheck_reviewers == "all":
-            return context, snapshots, []
+            return context, snapshots, [], refs
         # Finding ids are `{agent_id}-{n}`, assigned by `_parse_findings`.
         raised = {
             fid.rsplit("-", 1)[0] for f in open_findings for fid in f.get("source_finding_ids", [])
         }
         kept = [s for s in snapshots if s.agent_id in raised] or snapshots[:1]
-        return context, kept, [s.agent_id for s in snapshots if s not in kept]
+        return context, kept, [s.agent_id for s in snapshots if s not in kept], refs
 
     def _reviewer_snapshots(
         self, mode: ReviewMode, reviewers: list[str] | None
@@ -1343,8 +1349,30 @@ class ReviewService:
             ),
             fix_rounds=_fix_rounds(review),
             rechecks=await self.store.recheck_ids(review.id),
+            finding_status=await self._finding_status(review),
             usage=_total(results),
             latency_ms=_ms(started),
+        )
+
+    async def _finding_status(self, review) -> list[FindingStatus]:
+        """One hop: what the newest recheck says about this review's open findings.
+
+        For a finding still open there, that recheck's own `finding_status` is the
+        next hop.
+        """
+        recheck_id = review.summary_json and await self.store.latest_recheck(review.id)
+        if not recheck_id:
+            return []
+        recheck = await self.store.get_review(recheck_id)
+        return finding_status(
+            recheck_id,
+            json.loads(recheck.recheck_refs_json) if recheck.recheck_refs_json else None,
+            json.loads(review.summary_json).get("combined_findings", []),
+            [s["agent_id"] for s in json.loads(recheck.reviewer_snapshot_json)],
+            [
+                {**vars(row), "findings_json": json.loads(row.findings_json or "null")}
+                for row in await self.store.reviewer_rows(recheck_id)
+            ],
         )
 
     async def list(self, limit: int = 20) -> list[ReviewListing]:
@@ -1514,8 +1542,14 @@ def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, in
         findings = []
         for item in raw:
             if not isinstance(item, dict):
-                continue
+                # Kept, not skipped: "P1 is still broken" as a bare string is a
+                # finding that names no previous one, and dropping it would let a
+                # recheck read as having left P1 out.
+                item = {"why": item}
             severity = str(item.get("severity", "")).strip().lower()
+            # Only a string is a citation. Null is not "new": the reviewer was asked
+            # for the word, and guessing it would turn doubt into `resolved`.
+            previous = item.get("previous")
             findings.append(
                 Finding(
                     finding_id="",  # assigned below, once the order is final
@@ -1525,6 +1559,7 @@ def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, in
                     why=str(item.get("why", ""))[:5000],
                     example=str(item.get("example", ""))[:5000],
                     fix=str(item.get("fix", ""))[:5000],
+                    previous=None if previous is None else str(previous).strip()[:500] or None,
                 )
             )
 

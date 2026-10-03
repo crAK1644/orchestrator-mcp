@@ -41,6 +41,10 @@ Severity = Literal["critical", "important", "minor", "uncertain"]
 # folded into `skipped` because undoing a fix that made things worse is a real
 # result worth reading back, and one a later round should not repeat.
 FixOutcome = Literal["applied", "partial", "reverted", "skipped"]
+# What the latest recheck says about a finding its parent left open. See `finding_status`.
+LineageStatus = Literal["still_open", "resolved", "unknown"]
+# A recheck finding's `previous` when it is not one of the previous findings.
+NEW_FINDING = "new"
 # What a synthesis says became of a finding. `accepted_risk` is separate from
 # `rejected` because "this is real and we are shipping anyway" and "this is not
 # real" are different decisions, and only one of them should read as agreement.
@@ -148,6 +152,11 @@ class Finding(BaseModel):
     why: str = Field(default="", max_length=MAX_TEXT_CHARS)
     example: str = Field(default="", max_length=MAX_TEXT_CHARS)
     fix: str = Field(default="", max_length=MAX_TEXT_CHARS)
+    # On a recheck, the `ref` of the previous finding this one reports again, as the
+    # reviewer wrote it, or `NEW_FINDING`; None where the reviewer did not say. Checked
+    # against the refs that were sent when it is read, by `finding_status`, not here:
+    # the parser does not know what was sent.
+    previous: str | None = Field(default=None, max_length=MAX_LABEL_CHARS)
 
 
 class ReviewerResult(BaseModel):
@@ -344,6 +353,16 @@ FIX_STEPS = [
 ]
 
 
+class FindingStatus(BaseModel):
+    """What the newest recheck says about one combined finding its parent left open."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    index: int = Field(ge=0, description="Position in this review's `summary.combined_findings`.")
+    recheck_id: str = Field(max_length=MAX_LABEL_CHARS)
+    status: LineageStatus
+
+
 class ReviewResponse(BaseModel):
     """One envelope for every outcome, the same as `ConsultResponse`.
 
@@ -370,6 +389,9 @@ class ReviewResponse(BaseModel):
     # child's `parent_review_id`, so this is a read of the chain rather than a
     # second record of it that could disagree.
     rechecks: list[str] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
+    # Read from the newest recheck that reached a reviewer, never stored: the
+    # `disposition` in `summary` stays the host's claim, and this sits beside it.
+    finding_status: list[FindingStatus] = Field(default_factory=list, max_length=MAX_FINDINGS)
     usage: Usage | None = None
     latency_ms: int = 0
     error: ConsultError | None = None
@@ -500,6 +522,70 @@ def open_serious(summary: ReviewSummary) -> list[str]:
     ]
 
 
+def open_refs(combined: list[dict]) -> dict[str, int]:
+    """`P1`, `P2`.. for each open combined finding, in list order, mapped to its index.
+
+    What a recheck sends as each previous finding's `ref`. A parent's summary is written
+    once, so the same parent always numbers the same way.
+    """
+    open_ = [i for i, f in enumerate(combined) if f.get("disposition", "open") == "open"]
+    return {f"P{n}": i for n, i in enumerate(open_, 1)}
+
+
+def finding_status(
+    recheck_id: str,
+    refs: dict[str, int] | None,
+    combined: list[dict],
+    approved: list[str],
+    rows: list[dict],
+) -> list[FindingStatus]:
+    """What one recheck says about each finding its parent left open.
+
+    `rows` are the recheck's reviewer rows with `findings_json` parsed; `approved` is
+    who the recheck was sent to. `still_open` when some reviewer cited the finding's
+    ref. `resolved` only when every approved reviewer answered, its block was parsed
+    whole, and each of its findings named a ref it was sent or `NEW_FINDING`: then
+    leaving a finding out is that reviewer saying the change resolved it. Anything less
+    is `unknown`, because a reviewer that failed, was cut by the findings cap, cited
+    something unplaceable or did not say may have re-reported it -- and a missing
+    citation is not a fix. `refs` is None on a
+    recheck planned before refs were sent, which is all `unknown` for the same reason.
+    """
+    if refs is None:
+        return [
+            FindingStatus(index=i, recheck_id=recheck_id, status="unknown")
+            for i in open_refs(combined).values()
+        ]
+    by_agent = {row["agent_id"]: row for row in rows}
+    cited: set[str] = set()
+    whole = True
+    for agent_id in approved:
+        row = by_agent.get(agent_id)
+        # No answer is a reviewer that never replied, or one stored under
+        # `store_full_content: false`, whose findings are gone. With an answer, an
+        # empty block is stored as NULL.
+        findings = None if row is None or row["answer"] is None else row["findings_json"] or []
+        if not isinstance(findings, list):
+            whole = False
+            continue
+        said = {f.get("previous") for f in findings if isinstance(f, dict)}
+        cited |= said & refs.keys()
+        whole = whole and bool(
+            row["status"] == "ok"
+            and row["findings_parsed"]
+            and not row["findings_truncated"]
+            and said <= refs.keys() | {NEW_FINDING}
+        )
+    return [
+        FindingStatus(
+            index=i,
+            recheck_id=recheck_id,
+            status="still_open" if ref in cited else "resolved" if whole else "unknown",
+        )
+        for ref, i in refs.items()
+    ]
+
+
 REVIEWER_INSTRUCTIONS = """\
 You are one of several independent reviewers. You cannot see the other reviewers' \
 answers, and you must not speculate about them.
@@ -546,6 +632,10 @@ whole code. Below are the findings that review left open.
 For each previous finding: report it again, with the same severity or a revised one, \
 only if the change leaves it unresolved, and say why. Leave out every finding the change \
 resolves. Report a new finding only if it is in the changed code or caused by it.
+
+Each previous finding has a `ref`. In this recheck every finding in your block carries \
+`previous`: the ref of the previous finding it reports again, copied exactly, as \
+`"previous": "P1"`, or `"previous": "new"` for a finding that is not one of them.
 """
 
 # Sent as a second turn in the *same* consultation when the first answer's findings

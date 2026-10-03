@@ -51,6 +51,16 @@ REVIEW_LEASE_SLACK_S = 60.0
 # preview, and a day is long past any host still deciding whether to run it.
 PENDING_PLAN_TTL_S = 24 * 60 * 60
 
+# The recheck a parent's `finding_status` is read from: the newest one with a reviewer
+# row, since a plan nobody sent says nothing. Shared with `reports.export`, so the
+# server and the report cannot pick different rechecks. `rowid` breaks a tie inside
+# one second by insertion order, where `id` is a random uuid.
+LATEST_RECHECK_SQL = (
+    "SELECT id FROM reviews r WHERE parent_review_id = ? AND EXISTS "
+    "(SELECT 1 FROM review_consultations c WHERE c.review_id = r.id) "
+    "ORDER BY created_at DESC, rowid DESC LIMIT 1"
+)
+
 
 @dataclass(frozen=True)
 class Review:
@@ -78,6 +88,9 @@ class Review:
     # `orchestrator_review` is unchanged.
     workflow_id: str | None = None
     step_id: str | None = None
+    # A recheck's `{ref: index}` into its parent's combined findings, as sent. NULL on
+    # a first review, and on a recheck planned before refs were sent.
+    recheck_refs_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +173,7 @@ class ReviewStore:
         parent_review_id: UUID | str | None = None,
         workflow_id: str | None = None,
         step_id: str | None = None,
+        recheck_refs: dict[str, int] | None = None,
     ) -> str:
         """Write the `pending` row, after dropping plans nobody sent for a day. Returns
         nothing the caller does not already have.
@@ -192,8 +206,8 @@ class ReviewStore:
                 "INSERT INTO reviews (id, parent_review_id, mode, status, outcome, goal, context, "
                 "material_json, material_sha256, raw_sha256, reviewer_snapshot_json, "
                 "confirm_token_sha, secret_hits_json, web_requested, created_at, updated_at, "
-                "workflow_id, step_id) "
-                "VALUES (?,?,?,'pending',NULL,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "workflow_id, step_id, recheck_refs_json) "
+                "VALUES (?,?,?,'pending',NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(review_id),
                     str(parent_review_id) if parent_review_id is not None else None,
@@ -211,6 +225,7 @@ class ReviewStore:
                     now,
                     workflow_id,
                     step_id,
+                    canonical(recheck_refs) if recheck_refs is not None else None,
                 ),
             )
 
@@ -373,6 +388,15 @@ class ReviewStore:
                     (str(review_id),),
                 )
             ]
+
+        return await self._run(work)
+
+    async def latest_recheck(self, review_id: UUID | str) -> str | None:
+        """The newest recheck of this review that reached a reviewer, if any."""
+
+        def work() -> str | None:
+            row = self._db.execute(LATEST_RECHECK_SQL, (str(review_id),)).fetchone()
+            return row[0] if row else None
 
         return await self._run(work)
 
