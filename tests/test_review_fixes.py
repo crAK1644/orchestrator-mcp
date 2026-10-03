@@ -458,6 +458,28 @@ async def test_a_ref_that_was_never_sent_resolves_nothing(build, cited):
     assert statuses(await service.get(run.review_id)) == [(0, "still_open"), (1, "unknown")]
 
 
+@pytest.mark.parametrize(
+    ("finding", "expected"),
+    [
+        ({"severity": "critical", "previous": "new"}, "resolved"),  # the control
+        ({"severity": "critical", "previous": None}, "unknown"),
+        ({"severity": "critical"}, "unknown"),
+        ("P2 is still broken", "unknown"),
+    ],
+    ids=["new", "null", "absent", "not-an-object"],
+)
+async def test_a_finding_that_names_no_previous_one_resolves_nothing(build, finding, expected):
+    """Any of these may be P1 or P2 reported again without saying so."""
+    adapters = {aid: StubAdapter(TWO_CRITICALS) for aid in REVIEWERS}
+    service = await build(adapters)
+    run = await finalized(service)
+    child = await planned(service, parent_review_id=run.review_id, context="the diff")
+    adapters["codex-sol"].answer = f"```json\n{json.dumps({'findings': [finding]})}\n```"
+    await service.run(child.review_id, child.plan.confirm_token)
+
+    assert statuses(await service.get(run.review_id)) == [(0, expected), (1, expected)]
+
+
 async def test_a_recheck_planned_before_refs_were_sent_resolves_nothing(build):
     adapters = {aid: StubAdapter(TWO_CRITICALS) for aid in REVIEWERS}
     service = await build(adapters)

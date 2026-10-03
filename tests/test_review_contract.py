@@ -307,7 +307,7 @@ def test_an_id_a_model_invented_is_ignored():
 
 
 @pytest.mark.parametrize(
-    ("given", "kept"), [("P2", "P2"), ("  P2 ", "P2"), (2, "2"), (None, "new"), ("", None)]
+    ("given", "kept"), [("P2", "P2"), ("  P2 ", "P2"), (2, "2"), ("new", "new"), (None, None), ("", None)]
 )
 def test_a_recheck_citation_is_kept_as_written_or_not_at_all(given, kept):
     findings, _, _ = _parse_findings("rev", block([{"severity": "minor", "previous": given}]))
@@ -315,9 +315,17 @@ def test_a_recheck_citation_is_kept_as_written_or_not_at_all(given, kept):
     assert Finding(**findings[0].model_dump()).previous == kept
 
 
-def test_a_finding_that_does_not_say_is_told_apart_from_a_new_one():
+def test_a_finding_that_does_not_say_cites_nothing():
     findings, _, _ = _parse_findings("rev", block([{"severity": "minor"}]))
     assert findings[0].previous is None
+
+
+def test_an_item_that_is_not_an_object_is_kept_as_an_uncertain_finding():
+    findings, parsed, _ = _parse_findings("rev", block(["P1 is still broken", 7]))
+    assert parsed
+    assert [(f.severity, f.why, f.previous) for f in findings] == [
+        ("uncertain", "P1 is still broken", None), ("uncertain", "7", None),
+    ]
 
 
 def test_an_unknown_severity_becomes_uncertain_rather_than_a_refusal():

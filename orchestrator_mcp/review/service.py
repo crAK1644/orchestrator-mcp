@@ -69,7 +69,6 @@ from .contract import (
     MAX_LIST_ITEMS,
     MAX_MATERIAL_ITEMS,
     MAX_SECRET_HITS,
-    NEW_FINDING,
     REASK_INSTRUCTIONS,
     RECHECK_INSTRUCTIONS,
     REVIEWER_INSTRUCTIONS,
@@ -1543,10 +1542,14 @@ def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, in
         findings = []
         for item in raw:
             if not isinstance(item, dict):
-                continue
+                # Kept, not skipped: "P1 is still broken" as a bare string is a
+                # finding that names no previous one, and dropping it would let a
+                # recheck read as having left P1 out.
+                item = {"why": item}
             severity = str(item.get("severity", "")).strip().lower()
-            # Absent is the reviewer not saying; null is it saying "not a previous one".
-            previous = item.get("previous", "")
+            # Only a string is a citation. Null is not "new": the reviewer was asked
+            # for the word, and guessing it would turn doubt into `resolved`.
+            previous = item.get("previous")
             findings.append(
                 Finding(
                     finding_id="",  # assigned below, once the order is final
@@ -1556,7 +1559,7 @@ def _parse_findings(agent_id: str, answer: str) -> tuple[list[Finding], bool, in
                     why=str(item.get("why", ""))[:5000],
                     example=str(item.get("example", ""))[:5000],
                     fix=str(item.get("fix", ""))[:5000],
-                    previous=NEW_FINDING if previous is None else str(previous).strip()[:500] or None,
+                    previous=None if previous is None else str(previous).strip()[:500] or None,
                 )
             )
 
