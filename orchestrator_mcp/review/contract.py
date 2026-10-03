@@ -622,6 +622,15 @@ group them, or check that your Critical survived. If you are asked again for the
 send only the block.
 """
 
+def reviewer_instructions(checklist: list[str]) -> str:
+    """`REVIEWER_INSTRUCTIONS`, plus the operator's `review.checklist` when there is one."""
+    if not checklist:
+        return REVIEWER_INSTRUCTIONS
+    return REVIEWER_INSTRUCTIONS + "\nCheck especially for:\n" + "".join(
+        f"- {item}\n" for item in checklist
+    )
+
+
 # Appended to a recheck's context, ahead of the parent's open findings. The host is
 # told to send only the change, so this is what tells the reviewer what the change was
 # meant to fix and what it may now ignore.
@@ -632,6 +641,10 @@ whole code. Below are the findings that review left open.
 For each previous finding: report it again, with the same severity or a revised one, \
 only if the change leaves it unresolved, and say why. Leave out every finding the change \
 resolves. Report a new finding only if it is in the changed code or caused by it.
+
+For each previous finding the change resolves, look for the same mistake elsewhere in \
+the change. A fix usually patches the one place that was reported, and the next review \
+finds the same mistake one step over. Report each such place as a new finding.
 
 Each previous finding has a `ref`. In this recheck every finding in your block carries \
 `previous`: the ref of the previous finding it reports again, copied exactly, as \

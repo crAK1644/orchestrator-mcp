@@ -71,7 +71,6 @@ from .contract import (
     MAX_SECRET_HITS,
     REASK_INSTRUCTIONS,
     RECHECK_INSTRUCTIONS,
-    REVIEWER_INSTRUCTIONS,
     SEVERITY_ORDER,
     Finding,
     FindingStatus,
@@ -92,6 +91,7 @@ from .contract import (
     finding_status,
     missing_serious,
     open_refs,
+    reviewer_instructions,
 )
 from .diff import read_diff
 from .store import REVIEW_LEASE_SLACK_S, Review, ReviewStore, _now, canonical, sha256
@@ -659,7 +659,8 @@ class ReviewService:
         going, and a delete landing then would leave their consultations behind with
         no review pointing at them.
         """
-        prompt = f"{goal}\n\n{REVIEWER_INSTRUCTIONS}"
+        checklist = self.config.review.checklist if self.config.review else []
+        prompt = f"{goal}\n\n{reviewer_instructions(checklist)}"
         source_mode = SourceMode.WEB if review.web_requested else SourceMode.AUTO
         # Counted here rather than from `done`, because the point of reporting it is to
         # say so while the others are still running. Incremented with no await between

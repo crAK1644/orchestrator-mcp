@@ -33,6 +33,7 @@ from orchestrator_mcp.review.contract import (
     missing_serious,
     open_refs,
     open_serious,
+    reviewer_instructions,
 )
 from orchestrator_mcp.review.service import _parse_findings
 
@@ -565,3 +566,11 @@ def test_an_empty_block_is_stored_as_null_and_still_resolves():
         "child", open_refs(COMBINED), COMBINED, ["rev"], [answered(findings_json=None)]
     )
     assert {s.status for s in statuses} == {"resolved"}
+
+
+def test_a_checklist_is_added_under_its_own_heading_and_nothing_is_added_without_one():
+    assert reviewer_instructions([]) is REVIEWER_INSTRUCTIONS
+    assert reviewer_instructions(["one fix, one instance", "unchecked returns"]) == (
+        REVIEWER_INSTRUCTIONS
+        + "\nCheck especially for:\n- one fix, one instance\n- unchecked returns\n"
+    )

@@ -5,6 +5,9 @@ One line per change a user would notice. The full notes for each version are on 
 
 ## Unreleased
 
+- A recheck asks reviewers, for each previous finding the change resolves, to look for the
+  same mistake elsewhere in the change. A new optional `review.checklist` adds your own list
+  to every reviewer's instructions under "Check especially for:".
 - A recheck numbers the parent's open findings (`P1`, `P2`, ...) and asks reviewers to mark
   each finding with the one it reports again, or `"new"`. `orchestrator_get_review` and `export` on the parent then say,
   per open finding, whether the newest recheck left it `still_open`, `resolved` or `unknown`.

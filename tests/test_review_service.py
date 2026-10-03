@@ -182,6 +182,25 @@ async def sql(service, statement: str, *params):
 # --- planning sends nothing -------------------------------------------------
 
 
+async def test_the_configured_checklist_reaches_every_reviewer_and_only_when_configured(build):
+    for checklist in (["unchecked returns"], []):
+        adapters = {aid: StubAdapter() for aid in REVIEWERS}
+        service = await build(
+            adapters,
+            review={
+                "reviewers": ["codex-sol"],
+                "deep_reviewers": list(REVIEWERS),
+                "checklist": checklist,
+            },
+        )
+        plan = await planned(service, mode="deep", context="def parse(): ...")
+        await service.run(plan.review_id, plan.plan.confirm_token, host_findings=["mine"])
+
+        for adapter in adapters.values():
+            assert ("Check especially for:" in adapter.prompts[-1]) is bool(checklist)
+            assert ("unchecked returns" in adapter.prompts[-1]) is bool(checklist)
+
+
 async def test_planning_shows_what_would_be_sent_and_sends_it(build):
     adapters = {aid: StubAdapter() for aid in REVIEWERS}
     service = await build(adapters)
