@@ -3,7 +3,7 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
-## Unreleased
+## 0.11.0 — 2026-10-04
 
 - The scorecard has a `sole serious` column: critical and important findings that only that
   reviewer raised, in reviews where at least two answered, and that the host did not reject.
