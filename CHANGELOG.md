@@ -5,6 +5,9 @@ One line per change a user would notice. The full notes for each version are on 
 
 ## Unreleased
 
+- The scorecard has a `sole serious` column: critical and important findings that only that
+  reviewer raised, in reviews where at least two answered, and that the host did not reject.
+  `-` means it never reviewed beside another. The dashboard's `/scorecard` shows it too.
 - A recheck asks reviewers, for each previous finding the change resolves, to look for the
   same mistake elsewhere in the change. A new optional `review.checklist` adds your own list
   to every reviewer's instructions under "Check especially for:".
