@@ -370,6 +370,24 @@ async def test_a_reviewer_that_never_answered_beside_another_has_no_sole_count(r
     assert scorecard_cells(codex)[SCORECARD_HEADERS.index("sole serious")] == "-"
 
 
+async def test_a_review_answered_alone_adds_nothing_to_a_sole_count_earned_elsewhere(review_config):
+    consult_config = review_config()
+    await make_review(consult_config, answer=answer_with(1))  # paired, one shared critical
+    await make_review(
+        consult_config,
+        adapters={
+            "codex-sol": StubAdapter(answer_with(1)),
+            "gemini-x": StubAdapter(answer_with(1), error=RuntimeError("boom")),
+        },
+        combined_findings=serious(("critical", "open", ("codex-sol",))),
+    )
+
+    codex = reviewer(report(consult_config, scorecard), "codex-sol")
+
+    assert codex["open"] == 2
+    assert codex["sole_serious"] == 0
+
+
 async def test_an_unreadable_synthesis_has_no_sole_count(review_config):
     consult_config = review_config()
     await make_review(
