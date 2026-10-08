@@ -421,14 +421,18 @@ async def test_a_host_manifest_keeps_the_pinned_endpoints_in_the_plan(build, his
     assert both.plan.material_verified is False and alone.plan.material_verified is True
 
 
-def test_changed_paths_reads_both_sides_of_a_rename_and_keeps_spaces():
+def test_changed_paths_reads_renames_from_their_own_lines_and_keeps_spaces():
     text = (
         "diff --git a/old name.py b/new name.py\n"
         "similarity index 100%\n"
-        "diff --git a/src/x.py b/src/x.py\n"
+        "rename from old name.py\n"
+        "rename to new name.py\n"
+        "diff --git a/src/part b/x.py b/src/part b/x.py\n"
         "+diff --git a/not/a/header.py b/not/a/header.py\n"
+        "+rename from not/a/rename.py\n"
+        'rename from "quoted\\tname"\n'
     )
-    assert diff_module.changed_paths(text) == ["old name.py", "new name.py", "src/x.py"]
+    assert diff_module.changed_paths(text) == ["old name.py", "new name.py", "src/part b/x.py"]
 
 
 async def test_a_standard_diff_touching_an_escalate_path_carries_the_hint(build, history):
@@ -445,8 +449,9 @@ async def test_a_standard_diff_touching_an_escalate_path_carries_the_hint(build,
 async def test_no_hint_when_nothing_matches_or_the_review_is_already_deep(build, history):
     service = await build(escalate=["a.py"])
 
-    # topic touches only t.py.
+    # topic touches only t.py; the two-dot form also carries main's rewrite of a.py.
     assert (await plan(service, "main...topic")).plan.escalate is None
+    assert (await plan(service, "main..topic")).plan.escalate is not None
     deep = await plan(service, "main..topic", mode="deep")
     assert deep.error is None, deep.error
     assert deep.plan.escalate is None
@@ -471,4 +476,21 @@ async def test_a_repository_that_turns_prefixes_off_still_matches(build, repo, h
 
     assert response.plan.escalate is not None
     assert response.plan.escalate.paths == ["t.py"]
+
+
+async def test_a_name_holding_the_header_separator_still_matches(build, repo, history):
+    git(repo, "checkout", "-q", "topic")
+    (repo / "part b").mkdir()
+    commit(repo, "part b/x.py", "x\n")
+    git(repo, "mv", "t.py", "part b/t.py")
+    git(repo, "commit", "-q", "-m", "move t.py")
+    service = await build(escalate=["part b/x.py", "t.py"])
+
+    response = await plan(service, "main...topic")
+
+    assert response.plan.escalate is not None
+    assert response.plan.escalate.paths == ["part b/x.py"]
+    # The rename's source is read from `rename from`, not from the header.
+    service = await build(escalate=["t.py"])
+    assert (await plan(service, "topic")).plan.escalate.paths == ["t.py"]
 

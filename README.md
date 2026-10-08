@@ -655,6 +655,8 @@ reviewer under "Check especially for:"; leave it out and the instructions are un
 `diff_ref` touches one, the plan carries `escalate: {paths, suggestion: "mode=deep"}`. It
 only suggests: the reviewers stay as planned, and re-planning as deep is the host's call.
 The globs are `fnmatch` patterns over repository-relative paths, so `*` also crosses `/`.
+A name git quotes in a diff (one holding a tab, a double quote, or non-ASCII characters
+while `core.quotePath` is on) is never matched.
 
 For a branch review, skip the file: `diff_ref` lets Orchestrator run the diff itself.
 
