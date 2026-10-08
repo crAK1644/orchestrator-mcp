@@ -262,9 +262,11 @@ async def test_a_readiness_check_that_hangs_is_an_error_not_a_wait(stub, adapter
 
     assert excinfo.value.code is ConsultErrorCode.TIMEOUT
     assert not list((home / "copilot").glob("probe-*"))
-    # The check was killed after the CLI had made its session, and that goes too.
+    # A session the CLI made before it was killed goes too. The stub is often killed
+    # before it makes one at all (more so under full-suite load), so an empty directory
+    # passes as well; the next test proves the cleanup without a race.
     state = home / "copilot" / "home" / "session-state"
-    assert sorted(p.name for p in state.rglob("*")) == [".session-operation-locks"]
+    assert {p.name for p in state.rglob("*")} <= {".session-operation-locks"}
 
 
 async def test_a_readiness_check_leaves_no_session_behind_and_no_one_elses_goes(stub, adapter, home):
