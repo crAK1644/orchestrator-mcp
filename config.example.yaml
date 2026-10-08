@@ -190,6 +190,10 @@ consult:
     recheck_reviewers: all                    # a recheck (`parent_review_id`) asks
                                               # `all` again, or only those `raised`
                                               # a finding still open -- at least one
+    escalate: []                              # globs over repo paths, `*` crosses
+                                              # `/`; a standard `diff_ref` review
+                                              # touching one gets a plan hint to
+                                              # re-plan with `mode: deep`
     roots: []                                 # absolute after ~/$VAR expansion, and
                                               # a directory that exists -- a root the
                                               # server cannot find refuses the boot,

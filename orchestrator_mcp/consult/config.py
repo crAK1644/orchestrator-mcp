@@ -156,6 +156,10 @@ class ReviewConfig(BaseModel):
     # Mistakes this operator's reviews keep finding, added to every reviewer's
     # instructions under "Check especially for:". Empty adds nothing.
     checklist: list[str] = Field(default_factory=list)
+    # Globs (`fnmatch`, so `*` crosses `/`) over repository-relative paths. A standard
+    # review whose `diff_ref` touches one comes back with an `escalate` hint suggesting
+    # `mode="deep"`. Advisory: it never changes who is asked. Empty adds nothing.
+    escalate: list[str] = Field(default_factory=list)
 
     @field_validator("roots")
     @classmethod

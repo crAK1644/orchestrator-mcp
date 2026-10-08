@@ -178,6 +178,8 @@ async def read_diff(ref: str, repo: str | None, roots: list[Path]) -> tuple[str,
 
     code, text = await _git(
         path, "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+        # Pinned so `changed_paths` can read the headers whatever `diff.noprefix` says.
+        "--src-prefix=a/", "--dst-prefix=b/",
         "--end-of-options", f"{left}{op}{right}", "--",
     )
     if code != 0:
@@ -196,3 +198,31 @@ async def read_diff(ref: str, repo: str | None, roots: list[Path]) -> tuple[str,
         chars=len(text),
     )
     return text, item
+
+
+def changed_paths(text: str) -> list[str]:
+    """Every repository-relative path a `read_diff` text touches, both sides of a rename.
+
+    The `diff --git` header is split only where its two halves are the same path: a name
+    may itself hold ` b/`, so a header naming two different paths cannot be split by
+    reading it. A rename or copy is read from git's `rename from` / `copy to` lines
+    instead, which carry one path each. Hunk lines all start with a marker character,
+    so file content cannot pose as either.
+
+    ponytail: a name git quotes (a tab, a quote, non-ASCII without `core.quotePath`
+    off) is skipped; parse the quoting if a hint ever needs those.
+    """
+    found: dict[str, None] = {}
+    # `\n` only: `splitlines` also breaks at `\r`, U+2028 and kin, which would let
+    # one marked hunk line hand an unmarked `rename from` to the next iteration.
+    for line in text.split("\n"):
+        if line.startswith("diff --git a/"):
+            rest = line[len("diff --git a/"):]
+            half = (len(rest) - 3) // 2
+            if rest[half:half + 3] == " b/" and rest[:half] == rest[half + 3:]:
+                found[rest[:half]] = None
+        elif line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
+            name = line.split(" ", 2)[2]
+            if not name.startswith('"'):
+                found[name] = None
+    return list(found)

@@ -60,7 +60,7 @@ def history(repo):
 
 @pytest.fixture
 def build(tmp_path, repo):
-    async def make(roots: list[Path] | None = None, **overrides):
+    async def make(roots: list[Path] | None = None, escalate: list[str] | None = None, **overrides):
         adapters = {aid: StubAdapter() for aid in REVIEWERS}
         config = ConsultConfig(
             database_path=str(tmp_path / "c.sqlite3"),
@@ -69,6 +69,7 @@ def build(tmp_path, repo):
                 "reviewers": ["codex-sol"],
                 "deep_reviewers": list(REVIEWERS),
                 "roots": [str(r) for r in (roots if roots is not None else [repo])],
+                "escalate": escalate or [],
             },
             **overrides,
         )
@@ -418,3 +419,81 @@ async def test_a_host_manifest_keeps_the_pinned_endpoints_in_the_plan(build, his
     assert [m.label for m in both.plan.material] == ["git diff main..topic", "the topic branch"]
     assert both.plan.material[0].locator == alone.plan.material[0].locator
     assert both.plan.material_verified is False and alone.plan.material_verified is True
+
+
+def test_changed_paths_reads_renames_from_their_own_lines_and_keeps_spaces():
+    text = (
+        "diff --git a/old name.py b/new name.py\n"
+        "similarity index 100%\n"
+        "rename from old name.py\n"
+        "rename to new name.py\n"
+        "diff --git a/src/part b/x.py b/src/part b/x.py\n"
+        "+diff --git a/not/a/header.py b/not/a/header.py\n"
+        "+rename from not/a/rename.py\n"
+        'rename from "quoted\\tname"\n'
+        "+x\u2028rename from u2028.py\n"
+        "+x\rrename from cr.py\n"
+        "+x\x85rename from nel.py\n"
+    )
+    assert diff_module.changed_paths(text) == ["old name.py", "new name.py", "src/part b/x.py"]
+
+
+async def test_a_standard_diff_touching_an_escalate_path_carries_the_hint(build, history):
+    service = await build(escalate=["t.*", "nothing/*"])
+
+    response = await plan(service, "main...topic")
+
+    assert response.error is None, response.error
+    assert response.plan.escalate is not None
+    assert response.plan.escalate.paths == ["t.py"]
+    assert response.plan.escalate.suggestion == "mode=deep"
+
+
+async def test_no_hint_when_nothing_matches_or_the_review_is_already_deep(build, history):
+    service = await build(escalate=["a.py"])
+
+    # topic touches only t.py; the two-dot form also carries main's rewrite of a.py.
+    assert (await plan(service, "main...topic")).plan.escalate is None
+    assert (await plan(service, "main..topic")).plan.escalate is not None
+    deep = await plan(service, "main..topic", mode="deep")
+    assert deep.error is None, deep.error
+    assert deep.plan.escalate is None
+
+
+async def test_context_material_never_carries_the_hint(build, history):
+    service = await build(escalate=["*"])
+
+    response = await service.plan(
+        goal="review the change", context="diff --git a/t.py b/t.py\n+topic\n"
+    )
+
+    assert response.error is None, response.error
+    assert response.plan.escalate is None
+
+
+async def test_a_repository_that_turns_prefixes_off_still_matches(build, repo, history):
+    git(repo, "config", "diff.noprefix", "true")
+    service = await build(escalate=["t.py"])
+
+    response = await plan(service, "main...topic")
+
+    assert response.plan.escalate is not None
+    assert response.plan.escalate.paths == ["t.py"]
+
+
+async def test_a_name_holding_the_header_separator_still_matches(build, repo, history):
+    git(repo, "checkout", "-q", "topic")
+    (repo / "part b").mkdir()
+    commit(repo, "part b/x.py", "x\n")
+    git(repo, "mv", "t.py", "part b/moved.py")
+    git(repo, "commit", "-q", "-m", "move t.py")
+    service = await build(escalate=["part b/x.py", "t.py"])
+
+    response = await plan(service, "main...topic")
+
+    assert response.plan.escalate is not None
+    assert response.plan.escalate.paths == ["part b/x.py"]
+    # The rename's source is read from `rename from`, not from the header.
+    service = await build(escalate=["t.py"])
+    assert (await plan(service, "topic")).plan.escalate.paths == ["t.py"]
+

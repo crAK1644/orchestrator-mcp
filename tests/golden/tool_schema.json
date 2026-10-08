@@ -1929,6 +1929,31 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Escalation": {
+          "additionalProperties": false,
+          "description": "The changed paths that matched `review.escalate`, and what to do about them.",
+          "properties": {
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Paths",
+              "type": "array"
+            },
+            "suggestion": {
+              "const": "mode=deep",
+              "default": "mode=deep",
+              "title": "Suggestion",
+              "type": "string"
+            }
+          },
+          "required": [
+            "paths"
+          ],
+          "title": "Escalation",
+          "type": "object"
+        },
         "Estimate": {
           "additionalProperties": false,
           "properties": {
@@ -2369,6 +2394,17 @@
               ],
               "default": null,
               "title": "Ceiling Warning"
+            },
+            "escalate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Escalation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
@@ -3118,6 +3154,31 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Escalation": {
+          "additionalProperties": false,
+          "description": "The changed paths that matched `review.escalate`, and what to do about them.",
+          "properties": {
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Paths",
+              "type": "array"
+            },
+            "suggestion": {
+              "const": "mode=deep",
+              "default": "mode=deep",
+              "title": "Suggestion",
+              "type": "string"
+            }
+          },
+          "required": [
+            "paths"
+          ],
+          "title": "Escalation",
+          "type": "object"
+        },
         "Estimate": {
           "additionalProperties": false,
           "properties": {
@@ -3558,6 +3619,17 @@
               ],
               "default": null,
               "title": "Ceiling Warning"
+            },
+            "escalate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Escalation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
@@ -4293,6 +4365,31 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Escalation": {
+          "additionalProperties": false,
+          "description": "The changed paths that matched `review.escalate`, and what to do about them.",
+          "properties": {
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Paths",
+              "type": "array"
+            },
+            "suggestion": {
+              "const": "mode=deep",
+              "default": "mode=deep",
+              "title": "Suggestion",
+              "type": "string"
+            }
+          },
+          "required": [
+            "paths"
+          ],
+          "title": "Escalation",
+          "type": "object"
+        },
         "Estimate": {
           "additionalProperties": false,
           "properties": {
@@ -4733,6 +4830,17 @@
               ],
               "default": null,
               "title": "Ceiling Warning"
+            },
+            "escalate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Escalation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
@@ -5579,6 +5687,31 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Escalation": {
+          "additionalProperties": false,
+          "description": "The changed paths that matched `review.escalate`, and what to do about them.",
+          "properties": {
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Paths",
+              "type": "array"
+            },
+            "suggestion": {
+              "const": "mode=deep",
+              "default": "mode=deep",
+              "title": "Suggestion",
+              "type": "string"
+            }
+          },
+          "required": [
+            "paths"
+          ],
+          "title": "Escalation",
+          "type": "object"
+        },
         "Estimate": {
           "additionalProperties": false,
           "properties": {
@@ -6019,6 +6152,17 @@
               ],
               "default": null,
               "title": "Ceiling Warning"
+            },
+            "escalate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Escalation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
@@ -6704,6 +6848,31 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Escalation": {
+          "additionalProperties": false,
+          "description": "The changed paths that matched `review.escalate`, and what to do about them.",
+          "properties": {
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Paths",
+              "type": "array"
+            },
+            "suggestion": {
+              "const": "mode=deep",
+              "default": "mode=deep",
+              "title": "Suggestion",
+              "type": "string"
+            }
+          },
+          "required": [
+            "paths"
+          ],
+          "title": "Escalation",
+          "type": "object"
+        },
         "Estimate": {
           "additionalProperties": false,
           "properties": {
@@ -7144,6 +7313,17 @@
               ],
               "default": null,
               "title": "Ceiling Warning"
+            },
+            "escalate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Escalation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
@@ -7845,6 +8025,31 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Escalation": {
+          "additionalProperties": false,
+          "description": "The changed paths that matched `review.escalate`, and what to do about them.",
+          "properties": {
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Paths",
+              "type": "array"
+            },
+            "suggestion": {
+              "const": "mode=deep",
+              "default": "mode=deep",
+              "title": "Suggestion",
+              "type": "string"
+            }
+          },
+          "required": [
+            "paths"
+          ],
+          "title": "Escalation",
+          "type": "object"
+        },
         "Estimate": {
           "additionalProperties": false,
           "properties": {
@@ -8285,6 +8490,17 @@
               ],
               "default": null,
               "title": "Ceiling Warning"
+            },
+            "escalate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Escalation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
@@ -8962,6 +9178,31 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Escalation": {
+          "additionalProperties": false,
+          "description": "The changed paths that matched `review.escalate`, and what to do about them.",
+          "properties": {
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Paths",
+              "type": "array"
+            },
+            "suggestion": {
+              "const": "mode=deep",
+              "default": "mode=deep",
+              "title": "Suggestion",
+              "type": "string"
+            }
+          },
+          "required": [
+            "paths"
+          ],
+          "title": "Escalation",
+          "type": "object"
+        },
         "Estimate": {
           "additionalProperties": false,
           "properties": {
@@ -9402,6 +9643,17 @@
               ],
               "default": null,
               "title": "Ceiling Warning"
+            },
+            "escalate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Escalation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
@@ -10228,6 +10480,31 @@
           "title": "ConsultSource",
           "type": "object"
         },
+        "Escalation": {
+          "additionalProperties": false,
+          "description": "The changed paths that matched `review.escalate`, and what to do about them.",
+          "properties": {
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "title": "Paths",
+              "type": "array"
+            },
+            "suggestion": {
+              "const": "mode=deep",
+              "default": "mode=deep",
+              "title": "Suggestion",
+              "type": "string"
+            }
+          },
+          "required": [
+            "paths"
+          ],
+          "title": "Escalation",
+          "type": "object"
+        },
         "Estimate": {
           "additionalProperties": false,
           "properties": {
@@ -10668,6 +10945,17 @@
               ],
               "default": null,
               "title": "Ceiling Warning"
+            },
+            "escalate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Escalation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [

@@ -192,6 +192,15 @@ class ReviewerResult(BaseModel):
     error: ConsultError | None = None
 
 
+class Escalation(BaseModel):
+    """The changed paths that matched `review.escalate`, and what to do about them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    paths: list[str] = Field(max_length=MAX_LIST_ITEMS)
+    suggestion: Literal["mode=deep"] = "mode=deep"
+
+
 class ReviewPlan(BaseModel):
     """What would be sent, shown before anything is.
 
@@ -235,6 +244,10 @@ class ReviewPlan(BaseModel):
     estimated_cost_usd: float | None = None
     # Advisory. The ceiling still refuses on what was spent, never on this.
     ceiling_warning: str | None = Field(default=None, max_length=MAX_LABEL_CHARS)
+    # Set on a standard review whose `diff_ref` touches a `review.escalate` path.
+    # Advisory, like `strengths`: re-planning as deep is the host's call, and this is
+    # not in the confirm hash.
+    escalate: Escalation | None = None
 
 
 class CombinedFinding(BaseModel):

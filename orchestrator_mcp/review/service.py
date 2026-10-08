@@ -23,6 +23,7 @@ import secrets as secrets_mod
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -72,6 +73,7 @@ from .contract import (
     REASK_INSTRUCTIONS,
     RECHECK_INSTRUCTIONS,
     SEVERITY_ORDER,
+    Escalation,
     Finding,
     FindingStatus,
     FixPlan,
@@ -93,7 +95,7 @@ from .contract import (
     open_refs,
     reviewer_instructions,
 )
-from .diff import read_diff
+from .diff import changed_paths, read_diff
 from .store import REVIEW_LEASE_SLACK_S, Review, ReviewStore, _now, canonical, sha256
 
 log = get_logger(__name__)
@@ -223,6 +225,7 @@ class ReviewService:
         # scan, the redaction, the approval hash, the stored row -- runs over the
         # real material rather than over a list of filenames.
         material_verified = False
+        escalate: Escalation | None = None
         if diff_repo is not None and diff_ref is None:
             raise ValueError("`diff_repo` only means something with `diff_ref`")
         if diff_ref is not None:
@@ -237,6 +240,13 @@ class ReviewService:
             # are what the approval covers. Any host entry leaves the manifest unverified.
             material_verified = not manifest
             manifest = [diff_item, *manifest]
+            globs = self.config.review.escalate if self.config.review is not None else []
+            if mode == "standard" and globs:
+                hit = [
+                    p for p in changed_paths(context) if any(fnmatchcase(p, g) for g in globs)
+                ]
+                if hit:
+                    escalate = Escalation(paths=hit[:MAX_LIST_ITEMS])
         elif context_paths:
             if context is not None:
                 raise ValueError(
@@ -329,6 +339,7 @@ class ReviewService:
             ceiling_warning=ceiling_warning(
                 0.0, estimated, self.config.spend.max_cost_usd_per_review, "this review"
             ),
+            escalate=escalate,
         )
 
         await self.store.create_review(
