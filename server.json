@@ -7,12 +7,12 @@
     "url": "https://github.com/crAK1644/orchestrator-mcp",
     "source": "github"
   },
-  "version": "0.11.0",
+  "version": "0.12.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "orchestrator-mcp-server",
-      "version": "0.11.0",
+      "version": "0.12.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
