@@ -60,7 +60,7 @@ def history(repo):
 
 @pytest.fixture
 def build(tmp_path, repo):
-    async def make(roots: list[Path] | None = None, **overrides):
+    async def make(roots: list[Path] | None = None, escalate: list[str] | None = None, **overrides):
         adapters = {aid: StubAdapter() for aid in REVIEWERS}
         config = ConsultConfig(
             database_path=str(tmp_path / "c.sqlite3"),
@@ -69,6 +69,7 @@ def build(tmp_path, repo):
                 "reviewers": ["codex-sol"],
                 "deep_reviewers": list(REVIEWERS),
                 "roots": [str(r) for r in (roots if roots is not None else [repo])],
+                "escalate": escalate or [],
             },
             **overrides,
         )
@@ -418,3 +419,56 @@ async def test_a_host_manifest_keeps_the_pinned_endpoints_in_the_plan(build, his
     assert [m.label for m in both.plan.material] == ["git diff main..topic", "the topic branch"]
     assert both.plan.material[0].locator == alone.plan.material[0].locator
     assert both.plan.material_verified is False and alone.plan.material_verified is True
+
+
+def test_changed_paths_reads_both_sides_of_a_rename_and_keeps_spaces():
+    text = (
+        "diff --git a/old name.py b/new name.py\n"
+        "similarity index 100%\n"
+        "diff --git a/src/x.py b/src/x.py\n"
+        "+diff --git a/not/a/header.py b/not/a/header.py\n"
+    )
+    assert diff_module.changed_paths(text) == ["old name.py", "new name.py", "src/x.py"]
+
+
+async def test_a_standard_diff_touching_an_escalate_path_carries_the_hint(build, history):
+    service = await build(escalate=["t.*", "nothing/*"])
+
+    response = await plan(service, "main...topic")
+
+    assert response.error is None, response.error
+    assert response.plan.escalate is not None
+    assert response.plan.escalate.paths == ["t.py"]
+    assert response.plan.escalate.suggestion == "mode=deep"
+
+
+async def test_no_hint_when_nothing_matches_or_the_review_is_already_deep(build, history):
+    service = await build(escalate=["a.py"])
+
+    # topic touches only t.py.
+    assert (await plan(service, "main...topic")).plan.escalate is None
+    deep = await plan(service, "main..topic", mode="deep")
+    assert deep.error is None, deep.error
+    assert deep.plan.escalate is None
+
+
+async def test_context_material_never_carries_the_hint(build, history):
+    service = await build(escalate=["*"])
+
+    response = await service.plan(
+        goal="review the change", context="diff --git a/t.py b/t.py\n+topic\n"
+    )
+
+    assert response.error is None, response.error
+    assert response.plan.escalate is None
+
+
+async def test_a_repository_that_turns_prefixes_off_still_matches(build, repo, history):
+    git(repo, "config", "diff.noprefix", "true")
+    service = await build(escalate=["t.py"])
+
+    response = await plan(service, "main...topic")
+
+    assert response.plan.escalate is not None
+    assert response.plan.escalate.paths == ["t.py"]
+

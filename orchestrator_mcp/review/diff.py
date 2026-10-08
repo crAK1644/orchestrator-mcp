@@ -47,6 +47,8 @@ _GIT_ENV = {"GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"}
 MAX_ALTERNATES_DEPTH = 5  # git's own limit
 MAX_REF_CHARS = 200
 _SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+# Greedy, so a space in a name survives: the split falls on the last ` b/`.
+_HEADER = re.compile(r"^diff --git a/(.+) b/(.+)$", re.MULTILINE)
 
 
 def parse_ref(ref: str) -> tuple[str, str, str | None]:
@@ -178,6 +180,8 @@ async def read_diff(ref: str, repo: str | None, roots: list[Path]) -> tuple[str,
 
     code, text = await _git(
         path, "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+        # Pinned so `changed_paths` can read the headers whatever `diff.noprefix` says.
+        "--src-prefix=a/", "--dst-prefix=b/",
         "--end-of-options", f"{left}{op}{right}", "--",
     )
     if code != 0:
@@ -196,3 +200,16 @@ async def read_diff(ref: str, repo: str | None, roots: list[Path]) -> tuple[str,
         chars=len(text),
     )
     return text, item
+
+
+def changed_paths(text: str) -> list[str]:
+    """Every repository-relative path a `read_diff` text touches, both sides of a rename.
+
+    ponytail: a name git quotes (a tab, a quote, non-ASCII without `core.quotePath`
+    off) has no `a/` right after `--git ` and is skipped; parse the quoting if a hint
+    ever needs those.
+    """
+    found: dict[str, None] = {}
+    for match in _HEADER.finditer(text):
+        found.update(dict.fromkeys(match.groups()))
+    return list(found)

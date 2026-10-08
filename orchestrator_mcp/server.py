@@ -730,6 +730,10 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
         behind an open finding are asked again; the plan lists the rest in
         `reviewers_skipped`.
 
+        With `review.escalate` configured, a standard review whose `diff_ref` touches
+        a listed path comes back with `escalate` naming those paths: tell the user and
+        offer to re-plan with `mode="deep"`. It changes nothing by itself.
+
         `mode="deep"` asks up to five reviewers and requires your own findings first,
         passed to `orchestrator_review_run` as `host_findings`. `web=False` unless the user asked
         for web access: reviewers get none by default.

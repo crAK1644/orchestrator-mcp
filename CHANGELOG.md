@@ -3,6 +3,12 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
+## Unreleased
+
+- A new optional `review.escalate` lists globs for paths that deserve a deep review. A standard
+  review whose `diff_ref` touches one comes back with `escalate` in its plan, naming the
+  matched paths and suggesting `mode="deep"`. It is a hint only: who reviews is unchanged.
+
 ## 0.11.0 — 2026-10-04
 
 - The scorecard has a `sole serious` column: critical and important findings that only that
