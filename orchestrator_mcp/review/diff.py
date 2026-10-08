@@ -213,7 +213,9 @@ def changed_paths(text: str) -> list[str]:
     off) is skipped; parse the quoting if a hint ever needs those.
     """
     found: dict[str, None] = {}
-    for line in text.splitlines():
+    # `\n` only: `splitlines` also breaks at `\r`, U+2028 and kin, which would let
+    # one marked hunk line hand an unmarked `rename from` to the next iteration.
+    for line in text.split("\n"):
         if line.startswith("diff --git a/"):
             rest = line[len("diff --git a/"):]
             half = (len(rest) - 3) // 2

@@ -431,6 +431,9 @@ def test_changed_paths_reads_renames_from_their_own_lines_and_keeps_spaces():
         "+diff --git a/not/a/header.py b/not/a/header.py\n"
         "+rename from not/a/rename.py\n"
         'rename from "quoted\\tname"\n'
+        "+x\u2028rename from u2028.py\n"
+        "+x\rrename from cr.py\n"
+        "+x\x85rename from nel.py\n"
     )
     assert diff_module.changed_paths(text) == ["old name.py", "new name.py", "src/part b/x.py"]
 
@@ -482,7 +485,7 @@ async def test_a_name_holding_the_header_separator_still_matches(build, repo, hi
     git(repo, "checkout", "-q", "topic")
     (repo / "part b").mkdir()
     commit(repo, "part b/x.py", "x\n")
-    git(repo, "mv", "t.py", "part b/t.py")
+    git(repo, "mv", "t.py", "part b/moved.py")
     git(repo, "commit", "-q", "-m", "move t.py")
     service = await build(escalate=["part b/x.py", "t.py"])
 
