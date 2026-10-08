@@ -291,6 +291,43 @@ async def test_open_findings_count_in_neither_kept_nor_rejected(review_config):
     assert (codex["open"], codex["kept"], codex["rejected"]) == (1, 1, 1)
 
 
+async def test_an_open_finding_a_later_fix_round_applied_counts_as_kept(review_config):
+    consult_config = review_config()
+    # Both reviewers cite finding n, so the round's id is in the first finding whichever
+    # reviewer `make_review` takes it from.
+    await make_review(
+        consult_config,
+        answer=answer_with(2),
+        combined_findings=decided("open", "open", agents=("codex-sol", "gemini-x")),
+        fix_round="streamed the read",
+    )
+
+    codex = reviewer(report(consult_config, scorecard), "codex-sol")
+
+    assert (codex["kept"], codex["open"]) == (1, 1)
+
+
+async def test_a_fix_reverted_after_it_was_applied_leaves_the_finding_open(review_config):
+    consult_config = review_config()
+    review_id = str(
+        await make_review(
+            consult_config,
+            answer=answer_with(1),
+            combined_findings=decided("open", agents=("codex-sol", "gemini-x")),
+            fix_round="streamed the read",
+        )
+    )
+    (raw,) = read(consult_config, "SELECT fix_rounds_json FROM reviews WHERE id = ?", review_id)[0]
+    rounds = json.loads(raw)
+    rounds.append(rounds[0] | {"outcome": "reverted"})
+    write(consult_config, "UPDATE reviews SET fix_rounds_json = ? WHERE id = ?",
+          json.dumps(rounds), review_id)
+
+    codex = reviewer(report(consult_config, scorecard), "codex-sol")
+
+    assert (codex["kept"], codex["open"]) == (0, 1)
+
+
 async def test_a_finding_two_reviewers_raised_counts_once_for_each(review_config):
     consult_config = review_config()
     await make_review(
