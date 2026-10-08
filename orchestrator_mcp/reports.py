@@ -324,17 +324,20 @@ _SCORED = (
 def scorecard(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
     """Per reviewer and model: how it answered, what it cost, and what became of its findings.
 
-    What became of a finding is the host's account, given when it finalized the review.
-    This server checks none of it, and a later recheck never rewrites it.
+    What became of a finding is the host's account, given when it finalized the review
+    or in a fix round it recorded after. This server checks none of it, and a later
+    recheck never rewrites it.
     """
     cutoff = _cutoff(days)
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     models: dict[str, dict[str, str]] = defaultdict(dict)
     summaries: dict[str, str | None] = {}
+    fixed: dict[str, set[str]] = {}
     answered: dict[str, set[str]] = defaultdict(set)
     unsynthesised = 0
     for row in db.execute(
-        "SELECT r.id AS review_id, r.status AS review_status, r.summary_json, rc.agent_id, "
+        "SELECT r.id AS review_id, r.status AS review_status, r.summary_json, "
+        "r.fix_rounds_json, rc.agent_id, "
         "rc.status, COALESCE(c.target_model, '') AS model "
         "FROM review_consultations rc JOIN reviews r ON r.id = rc.review_id "
         f"LEFT JOIN consultations c ON c.id = rc.consultation_id WHERE {_SCORED}",
@@ -352,6 +355,7 @@ def scorecard(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
         models[row["review_id"]][row["agent_id"]] = row["model"]
         if row["review_id"] not in summaries:
             summaries[row["review_id"]] = row["summary_json"]
+            fixed[row["review_id"]] = _fixed(row["fix_rounds_json"])
             # Answered, and no synthesis on disk: the host has not finalized it yet, or
             # `store_full_content: false`, under which a review cannot be finalized.
             unsynthesised += (
@@ -376,6 +380,10 @@ def scorecard(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
             outcome = {"fixed": "kept", "accepted_risk": "kept", "rejected": "rejected"}.get(
                 finding.get("disposition"), "open"
             )
+            # Most findings are still open at finalize, because the fixing comes after it.
+            # A fix round recorded later is the host's word that the finding was worth one.
+            if outcome == "open" and fixed[review_id] & set(finding.get("source_finding_ids", [])):
+                outcome = "kept"
             # Open counts: dispositions mostly stay open, and kept alone would read 0.
             sole = (
                 paired
@@ -425,9 +433,24 @@ def scorecard(db: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
     }
 
 
+def _fixed(raw: str | None) -> set[str]:
+    """Finding ids whose latest fix round says the fix went in, wholly or in part.
+
+    Latest wins, so a fix recorded as applied and then as reverted is not counted.
+    """
+    latest: dict[str, str] = {}
+    try:
+        for round_ in json.loads(raw or "[]"):
+            latest |= dict.fromkeys(round_["finding_ids"], round_["outcome"])
+    except (ValueError, KeyError, TypeError):
+        return set()
+    return {i for i, outcome in latest.items() if outcome in ("applied", "partial")}
+
+
 SCORECARD_NOTE = (
     "Kept is fixed or accepted as a risk, rejected is rejected, open is neither yet. "
-    "These are the host's dispositions at finalize; this server checks none of them, and a "
+    "These are the host's dispositions at finalize, and an open finding a later fix round "
+    "names as applied or partial counts as kept; this server checks none of them, and a "
     "later recheck does not update them. Counts are per combined finding, once for each "
     "reviewer that raised it, not per raw reviewer finding. A reviewer's hit rate is shown "
     f"from {MIN_DECIDED} decided findings. Sole serious counts the critical and important "

@@ -3,6 +3,12 @@
 One line per change a user would notice. The full notes for each version are on its
 [GitHub release](https://github.com/crAK1644/orchestrator-mcp/releases).
 
+## Unreleased
+
+- The scorecard counts an open finding as kept once a fix round recorded after finalize
+  names it as `applied` or `partial`. A later `reverted` round undoes that. Until now a fix
+  recorded after finalize never left the `open` column.
+
 ## 0.12.0 — 2026-10-08
 
 - A new optional `review.escalate` lists globs for paths that deserve a deep review. A standard
