@@ -685,7 +685,9 @@ STRENGTHS_NOTE = (
     "better: only `review` rows carry a signal of that, the hit rate from the scorecard, "
     "which counts first-round reviews only and so can rest on fewer asks than the row "
     "shows. Every consultation counts, a reviewer's and a workflow step's included, and "
-    "agents were not asked the same questions. Latency is over answered turns only. An "
+    "agents were not asked the same questions. A contained `isolated_write` run is one ask "
+    "of its step's kind, and its time is the whole run, commands and tests included. "
+    "Latency is over answered turns only. An "
     f"error rate is shown from {MIN_ASKED} asks, a hit rate from {MIN_DECIDED} decided "
     "findings."
 )

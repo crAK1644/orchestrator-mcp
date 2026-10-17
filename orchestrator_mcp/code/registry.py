@@ -18,7 +18,7 @@ from typing import Any
 
 from ..consult.contract import ExecutionMode, Runtime
 from ..consult.errors import ConsultErrorCode
-from ..contract import CodedFailure
+from ..contract import CodedFailure, Usage
 from . import sandbox
 
 # Why each runtime sits where it does:
@@ -81,7 +81,17 @@ _UNSUPPORTED: dict[tuple[Runtime, ExecutionMode], str] = {
 
 
 class CodeError(CodedFailure):
-    """A refusal from the execution side, carrying a code the envelope can hold."""
+    """A refusal from the execution side, carrying a code the envelope can hold.
+
+    `usage` is what the run had already spent when this was raised, where that is
+    known: a run that finished before its diff could be read reported its own count,
+    and the workflow records it rather than writing the failure down as unmeasured.
+    `None` for everything raised before the agent finished, which has no count to give.
+    """
+
+    def __init__(self, code: ConsultErrorCode, message: str, usage: Usage | None = None) -> None:
+        super().__init__(code, message)
+        self.usage = usage
 
 
 def runtime_capabilities(runtime: str) -> frozenset[ExecutionMode]:

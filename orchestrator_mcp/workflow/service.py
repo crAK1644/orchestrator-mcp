@@ -46,7 +46,7 @@ from ..code.service import (
     worktree_path,
 )
 from ..consult.config import ConsultConfig, ReviewPolicy, StepBinding, WorkflowConfig
-from ..consult.contract import ConsultError, Runtime
+from ..consult.contract import ConsultError, Runtime, SourceMode
 from ..consult.errors import ConsultErrorCode
 from ..consult.prompts import compile_execution_prompt
 from ..consult.store import _UNATTRIBUTED, ConsultStore, StoreError
@@ -546,7 +546,8 @@ class WorkflowService:
         one-time token, or raising the ceiling would cost a whole re-plan, and it must
         not be decided on a total another step is still adding to. Reviewers count
         towards the workflow's ceiling as well as their review's own, because the
-        workflow is what paid for them.
+        workflow is what paid for them, and so does every contained run, each one a
+        turn of its own step's consultation.
         """
         message = spend_refusal(
             await self.consult.store.workflow_usage(workflow_id),
@@ -676,6 +677,16 @@ class WorkflowService:
         Returns the result, the commit it ran at and how long it took. Shared so the
         test step cannot drift into checking out a different commit, or sending
         something its preview did not describe, from the steps that produce code.
+
+        Each run is one turn of a consultation this step owns, written the way a
+        delegated step's turn is, so the workflow's spend, its ceilings, the reports
+        and its delete count it with nothing contained-specific in any of them. One
+        turn however many commands the run took. A run that failed is a turn too, as a
+        delegated turn that failed is: its error code and no price, and no tokens
+        unless the run finished before the failure -- a capture that could not read the
+        worktree still has the run's own count. The consultation is leased while the
+        run is in flight, so a delete that follows a cancel waits for the turn rather
+        than taking the rows it is about to be written into.
         """
         snapshot = row.snapshot()
         agent = self.config.agents.get(snapshot.agent_id or "")
@@ -688,27 +699,64 @@ class WorkflowService:
             )
 
         prompt, context = await self._planned_prompt(workflow, row, snapshot.step)
+        compiled = compile_execution_prompt(prompt, context)
         # The applied result, not the original baseline. After round one the branch has
         # moved, and a fix checked out at `baseline_commit` would edit pre-implementation
         # source and return a patch computed against a commit the branch has left --
         # applying it reverts the implementation the round was supposed to build on.
         commit = workflow.result_commit or workflow.baseline_commit
-        clock = time.perf_counter()
-        try:
-            result = await run_contained(
-                self.config,
-                agent,
-                compile_execution_prompt(prompt, context),
-                repo=Path(workflow.workdir),
-                baseline_commit=commit,
-                workflow_id=workflow.id,
-                step_id=row.id,
-                timeout_s=float(self.policy.execution_timeout_s),
+        ledger = self.consult.store
+        consultation = await self.consult.create_step_consultation(snapshot, agent)
+
+        async def record(
+            latency_ms: int,
+            usage: Usage,
+            raw_output: str | None = None,
+            error_code: ConsultErrorCode | None = None,
+        ) -> None:
+            await ledger.record_turn(
+                consultation.id,
+                await ledger.next_sequence(consultation.id),
+                # What a contained run reads is its worktree, and the context it is
+                # handed travels as a document (`compile_execution_prompt`).
+                SourceMode.DOCUMENT,
+                user_prompt=scrub_json(prompt),
+                context=scrub_json(context),
+                compiled_prompt=scrub_json(compiled.full_text),
+                raw_output=scrub_json(raw_output),
+                input_tokens=usage.prompt_tokens,
+                output_tokens=usage.completion_tokens,
+                cost_usd=usage.cost_usd,
+                counts_incomplete=scrub_json(usage.counts_incomplete),
+                latency_ms=latency_ms,
+                error_code=error_code,
             )
-        except CodeError:
-            await self.store.finish_step(row.id, "failed")
-            raise
-        return result, commit, int((time.perf_counter() - clock) * 1000)
+
+        async with ledger.lease(consultation.id, ttl_s=self._lease_ttl(contained=True)):
+            clock = time.perf_counter()
+            try:
+                result = await run_contained(
+                    self.config,
+                    agent,
+                    compiled,
+                    repo=Path(workflow.workdir),
+                    baseline_commit=commit,
+                    workflow_id=workflow.id,
+                    step_id=row.id,
+                    timeout_s=float(self.policy.execution_timeout_s),
+                )
+            except CodeError as exc:
+                await record(_ms(clock), exc.usage or Usage(), error_code=exc.code)
+                await self.store.finish_step(row.id, "failed")
+                raise
+            except Exception:
+                # Not a refusal either side anticipated, and still a run that may have
+                # been paid for. Recorded under the code its envelope will carry.
+                await record(_ms(clock), Usage(), error_code=ConsultErrorCode.TRANSPORT_ERROR)
+                raise
+            duration_ms = _ms(clock)
+            await record(duration_ms, result.usage, raw_output=result.raw_output)
+        return result, commit, duration_ms
 
     async def _run_contained_test(
         self, started: float, workflow: WorkflowRun, row: StepRow

@@ -59,7 +59,7 @@ from .routing import (
     SourceModeError,
     resolve_source_mode,
 )
-from .store import ConsultStore, StoreError
+from .store import Consultation, ConsultStore, StoreError
 from .styles import STYLES
 
 log = get_logger(__name__)
@@ -652,11 +652,25 @@ class ConsultService:
                 existing.native_session_id
 
         route = self._route_for(agent, snapshot.capability)
-        consultation_id = uuid4()
-        consultation = await self.store.create_consultation(
-            consultation_id=consultation_id,
+        return await self.create_step_consultation(snapshot, agent), route, agent, None
+
+    async def create_step_consultation(
+        self, snapshot: StepSnapshot, agent: AgentConfig
+    ) -> Consultation:
+        """A new consultation owned by one workflow step and bound to `agent`.
+
+        `_bind_workflow` takes one for a delegated step's first turn. A contained
+        `isolated_write` run takes one from the workflow service directly: the run
+        never comes through this module, but what it spends belongs in the same ledger
+        under the same owner, so the workflow's rollup, its ceilings, the reports and
+        its delete all count it without having to know it was contained.
+
+        Nothing is checked here. The caller has already decided `agent` runs the step.
+        """
+        return await self.store.create_consultation(
+            consultation_id=uuid4(),
             origin_runtime=self.host_runtime,
-            route=route,
+            route=self._route_for(agent, snapshot.capability),
             capability=snapshot.capability or "",
             protocol_version=self.config.protocol_version,
             config_hash=self.config.config_hash(),
@@ -664,7 +678,6 @@ class ConsultService:
             workflow_id=snapshot.workflow_id,
             step_id=snapshot.step_id,
         )
-        return consultation, route, agent, None
 
     def _route_for(self, agent: AgentConfig, capability: str | None) -> ConsultRoute:
         return ConsultRoute(

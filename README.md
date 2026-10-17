@@ -396,17 +396,19 @@ second reviewer would have missed. A reviewer that never answered beside another
 `review` and so on), agent and model it counts the turns asked, answered and failed, the
 average time an answer took, and the cost. Every consultation counts, a reviewer's and a
 workflow step's included; a turn that never started, or that the spend ceiling stopped,
-does not. A failure rate appears from five asks, and a `review` row also carries the
-scorecard's hit rate. Under the table, lines name what may be worth a look and change
-nothing: an agent that failed at least 30% of five or more asks for a kind of question,
-with its commonest error (a setup error such as `connection_required` is called setup and
-points at `doctor`); and a kind of question that your config routes to an agent which took
-at least twice as long per answer as another configured agent that failed no more often,
-five answers each, on the models configured today. An agent or model the config no longer
-holds is never suggested. The routing is worked out as the server would, leaving out the
-host's own runtime when `ORCHESTRATOR_HOST_RUNTIME` names one. None of this says whose
-answers were better: only `review` rows carry a signal of that, and agents were not asked
-the same questions.
+does not. A contained `isolated_write` run is one ask of its step's kind of question, and
+its time is the whole run, commands and tests included, so an agent that runs contained
+steps reads slower at that kind than its answers alone would make it. A failure rate
+appears from five asks, and a `review` row also carries the scorecard's hit rate. Under
+the table, lines name what may be worth a look and change nothing: an agent that failed at
+least 30% of five or more asks for a kind of question, with its commonest error (a setup
+error such as `connection_required` is called setup and points at `doctor`); and a kind of
+question that your config routes to an agent which took at least twice as long per answer
+as another configured agent that failed no more often, five answers each, on the models
+configured today. An agent or model the config no longer holds is never suggested. The
+routing is worked out as the server would, leaving out the host's own runtime when
+`ORCHESTRATOR_HOST_RUNTIME` names one. None of this says whose answers were better: only
+`review` rows carry a signal of that, and agents were not asked the same questions.
 
 `search` answers "which agent told me that?". A stored prompt or answer matches when it
 holds every word, best match first, and a word also matches its other endings (`search`
@@ -1077,6 +1079,16 @@ turn behind it was priced: an agent on a free tier reports no price, and one unp
 turn makes the total a floor rather than a sum, so it comes back unknown instead. The
 dashboard shows the same numbers on the workflow list and per step.
 
+A contained `isolated_write` step's run is counted the same way, as one turn of a
+consultation the step owns however many commands it took. The turn holds the tokens and
+price its CLI reported for the whole run, how long the run took, what it was sent and the
+CLI's output, masked like everything else stored. A run that failed is a turn too, as a
+failed delegated turn is: its error code, no tokens and no price, so the step's cost reads
+unknown and the turn still counts towards `max_turns_per_workflow`. A run that finished
+before its diff could be read keeps the count it reported, and one that finished having
+changed nothing is an answered turn whose step failed. Deleting the workflow while a run
+is still in flight, after a cancel, is refused until the run has written its turn.
+
 A review step's reviewers come from its binding, so a workflow needs no `review:` block
 unless that binding is left to `auto` — then it falls back to the configured reviewers
 and refuses without them.
@@ -1290,10 +1302,10 @@ consult:
 
 All six are optional and all are absent by default, which is no ceiling and no change
 in behavior. A consultation's ceiling is checked before each turn on it; a review's
-before each round of reviewers; a workflow's before each step, reviewers included,
-since the workflow is what paid for them. The check happens before the one-time token
-is spent and before any subprocess starts, so a refusal costs nothing and the same
-token still works once the ceiling is raised.
+before each round of reviewers; a workflow's before each step, its reviewers and its
+contained runs included, since the workflow is what paid for them. The check happens
+before the one-time token is spent and before any subprocess starts, so a refusal costs
+nothing and the same token still works once the ceiling is raised.
 
 The three scopes nest, and a turn is refused by whichever it reaches first. The
 consultation pair is the one that bounds `orchestrator_consult`: that tool takes a
@@ -1317,14 +1329,20 @@ and never leaves `$0.00` -- it reads as a bound and is not one. Turns are counte
 every agent whatever it charges, so `max_turns_per_review` and `max_turns_per_workflow`
 bound the work that money cannot see. They are checked at the same moments, refuse with
 the same error code, and count the same way spend does: rebuilt from the turn ledger, so
-a retried reviewer counts every attempt exactly once.
+a retried reviewer counts every attempt exactly once. A contained `isolated_write` run is
+one turn however many commands it ran, and a run that failed is one too, so a workflow
+whose steps run contained on Codex is bounded by `max_turns_per_workflow` while a dollar
+ceiling sees none of it.
 
 A consultation with no turns yet is never refused. Nothing has been spent on it, so
 there is no ceiling for it to have reached -- what these stop is the turn after one.
 
 **Plans carry an estimate.** A review plan and a workflow step preview show
 `estimates` (tokens and cost per agent) and `estimated_cost_usd`, fitted from that
-agent's last 50 successful turns on the same model. It is an estimate, not a quote:
+agent's last 50 successful turns on the same model, leaving out its contained
+`isolated_write` runs: each is a whole step's work behind a prompt the size of a question,
+and fitted in it would price the next question as a whole job. A contained step's own
+preview is therefore estimated as an answer would be. It is an estimate, not a quote:
 `basis_turns` says how many turns it rests on, an agent with no history gets none,
 and the cost is `null` for an agent with fewer than 3 priced turns -- so the total is
 `null` whenever any agent is unpriced, the same rule as above. When the estimate would

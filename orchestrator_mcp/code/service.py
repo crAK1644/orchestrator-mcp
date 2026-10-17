@@ -18,6 +18,10 @@ worktree left behind is both a directory nobody will find and a registration ins
 the user's repository. One exception: when *capture itself* fails the worktree stays,
 because at that moment it is the only copy of the step's work and removing it would
 destroy the work over a failure to read it.
+
+Nothing here writes to the turn ledger. The workflow service records each run as a
+turn of a consultation its step owns, because it is the one holding the store, and the
+only one that knows which workflow a run is spending for.
 """
 
 from __future__ import annotations
@@ -357,12 +361,15 @@ async def run_contained(
                         if isinstance(exc, CodeError)
                         else f"could not preserve the raw patch: {type(exc).__name__}"
                     )
-        except CodeError:
+        except CodeError as exc:
             # The worktree holds the only copy of what this step did. Deleting it
             # because *reading* it failed destroys the work over a problem the host
             # can usually look at and fix by hand -- and a nested `git init`, which
             # is all it takes, is something an ordinary scaffolding step does.
             keep = True
+            # The run itself finished, so what it spent is known even though what it
+            # did could not be read. The workflow records it either way.
+            exc.usage = run.usage
             raise
     finally:
         if not keep:

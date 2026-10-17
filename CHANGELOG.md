@@ -8,6 +8,14 @@ One line per change a user would notice. The full notes for each version are on 
 - The scorecard counts an open finding as kept once a fix round recorded after finalize
   names it as `applied` or `partial`. A later `reverted` round undoes that. Until now a fix
   recorded after finalize never left the `open` column.
+- A contained `isolated_write` run is now a turn of a consultation its step owns, carrying the
+  tokens, price, time and error code its CLI reported. Until now nothing recorded it, so
+  `max_cost_usd_per_workflow` and `max_turns_per_workflow` never counted a contained step, and
+  `orchestrator_workflow_status`, the dashboard, `usage` and `strengths` left its spend out
+  without saying so. A run that fails is a turn with its error code and no price; one whose diff
+  could not be read keeps the count it reported. The turn stores the run's prompt and its CLI's
+  output, masked, and is deleted with its workflow, whose delete waits for a run still in flight.
+  Estimates are still fitted from an agent's answers alone.
 
 ## 0.12.0 — 2026-10-08
 

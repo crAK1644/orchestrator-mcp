@@ -570,7 +570,7 @@ async def test_a_repository_created_inside_the_worktree_does_not_destroy_the_ste
     scaffolded subproject, not an attack. The worktree now survives a capture failure,
     because at that moment it is the only copy of the work.
     """
-    with pytest.raises(CodeError, match="only copy of this step's work"):
+    with pytest.raises(CodeError, match="only copy of this step's work") as caught:
         await run(
             repo, tmp_path, monkeypatch,
             runs=[{
@@ -590,6 +590,10 @@ async def test_a_repository_created_inside_the_worktree_does_not_destroy_the_ste
     kept = worktree_path("wf-1", "step-1")
     assert (kept / "greet.py").exists()
     assert (kept / "sub" / "app.py").exists()
+    # The run finished before its diff could be read, so what it spent is known, and
+    # travels with the failure for the workflow to record.
+    assert caught.value.usage is not None
+    assert (caught.value.usage.prompt_tokens, caught.value.usage.completion_tokens) == (400, 90)
 
 
 async def test_a_file_the_patch_cannot_carry_comes_back_named(

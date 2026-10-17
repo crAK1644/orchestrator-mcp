@@ -1121,7 +1121,12 @@ class ConsultStore:
         self, agent_id: str, model: str, limit: int
     ) -> list[tuple[int | None, int, int, float | None]]:
         """`(stored prompt chars, input, output, cost)` for the agent's latest turns
-        on this model, newest first, failed turns left out. What `estimate` reads."""
+        on this model, newest first, failed turns left out. What `estimate` reads.
+
+        A contained `isolated_write` run is a turn in this ledger and is left out here
+        too. It is a whole job -- every model call, command and test of a step -- sent
+        a prompt the size of a question, so fitted beside the agent's answers it would
+        price the next question as if it were one."""
 
         def work() -> list[tuple[int | None, int, int, float | None]]:
             return [
@@ -1131,7 +1136,9 @@ class ConsultStore:
                     "t.cost_usd FROM consultation_turns t "
                     "JOIN consultations c ON c.id = t.consultation_id "
                     "WHERE c.target_agent_id = ? AND c.target_model = ? "
-                    "AND t.error_code IS NULL ORDER BY t.id DESC LIMIT ?",
+                    "AND t.error_code IS NULL AND NOT EXISTS (SELECT 1 FROM workflow_steps s "
+                    "WHERE s.id = c.step_id AND s.execution_mode = 'isolated_write') "
+                    "ORDER BY t.id DESC LIMIT ?",
                     (agent_id, model, limit),
                 )
             ]
@@ -1146,7 +1153,8 @@ class ConsultStore:
         in sync -- the same property the reviewer rollup relies on.
 
         Two links reach the same place. A delegated step owns its consultation
-        directly (`consultations.workflow_id`); a review step owns a review, and the
+        directly (`consultations.workflow_id`), and so does a contained one, whose
+        worktree run is recorded as a turn of it; a review step owns a review, and the
         reviewers' consultations carry the review rather than the workflow. The join
         covers both, so a workflow's total includes what its reviewers cost.
 
