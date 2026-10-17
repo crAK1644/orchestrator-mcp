@@ -143,3 +143,16 @@ def test_the_cutoff_is_a_day_back_in_the_ledgers_own_shape():
     assert day_cutoff(T0) == "2026-10-16T09:00:00+00:00"
     shape = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00")
     assert shape.fullmatch(day_cutoff()) and shape.fullmatch(_now())
+
+
+def test_a_turn_stops_counting_the_instant_after_the_moment_named():
+    """A refusal over a turn stamped T says "after T + 24h". At T + 24h the turn is
+    exactly a day old and still counts; half a second later it must not, though the
+    ledger's seconds never move. Floored, the cutoff kept it for that half second, and
+    a host trying again when it was told to was refused again."""
+    stamp = at(0)
+    assert day_refusal([(stamp, None, "codex-sol")], None, 1).endswith(lifted(0))
+
+    assert stamp >= day_cutoff(T0 + DAY)
+    assert not stamp >= day_cutoff(T0 + DAY + timedelta(milliseconds=500))
+    assert day_cutoff(T0 + DAY + timedelta(milliseconds=500)) == "2026-10-17T09:00:01+00:00"

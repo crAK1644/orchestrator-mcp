@@ -126,7 +126,7 @@ async def day_warning(store, ceiling: float | None, estimated: float | None) -> 
     )
 
 
-def warnings(*found: str | None) -> str | None:
+def joined_warnings(*found: str | None) -> str | None:
     """Every warning that applies, in the one `ceiling_warning` a plan carries. The
     record's own ceiling first: it is the one this approval is about."""
     return "; ".join(w for w in found if w) or None

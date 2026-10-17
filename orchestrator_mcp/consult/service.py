@@ -336,7 +336,9 @@ class ConsultService:
                 # A new consultation, whose first turn only the day can refuse. Asked
                 # before the bind, which creates the row: refused after it, each refusal
                 # would leave a consultation behind that never held a turn. `_turn`
-                # asks again, as it does for every turn.
+                # asks again, as it does for every turn, so the one way a row is still
+                # left is the race `within_day` names -- two fresh consultations both
+                # admitted here for the last turn of the day, and the second refused there.
                 await self.within_day()
             consultation, route, agent, resuming = await (
                 self._bind_review(request, capability, review_owner)
@@ -703,10 +705,10 @@ class ConsultService:
         ever one agent on a consultation, which is what makes the map a formality here
         and the whole answer for a review.
 
-        The day's ceiling is asked here too, after the consultation's own: the order
-        the review and workflow checks keep, narrowest first. A consultation that has
-        reached both is told about its own, since waiting for the day to lift would
-        not let it run.
+        The day's ceiling is asked here too, after the consultation's own, as it is
+        last at every door: it is the one ceiling that lifts by waiting. A consultation
+        that has reached both is told about its own, since a host told when the day
+        lifts would only be refused then by a ceiling that never does.
         """
         spend = await self.store.consultation_spend(consultation_id)
         # No turns yet is nothing spent, so nothing for the consultation's own ceiling
@@ -739,7 +741,8 @@ class ConsultService:
         Asked by `_within_ceiling` before every turn, by `_consult` before a new
         consultation's row exists, and -- public for this -- by the review and
         workflow layers before they spend a token, where a refusal still costs nothing
-        and the token keeps until the window lifts. Under no lease, because none covers
+        and the token keeps until the window lifts. Always after the ceilings of the
+        records involved, never before them. Under no lease, because none covers
         the ledger and one that did would queue every consultation behind every other:
         turns that start together are each admitted on the same total, so the day can
         end as many turns past its ceiling as were already running. That is the bound

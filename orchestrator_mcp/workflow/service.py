@@ -51,7 +51,7 @@ from ..consult.errors import ConsultErrorCode
 from ..consult.prompts import compile_execution_prompt
 from ..consult.store import _UNATTRIBUTED, ConsultStore, StoreError
 from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
-from ..estimate import ceiling_warning, day_warning, for_agents, warnings
+from ..estimate import ceiling_warning, day_warning, for_agents, joined_warnings
 from ..log import get_logger
 from ..review.contract import SERIOUS, ReviewSummary, open_serious
 from ..review.service import ReviewService
@@ -412,7 +412,7 @@ class WorkflowService:
                 review_id=review_id,
                 estimates=estimates,
                 estimated_cost_usd=estimated,
-                ceiling_warning=warnings(
+                ceiling_warning=joined_warnings(
                     ceiling_warning(
                         known, estimated, self.config.spend.max_cost_usd_per_workflow,
                         f"workflow `{workflow.id}`",
@@ -518,6 +518,12 @@ class WorkflowService:
                 # the one thing `_within_ceiling` exists to promise it will not.
                 if row.review_id is not None:
                     await self.reviews.within_ceiling(row.review_id)
+                # The day's last, after every record's, and before the token for the
+                # same reason as the two above. It is the one ceiling that lifts by
+                # waiting, so a step told when to try again must not then meet one that
+                # never lifts. A contained `isolated_write` run records no turn of its
+                # own, so this is the only check it meets and the day never counts it.
+                await self.consult.within_day()
                 await self.store.consume_step_token(step_id, workflow_id, confirm_token)
                 async with self._finished(step_id):
                     log.info(
@@ -553,10 +559,6 @@ class WorkflowService:
         not be decided on a total another step is still adding to. Reviewers count
         towards the workflow's ceiling as well as their review's own, because the
         workflow is what paid for them.
-
-        The day's ceiling is asked here too, for every step a delegated agent runs. A
-        contained `isolated_write` run records no turn of its own, so this is the only
-        check it meets, and what it spends never counts toward the day.
         """
         message = spend_refusal(
             await self.consult.store.workflow_usage(workflow_id),
@@ -567,7 +569,6 @@ class WorkflowService:
         if message is not None:
             log.warning("workflow %s refused: %s", workflow_id, message)
             raise WorkflowError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
-        await self.consult.within_day()
 
     async def _run_step(
         self, started: float, workflow: WorkflowRun, row: StepRow, token: str

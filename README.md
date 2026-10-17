@@ -1342,8 +1342,10 @@ moment enough of the counted turns are more than a day old.
 Three limits. No lock covers the whole ledger, so turns that start at the same moment
 are each admitted on the same total, and the day can end as many turns past its
 ceiling as were already running -- a fan-out of five reviewers is still one request.
-Deleting history deletes its turns from the count. And a contained `isolated_write`
-run records no turn of its own today, so the day can refuse one but does not count it.
+Deleting history deletes its turns from the count, so the day bounds a host that runs
+out of turns, not one that deletes its own history to get more. And a contained
+`isolated_write` run records no turn of its own today, so the day can refuse one but
+does not count it.
 
 **Plans carry an estimate.** A review plan and a workflow step preview show
 `estimates` (tokens and cost per agent) and `estimated_cost_usd`, fitted from that

@@ -2626,6 +2626,59 @@ async def to_review(service, repo) -> tuple[str, str, str, str]:
     return workflow_id, step_id, token, _review_id(await service.store.steps(workflow_id))
 
 
+async def test_a_review_step_past_its_reviews_ceiling_and_the_days_is_told_about_the_review(
+    build, repo
+):
+    """The day last at this door too, after every record's ceiling: it is the one that
+    lifts by waiting. Asked before the review's own, a step whose review had reached its
+    ceiling was told when the day lifts, and refused then by a ceiling that never does."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(FINDINGS),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(RESEARCH),
+        },
+        bindings={"research": {"agent": "flash"}},
+        spend={"max_turns_per_day": 1},
+    )
+    # The research step is the day's one turn.
+    workflow_id, step_id, token, _ = await to_review(service, repo)
+
+    async def reached(review_id):
+        # Held at the seam, as in the token test above: a fresh review has spent nothing.
+        raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, "review ceiling reached")
+
+    service.reviews.within_ceiling = reached  # type: ignore[method-assign]
+
+    response = await service.run_step(workflow_id, step_id, token)
+
+    assert response.error is not None
+    assert response.error.message == "review ceiling reached"
+
+
+async def test_a_workflow_review_run_directly_past_both_is_told_about_the_workflow(
+    build, repo
+):
+    """The review's door into the same order: its own ceiling, the workflow's, then the
+    day's. The research step spent $2.00 of the workflow's $1.00 and the day's one turn."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(FINDINGS),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(RESEARCH, cost_usd=2.0),
+        },
+        bindings={"research": {"agent": "flash"}},
+        spend={"max_cost_usd_per_workflow": 1.0, "max_turns_per_day": 1},
+    )
+    _, _, token, review_id = await to_review(service, repo)
+
+    direct = await service.reviews.run(review_id, token)
+
+    assert direct.error is not None
+    assert direct.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "$2.00 of its $1.00 ceiling" in direct.error.message
+
+
 async def test_a_review_run_directly_takes_the_lease_of_the_workflow_that_owns_it(
     build, repo
 ):

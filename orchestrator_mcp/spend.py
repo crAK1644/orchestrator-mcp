@@ -152,8 +152,17 @@ def _unpriced(keys: Sequence[str]) -> str:
 
 def day_cutoff(now: datetime | None = None) -> str:
     """The oldest `created_at` still inside the window, in the shape the ledger writes,
-    so SQLite comparing the two as text puts them in time order."""
-    return ((now or datetime.now(UTC)) - DAY).isoformat(timespec="seconds")
+    so SQLite comparing the two as text puts them in time order.
+
+    Rounded up to the whole second, not down. The ledger stamps whole seconds, so a
+    turn stamped `T` is more than a day old the instant `now` passes `T + DAY` -- the
+    moment a refusal names. Floored, the cutoff kept counting it for up to a second
+    after that, and a host that tried again when it was told to was refused again.
+    """
+    start = (now or datetime.now(UTC)) - DAY
+    if start.microsecond:
+        start = start.replace(microsecond=0) + timedelta(seconds=1)
+    return start.isoformat(timespec="seconds")
 
 
 def day_refusal(
@@ -206,9 +215,11 @@ def day_refusal(
 def _try_again(created_at: str) -> str:
     """When the turn recorded at `created_at` stops counting.
 
-    It counts while it is no older than a day, so the moment is one past that. Read
-    the way the dashboard reads the same column: a row this server did not write
-    keeps counting, and only the time it lifts goes unsaid.
+    It counts while it is no older than a day, so the moment is one past that. Parsed
+    the way the dashboard parses the same column. Which rows count at all is decided
+    earlier, by `turns_since` comparing text, and that is time order only for the
+    shape `_now` writes -- the only shape the ledger has ever written. A row in another
+    shape is counted or not by its text, and one that does not parse names no time.
     """
     try:
         moment = datetime.fromisoformat(created_at)
