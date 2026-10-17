@@ -51,7 +51,7 @@ from ..consult.errors import ConsultErrorCode
 from ..consult.prompts import compile_execution_prompt
 from ..consult.store import _UNATTRIBUTED, ConsultStore, StoreError
 from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
-from ..estimate import ceiling_warning, for_agents
+from ..estimate import ceiling_warning, day_warning, for_agents, joined_warnings
 from ..log import get_logger
 from ..review.contract import SERIOUS, ReviewSummary, open_serious
 from ..review.service import ReviewService
@@ -391,6 +391,9 @@ class WorkflowService:
         else:
             estimates, estimated = [], None
         known, _ = counted(await self.consult.store.workflow_usage(workflow.id))
+        day = await day_warning(
+            self.consult.store, self.config.spend.max_cost_usd_per_day, estimated
+        )
         return WorkflowResponse(
             workflow_id=workflow.id,
             status=workflow.status,  # type: ignore[arg-type]
@@ -409,9 +412,12 @@ class WorkflowService:
                 review_id=review_id,
                 estimates=estimates,
                 estimated_cost_usd=estimated,
-                ceiling_warning=ceiling_warning(
-                    known, estimated, self.config.spend.max_cost_usd_per_workflow,
-                    f"workflow `{workflow.id}`",
+                ceiling_warning=joined_warnings(
+                    ceiling_warning(
+                        known, estimated, self.config.spend.max_cost_usd_per_workflow,
+                        f"workflow `{workflow.id}`",
+                    ),
+                    day,
                 ),
                 confirm_token=token,
             ),
@@ -512,6 +518,12 @@ class WorkflowService:
                 # the one thing `_within_ceiling` exists to promise it will not.
                 if row.review_id is not None:
                     await self.reviews.within_ceiling(row.review_id)
+                # The day's last, after every record's, and before the token for the
+                # same reason as the two above. It is the one ceiling that lifts by
+                # waiting, so a step told when to try again must not then meet one that
+                # never lifts. A contained `isolated_write` run records no turn of its
+                # own, so this is the only check it meets and the day never counts it.
+                await self.consult.within_day()
                 await self.store.consume_step_token(step_id, workflow_id, confirm_token)
                 async with self._finished(step_id):
                     log.info(

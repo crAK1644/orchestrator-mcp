@@ -14,6 +14,8 @@ from statistics import StatisticsError, fmean, linear_regression, median
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .spend import day_cutoff
+
 # Used when no stored prompt can calibrate the agent: `store_full_content: false`
 # keeps no prompt text, so there is nothing to fit against. A common rule of thumb
 # for English and code, and only ever the fallback.
@@ -106,6 +108,28 @@ def ceiling_warning(
         f"{subject} has spent ${known:.2f} and this is estimated at ${estimated:.2f}, "
         f"which would reach its ${ceiling:.2f} ceiling"
     )
+
+
+async def day_warning(store, ceiling: float | None, estimated: float | None) -> str | None:
+    """`ceiling_warning` for `consult.spend.max_cost_usd_per_day`, against what the last
+    24 hours spent rather than one record. The ledger is read only when there is a
+    ceiling and an estimate to hold against it."""
+    if estimated is None or ceiling is None:
+        return None
+    turns = await store.turns_since(day_cutoff())
+    known = sum(cost for _, cost, _ in turns if cost is not None)
+    if known + estimated < ceiling:
+        return None
+    return (
+        f"the last 24 hours have spent ${known:.2f} and this is estimated at "
+        f"${estimated:.2f}, which would reach the ${ceiling:.2f} daily ceiling"
+    )
+
+
+def joined_warnings(*found: str | None) -> str | None:
+    """Every warning that applies, in the one `ceiling_warning` a plan carries. The
+    record's own ceiling first: it is the one this approval is about."""
+    return "; ".join(w for w in found if w) or None
 
 
 async def for_agents(

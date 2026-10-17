@@ -52,7 +52,7 @@ from ..contract import (
     secret_lines,
     suspect_lines,
 )
-from ..estimate import ceiling_warning, for_agents
+from ..estimate import ceiling_warning, day_warning, for_agents, joined_warnings
 from ..files import read_files
 from ..json_objects import fenced_json_objects, json_object_candidates
 from ..log import get_logger
@@ -309,6 +309,9 @@ class ReviewService:
             [(s.agent_id, s.model) for s in snapshots],
             len(goal) + len(context or ""),
         )
+        day = await day_warning(
+            self.consult.store, self.config.spend.max_cost_usd_per_day, estimated
+        )
         seen: dict[str, int] = {}
         for snapshot in snapshots:
             seen[snapshot.model] = seen.get(snapshot.model, 0) + 1
@@ -336,8 +339,11 @@ class ReviewService:
             reviewers_skipped=skipped,
             estimates=estimates,
             estimated_cost_usd=estimated,
-            ceiling_warning=ceiling_warning(
-                0.0, estimated, self.config.spend.max_cost_usd_per_review, "this review"
+            ceiling_warning=joined_warnings(
+                ceiling_warning(
+                    0.0, estimated, self.config.spend.max_cost_usd_per_review, "this review"
+                ),
+                day,
             ),
             escalate=escalate,
         )
@@ -576,6 +582,11 @@ class ReviewService:
         async with self._workflow_serialized(review):
             await self.within_ceiling(review.id)
             await self._within_workflow_ceiling(review)
+            # The day's last, after both records': it is the one ceiling that lifts by
+            # waiting, so a host told when to try again must not be refused then by one
+            # that never lifts. It is also the one that can refuse a first run -- a
+            # fresh review for every change is the stream it is there to bound.
+            await self.consult.within_day()
 
             results = await self._batch(
                 review,
@@ -645,6 +656,7 @@ class ReviewService:
         async with self._workflow_serialized(review):
             await self.within_ceiling(review.id)
             await self._within_workflow_ceiling(review)
+            await self.consult.within_day()  # last, for the reason `_run` gives
             if not await self.store.transition(review.id, "running", RETRYABLE):
                 raise ValueError(
                     f"review `{review.id}` is `{review.status}` and cannot be retried from there"

@@ -7,7 +7,13 @@ and one unpriced reviewer makes the total `None` rather than a floor.
 
 from __future__ import annotations
 
-from orchestrator_mcp.estimate import TOKENS_PER_CHAR, ceiling_warning, estimate, total
+from orchestrator_mcp.estimate import (
+    TOKENS_PER_CHAR,
+    ceiling_warning,
+    day_warning,
+    estimate,
+    total,
+)
 
 from .test_review_service import REVIEWERS, StubAdapter, build, planned  # noqa: F401
 
@@ -109,3 +115,45 @@ async def test_an_estimate_over_the_review_ceiling_is_flagged(build):
     plan = (await planned(service)).plan
 
     assert plan.ceiling_warning and "ceiling" in plan.ceiling_warning
+
+
+async def test_an_estimate_that_would_reach_the_day_is_flagged_beside_the_reviews_own(build):
+    """Every ceiling the plan would reach, in its one field: the review's own first,
+    since that is the one this approval is about, then the day's. Three $0.50 turns
+    already spent, and a fourth estimated from them, reaches $2.00 exactly."""
+    service = await build(
+        {aid: StubAdapter(cost_usd=0.5) for aid in REVIEWERS},
+        spend={"max_cost_usd_per_review": 0.25, "max_cost_usd_per_day": 2.0},
+    )
+    await _history(service)
+
+    plan = (await planned(service)).plan
+
+    assert plan.estimated_cost_usd == 0.5
+    assert plan.ceiling_warning == (
+        "this review has spent $0.00 and this is estimated at $0.50, which would reach its "
+        "$0.25 ceiling; the last 24 hours have spent $1.50 and this is estimated at $0.50, "
+        "which would reach the $2.00 daily ceiling"
+    )
+
+
+async def test_an_estimate_short_of_the_day_is_not_flagged(build):
+    service = await build(
+        {aid: StubAdapter(cost_usd=0.5) for aid in REVIEWERS},
+        spend={"max_cost_usd_per_day": 2.01},
+    )
+    await _history(service)
+
+    assert (await planned(service)).plan.ceiling_warning is None
+
+
+async def test_the_day_warning_reads_the_ledger_only_when_it_could_warn():
+    """No ceiling, or nothing to estimate with, is no warning -- and no read of a
+    ledger whose answer nothing would use."""
+
+    class Unread:
+        async def turns_since(self, since):
+            raise AssertionError("the window was read with nothing to hold it against")
+
+    assert await day_warning(Unread(), None, 0.5) is None
+    assert await day_warning(Unread(), 2.0, None) is None

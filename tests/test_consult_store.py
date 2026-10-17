@@ -171,6 +171,63 @@ async def test_usage_is_rebuilt_from_every_recorded_turn(store):
     }
 
 
+async def _recorded_at(store, turn_id: int, stamp: str) -> None:
+    await store._run(
+        lambda: store._db.execute(
+            "UPDATE consultation_turns SET created_at = ? WHERE id = ?", (stamp, turn_id)
+        )
+    )
+
+
+async def test_the_day_window_is_every_turn_since_the_cutoff_by_time(store):
+    """Every turn whichever consultation holds it, at or after `since`, oldest first by
+    when it was recorded. Not by id: the rule reads a turn's position as its age, and a
+    ledger whose ids and times disagree -- a clock stepped back, a restored file -- must
+    still come back in time order or the refusal names the wrong moment."""
+    claude = ROUTE.model_copy(update={"agent_id": "claude-opus", "runtime": "claude"})
+    codex_id, claude_id = await new_consultation(store), await new_consultation(store, route=claude)
+    for consultation_id, sequence, cost in ((codex_id, 1, 0.5), (claude_id, 1, None), (codex_id, 2, 0.25)):
+        await store.record_turn(
+            consultation_id, sequence, SourceMode.MODEL, "q", None, "compiled", cost_usd=cost
+        )
+    # Ids 1, 2 and 3, with the newest id given the oldest time.
+    await _recorded_at(store, 1, "2026-10-17T10:00:00+00:00")
+    await _recorded_at(store, 2, "2026-10-17T11:00:00+00:00")
+    await _recorded_at(store, 3, "2026-10-17T09:00:00+00:00")
+
+    assert await store.turns_since("2026-10-17T09:00:00+00:00") == [
+        ("2026-10-17T09:00:00+00:00", 0.25, "codex-sol"),
+        ("2026-10-17T10:00:00+00:00", 0.5, "codex-sol"),
+        ("2026-10-17T11:00:00+00:00", None, "claude-opus"),
+    ]
+    # At or after, which is how `usage --days` reads the same column: the turn exactly
+    # at the cutoff is inside, and a second later it is not.
+    assert [when for when, _, _ in await store.turns_since("2026-10-17T09:00:01+00:00")] == [
+        "2026-10-17T10:00:00+00:00",
+        "2026-10-17T11:00:00+00:00",
+    ]
+
+
+async def test_the_day_window_is_read_through_its_index(store):
+    """`created_at` sits after the prompt and answer columns, so without the index each
+    read walks every stored body to reach it: 106 ms a check over 10,000 ordinary turns,
+    against 2.5 ms through it. Asserted on the plan SQLite chose for the query the store
+    really runs, since a timing would be a flaky test of the same fact."""
+    seen: list[str] = []
+    await store._run(lambda: store._db.set_trace_callback(seen.append))
+    await store.turns_since("2026-10-17T09:00:00+00:00")
+    await store._run(lambda: store._db.set_trace_callback(None))
+    [query] = [statement for statement in seen if "consultation_turns" in statement]
+
+    plan = await store._run(
+        lambda: [row[3] for row in store._db.execute(f"EXPLAIN QUERY PLAN {query}")]
+    )
+
+    assert any("USING INDEX consultation_turns_created_at_idx" in line for line in plan), plan
+    # The order comes from the index too, rather than from a sort of the whole window.
+    assert not any("TEMP B-TREE" in line for line in plan), plan
+
+
 # --- consultation deletion -------------------------------------------------
 
 

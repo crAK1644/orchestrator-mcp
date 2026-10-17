@@ -56,6 +56,11 @@ def test_the_block_parses_with_defaults():
         ),
         pytest.param(consult_block(protocol_version="consult-v2"), id="wrong protocol"),
         pytest.param(consult_block(timeout_s=0), id="zero timeout"),
+        # A ceiling of nothing would refuse every turn, which no one means by writing it.
+        pytest.param(consult_block(spend={"max_turns_per_day": 0}), id="a daily turn ceiling of 0"),
+        pytest.param(
+            consult_block(spend={"max_cost_usd_per_day": 0}), id="a daily dollar ceiling of 0"
+        ),
         pytest.param(consult_block(dashboard={"host": "0.0.0.0"}), id="non-loopback dashboard"),
         pytest.param(consult_block(unknown_key=True), id="unknown top-level key"),
         # `Path("")` is `Path(".")`, and the merge used to read the default file while
@@ -169,6 +174,7 @@ def test_the_config_hash_tracks_the_agents_and_not_their_order():
         pytest.param(
             {"spend": {"max_turns_per_review": 4}}, id="a spend ceiling where there was none"
         ),
+        pytest.param({"spend": {"max_turns_per_day": 40}}, id="a daily ceiling"),
         pytest.param({"workflow": {"max_fix_rounds": 2}}, id="a different fix round cap"),
     ],
 )
@@ -280,6 +286,7 @@ def test_the_example_config_still_loads(tmp_path):
     assert config.agents["copilot"].runtime == "copilot"
     assert config.review.reviewers == ["codex-sol"]
     assert config.dashboard.enabled is False
+    assert (config.spend.max_cost_usd_per_day, config.spend.max_turns_per_day) == (20.0, 100)
 
 
 # --- per-agent timeout ------------------------------------------------------

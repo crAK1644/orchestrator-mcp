@@ -27,6 +27,7 @@ from ..contract import MAX_ERROR_CHARS, Usage, redact, scrub_json
 from ..files import read_files
 from ..log import get_logger
 from ..progress import step as progress_step
+from ..spend import day_cutoff, day_refusal
 from ..spend import refusal as spend_refusal
 from ..workflow.contract import StepSnapshot
 from ..workflow.identity import host_identity_conflict
@@ -331,6 +332,14 @@ class ConsultService:
                            ConsultErrorCode.PROTOCOL_VALIDATION_FAILED, str(exc), started)
 
         try:
+            if review_owner is None and request.consultation_id is None:
+                # A new consultation, whose first turn only the day can refuse. Asked
+                # before the bind, which creates the row: refused after it, each refusal
+                # would leave a consultation behind that never held a turn. `_turn`
+                # asks again, as it does for every turn, so the one way a row is still
+                # left is the race `within_day` names -- two fresh consultations both
+                # admitted here for the last turn of the day, and the second refused there.
+                await self.within_day()
             consultation, route, agent, resuming = await (
                 self._bind_review(request, capability, review_owner)
                 if review_owner is not None
@@ -695,20 +704,60 @@ class ConsultService:
         Keyed by agent id so `refusal` can name who spent unpriced -- there is only
         ever one agent on a consultation, which is what makes the map a formality here
         and the whole answer for a review.
+
+        The day's ceiling is asked here too, after the consultation's own, as it is
+        last at every door: it is the one ceiling that lifts by waiting. A consultation
+        that has reached both is told about its own, since a host told when the day
+        lifts would only be refused then by a ceiling that never does.
         """
         spend = await self.store.consultation_spend(consultation_id)
-        if spend is None:
-            # No turns yet, so nothing spent and nothing to refuse. A ceiling stops
-            # the turn after one is reached; it never stops the first.
-            return
-        message = spend_refusal(
-            {agent.agent_id: spend},
-            self.config.spend.max_cost_usd_per_consultation,
-            f"consultation `{consultation_id}`",
-            self.config.spend.max_turns_per_consultation,
+        # No turns yet is nothing spent, so nothing for the consultation's own ceiling
+        # to refuse. A ceiling stops the turn after one is reached; it never stops the
+        # first.
+        message = (
+            None
+            if spend is None
+            else spend_refusal(
+                {agent.agent_id: spend},
+                self.config.spend.max_cost_usd_per_consultation,
+                f"consultation `{consultation_id}`",
+                self.config.spend.max_turns_per_consultation,
+            )
         )
         if message is not None:
             log.warning("consultation %s refused: %s", consultation_id, message)
+            raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
+        await self.within_day()
+
+    async def within_day(self) -> None:
+        """Refuse every further turn once the last 24 hours reach `consult.spend`'s
+        daily ceilings.
+
+        The one ceiling that can refuse a first turn. Each of the others belongs to a
+        record and refuses only once that record has spent, so a host that opens a
+        fresh consultation for every question -- or plans a fresh review -- never meets
+        any of them. This one counts the whole ledger, whichever record owns a turn.
+
+        Asked by `_within_ceiling` before every turn, by `_consult` before a new
+        consultation's row exists, and -- public for this -- by the review and
+        workflow layers before they spend a token, where a refusal still costs nothing
+        and the token keeps until the window lifts. Always after the ceilings of the
+        records involved, never before them. Under no lease, because none covers
+        the ledger and one that did would queue every consultation behind every other:
+        turns that start together are each admitted on the same total, so the day can
+        end as many turns past its ceiling as were already running. That is the bound
+        a fan-out of reviewers already has.
+        """
+        spend = self.config.spend
+        if spend.max_cost_usd_per_day is None and spend.max_turns_per_day is None:
+            return
+        message = day_refusal(
+            await self.store.turns_since(day_cutoff()),
+            spend.max_cost_usd_per_day,
+            spend.max_turns_per_day,
+        )
+        if message is not None:
+            log.warning("turn refused: %s", message)
             raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
 
     async def _turn(
