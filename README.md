@@ -1272,7 +1272,7 @@ Both the MCP server and dashboard read configuration at startup. Restart them to
 | `review` | absent | Configured reviewers; absent means no review tools. |
 | `workflow` | absent | The three-phase workflow; absent means no workflow tools. Requires `store_full_content: true`. |
 | `host` | runtime from the environment | Asserted host runtime, and the host model that makes same-runtime routing possible. |
-| `spend` | no ceiling | Dollar and turn ceilings, per consultation, per review, and per workflow. See below. |
+| `spend` | no ceiling | Dollar and turn ceilings, per consultation, per review, per workflow, and over any 24 hours. See below. |
 | `dashboard` | off | Loopback history UI (`host`, `port`) and optional agent editor. See [Local dashboard](#local-dashboard). |
 
 ### Spending ceilings
@@ -1286,9 +1286,11 @@ consult:
     max_turns_per_consultation: 8
     max_turns_per_review: 12
     max_turns_per_workflow: 40
+    max_cost_usd_per_day: 20.0
+    max_turns_per_day: 100
 ```
 
-All six are optional and all are absent by default, which is no ceiling and no change
+All eight are optional and all are absent by default, which is no ceiling and no change
 in behavior. A consultation's ceiling is checked before each turn on it; a review's
 before each round of reviewers; a workflow's before each step, reviewers included,
 since the workflow is what paid for them. The check happens before the one-time token
@@ -1319,8 +1321,29 @@ bound the work that money cannot see. They are checked at the same moments, refu
 the same error code, and count the same way spend does: rebuilt from the turn ledger, so
 a retried reviewer counts every attempt exactly once.
 
-A consultation with no turns yet is never refused. Nothing has been spent on it, so
-there is no ceiling for it to have reached -- what these stop is the turn after one.
+A consultation with no turns yet is never refused by its own ceilings. Nothing has been
+spent on it, so there is no ceiling for it to have reached -- what these stop is the
+turn after one.
+
+**The day pair bounds everything together.** Each ceiling above belongs to one
+consultation, review or workflow, and none of them refuses that record's first turn,
+so a host that opens a fresh consultation for every question, or plans a fresh review
+for every change, spends past all six without reaching any. `max_cost_usd_per_day` and
+`max_turns_per_day` count every turn recorded in the last 24 hours -- rolling, not a
+calendar day -- whichever tool asked for it, and count it the way the others do:
+failed turns included, unpriced agents named. They are checked before every turn, a
+new consultation's first one included, and before a review's or a workflow step's
+token is spent, so a refusal costs nothing there either. Each record's own ceilings
+are asked first: a consultation that has reached both is told about its own, since
+waiting would not help it. The day's refusal says when the next turn can run: the
+moment enough of the counted turns are more than a day old.
+`orchestrator-mcp-server usage --days 1` shows what the window holds now.
+
+Three limits. No lock covers the whole ledger, so turns that start at the same moment
+are each admitted on the same total, and the day can end as many turns past its
+ceiling as were already running -- a fan-out of five reviewers is still one request.
+Deleting history deletes its turns from the count. And a contained `isolated_write`
+run records no turn of its own today, so the day can refuse one but does not count it.
 
 **Plans carry an estimate.** A review plan and a workflow step preview show
 `estimates` (tokens and cost per agent) and `estimated_cost_usd`, fitted from that
@@ -1328,8 +1351,8 @@ agent's last 50 successful turns on the same model. It is an estimate, not a quo
 `basis_turns` says how many turns it rests on, an agent with no history gets none,
 and the cost is `null` for an agent with fewer than 3 priced turns -- so the total is
 `null` whenever any agent is unpriced, the same rule as above. When the estimate would
-reach a dollar ceiling the plan says so in `ceiling_warning`. That is advice only;
-refusals still read what was actually spent.
+reach a dollar ceiling, the record's own or the day's, the plan says so in
+`ceiling_warning`. That is advice only; refusals still read what was actually spent.
 
 ### Watching a run
 

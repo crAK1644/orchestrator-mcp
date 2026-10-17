@@ -9,6 +9,7 @@ rather than quietly becoming a different one.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -643,6 +644,164 @@ async def test_a_review_or_workflow_ceiling_does_not_bound_a_plain_consultation(
         capability="coding", prompt="q2", consultation_id=first.consultation_id
     )
     assert first.ok and second.ok
+
+
+# --- the day's ceiling ------------------------------------------------------
+#
+# The scope the record ceilings cannot see. Each of them belongs to one consultation,
+# review or workflow and never refuses its first turn, so a host that opens a fresh
+# consultation for every question spends past all of them without reaching one.
+
+
+async def _recorded_ago(service, delta: timedelta) -> None:
+    """Move every turn on record back to `delta` before now."""
+    stamp = (datetime.now(UTC) - delta).isoformat(timespec="seconds")
+    await service.store._run(
+        lambda: service.store._db.execute("UPDATE consultation_turns SET created_at = ?", (stamp,))
+    )
+
+
+async def test_fresh_consultations_step_around_every_record_ceiling(service_factory):
+    """The gap, from the outside: a ceiling of one turn on every kind of record, and
+    every fresh consultation still answers."""
+    service = await service_factory(
+        spend={
+            "max_turns_per_consultation": 1,
+            "max_turns_per_review": 1,
+            "max_turns_per_workflow": 1,
+        }
+    )
+    for _ in range(5):
+        assert (await service.consult(capability="coding", prompt="q")).ok
+
+
+async def test_the_day_refuses_a_first_turn(service_factory):
+    adapter = StubAdapter()
+    service = await service_factory(adapter, spend={"max_turns_per_day": 2})
+
+    first = await service.consult(capability="coding", prompt="q1")
+    second = await service.consult(capability="coding", prompt="q2")
+    third = await service.consult(capability="coding", prompt="q3")
+
+    assert first.ok and second.ok
+    assert not third.ok
+    assert third.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "the last 24 hours have used 2 of the 2 daily turn ceiling" in third.error.message
+    # The refused turn never reached the CLI.
+    assert [c[0] for c in adapter.calls] == ["start", "start"]
+
+
+async def test_a_first_turn_the_day_refuses_leaves_no_consultation_behind(service_factory):
+    """Refused before the bind, which is what creates the row: after it, every refusal
+    would leave a consultation in the history that never held a turn."""
+    service = await service_factory(spend={"max_turns_per_day": 1})
+    await service.consult(capability="coding", prompt="q1")
+
+    refused = await service.consult(capability="coding", prompt="q2")
+
+    assert refused.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert refused.consultation_id is None
+    assert len(await service.list_consultations(100)) == 1
+    # Nor a turn, which would count toward the very ceiling that refused it.
+    assert len(await service.store.turns_since("")) == 1
+
+
+async def test_the_day_counts_every_consultation_and_refuses_a_resume(service_factory):
+    service = await service_factory(spend={"max_turns_per_day": 2})
+    first = await service.consult(capability="coding", prompt="q1")
+    assert (await service.consult(capability="coding", prompt="q2")).ok
+
+    resumed = await service.consult(
+        capability="coding", prompt="q3", consultation_id=first.consultation_id
+    )
+
+    assert resumed.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert resumed.consultation_id == first.consultation_id
+    assert len(await service.store.turns(first.consultation_id)) == 1
+
+
+async def test_a_resume_past_its_own_ceiling_and_the_days_is_told_about_its_own(
+    service_factory,
+):
+    """Narrowest first, the order the review and workflow checks keep. The day's
+    refusal names a time to try again, and at that time the consultation's own ceiling
+    would refuse it anyway -- so the one worth reading is its own."""
+    service = await service_factory(
+        spend={"max_turns_per_consultation": 1, "max_turns_per_day": 1}
+    )
+    first = await service.consult(capability="coding", prompt="q1")
+
+    resumed = await service.consult(
+        capability="coding", prompt="q2", consultation_id=first.consultation_id
+    )
+
+    assert resumed.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert resumed.error.message.startswith(
+        f"consultation `{first.consultation_id}` has used 1 of its 1 turn ceiling"
+    )
+
+
+async def test_a_dollar_ceiling_bounds_the_day_and_says_when_it_lifts(service_factory):
+    """$0.75 and $0.75 against $1.00: the oldest turn ageing out leaves $0.75, so the
+    moment it does is the moment the next turn can run, and the refusal says which."""
+    service = await service_factory(
+        StubAdapter(cost_usd=0.75), spend={"max_cost_usd_per_day": 1.0}
+    )
+    first = await service.consult(capability="coding", prompt="q1")
+    assert (await service.consult(capability="coding", prompt="q2")).ok
+
+    third = await service.consult(capability="coding", prompt="q3")
+
+    assert third.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "$1.50 of the $1.00 daily ceiling" in third.error.message
+    [oldest] = await service.store.turns(first.consultation_id)
+    lifts = datetime.fromisoformat(oldest.created_at) + timedelta(hours=24)
+    assert third.error.message.endswith(f"try again after {lifts:%Y-%m-%d %H:%M:%S} UTC")
+
+
+async def test_a_turn_more_than_a_day_old_no_longer_counts(service_factory):
+    service = await service_factory(spend={"max_turns_per_day": 1})
+    await service.consult(capability="coding", prompt="q1")
+    assert not (await service.consult(capability="coding", prompt="q2")).ok
+
+    await _recorded_ago(service, timedelta(hours=23, minutes=59))
+    assert not (await service.consult(capability="coding", prompt="q3")).ok
+
+    await _recorded_ago(service, timedelta(hours=24, minutes=1))
+    assert (await service.consult(capability="coding", prompt="q4")).ok
+
+
+async def test_raising_the_day_lets_the_next_turn_run(service_factory):
+    service = await service_factory(spend={"max_turns_per_day": 1})
+    await service.consult(capability="coding", prompt="q1")
+    assert not (await service.consult(capability="coding", prompt="q2")).ok
+
+    service.config.spend.max_turns_per_day = 2
+
+    assert (await service.consult(capability="coding", prompt="q3")).ok
+
+
+async def test_a_panel_is_refused_when_the_day_is_spent(service_factory):
+    """Each member is a consultation, so each is asked on its way in."""
+    service = await service_factory(agents=PANEL, spend={"max_turns_per_day": 1})
+    await service.consult(capability="coding", prompt="q", target_agent="codex-sol")
+
+    panel = await service.consult_many(capability="coding", prompt="q", count=2)
+
+    assert [r.error.code for r in panel.results] == [ConsultErrorCode.SPEND_LIMIT_REACHED] * 2
+
+
+async def test_without_a_day_ceiling_the_ledger_is_not_read(service_factory):
+    """No behavior change for a config that sets none, down to the query: every turn
+    would otherwise pay for a read whose answer nothing uses."""
+    service = await service_factory(spend={"max_turns_per_consultation": 5})
+
+    async def unread(since):
+        raise AssertionError("the window was read with no daily ceiling configured")
+
+    service.store.turns_since = unread  # type: ignore[method-assign]
+
+    assert (await service.consult(capability="coding", prompt="q")).ok
 
 
 # --- a panel ------------------------------------------------------------------

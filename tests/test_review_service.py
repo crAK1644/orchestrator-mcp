@@ -28,7 +28,7 @@ from orchestrator_mcp.consult.contract import (
     SourceMode,
 )
 from orchestrator_mcp.consult.errors import ConsultErrorCode
-from orchestrator_mcp.consult.store import ConsultStore
+from orchestrator_mcp.consult.store import ConsultStore, StoreError
 from orchestrator_mcp.contract import Usage
 from orchestrator_mcp.review.contract import (
     MAX_GOAL_CHARS,
@@ -1386,3 +1386,85 @@ async def test_no_spend_block_means_no_ceiling(build):
 
     assert again.error is None
     assert again.usage.cost_usd is None  # the retried reviewer is still unpriced
+
+
+async def test_the_day_refuses_a_first_review_run_and_keeps_its_token(build):
+    """A fresh review has spent nothing, so its own ceiling never refuses one -- a
+    stream of fresh reviews is exactly what the day's ceiling is there to bound. Asked
+    before the token is spent, so the same approval runs once the day allows it."""
+    adapters = {aid: StubAdapter() for aid in REVIEWERS}
+    service = await build(adapters, spend={"max_turns_per_day": 1})
+    asked = await service.consult.consult(
+        capability="coding", prompt="q", target_agent="codex-sol"
+    )
+    assert asked.ok
+    plan = await planned(service)
+    sent = len(adapters["codex-sol"].prompts)
+
+    response = await service.run(plan.review_id, plan.plan.confirm_token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "1 of the 1 daily turn ceiling" in response.error.message
+    assert len(adapters["codex-sol"].prompts) == sent
+    service.consult.config.spend.max_turns_per_day = 10
+    assert (await service.run(plan.review_id, plan.plan.confirm_token)).error is None
+
+
+async def test_a_reviewers_turns_count_toward_the_day(build):
+    """Spend is spend whichever tool asked for it. A day counted over plain
+    consultations alone would let a host route the same money through reviews."""
+    service = await build(spend={"max_turns_per_day": 1})
+    plan = await planned(service)
+    assert (await service.run(plan.review_id, plan.plan.confirm_token)).error is None
+
+    asked = await service.consult.consult(
+        capability="coding", prompt="q", target_agent="codex-sol"
+    )
+
+    assert asked.error is not None
+    assert asked.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+
+
+async def test_a_retry_the_day_refuses_sends_nothing(build):
+    working = StubAdapter()
+    broken = StubAdapter(error=AdapterError(ConsultErrorCode.TIMEOUT, "slow"))
+    service = await build({"codex-sol": working, "gemini-x": broken}, spend={"max_turns_per_day": 2})
+    plan = await planned(service, mode="deep")
+    await service.run(plan.review_id, plan.plan.confirm_token, host_findings=["mine"])
+    sent = len(broken.prompts)
+
+    again = await service.retry(plan.review_id)
+
+    assert again.error is not None
+    assert again.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "2 of the 2 daily turn ceiling" in again.error.message
+    assert len(broken.prompts) == sent
+
+
+async def test_a_reviewer_the_day_refuses_mid_review_fails_alone(build):
+    """The race the up-front check cannot close: another consultation spends the last
+    of the day between the review being admitted and one reviewer's turn. That
+    reviewer is refused on its way in and the other keeps its answer."""
+    adapters = {aid: StubAdapter() for aid in REVIEWERS}
+    service = await build(adapters, spend={"max_turns_per_day": 2})
+    plan = await planned(service, mode="deep")
+    real = service.consult.within_day
+    calls = 0
+
+    async def spent_by_someone_else():
+        # The review's own check, then the first reviewer's, are admitted; the second
+        # reviewer finds the day spent.
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, "the day ran out")
+        return await real()
+
+    service.consult.within_day = spent_by_someone_else  # type: ignore[method-assign]
+
+    response = await service.run(plan.review_id, plan.plan.confirm_token, host_findings=["mine"])
+
+    assert response.outcome == "some"
+    [refused] = [r for r in response.results if not r.ok]
+    assert refused.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED

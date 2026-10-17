@@ -2255,6 +2255,98 @@ async def test_a_workflow_with_no_ceiling_is_unchanged(build, repo):
     assert (await service.run_step(workflow_id, plan_id, plan_token)).error is None
 
 
+async def test_the_day_refuses_a_step_before_its_token_is_spent(build, repo):
+    """Asked where the workflow's own ceiling is: under the lease and before the token.
+    The step's own turn would be refused on its way in either way, but by then the
+    token is gone and the approval with it."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(RESEARCH),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(PLAN),
+        },
+        bindings={"research": {"agent": "codex-sol"}, "plan": {"agent": "flash"}},
+        spend={"max_turns_per_day": 1},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    assert (await service.run_step(workflow_id, research_id, research_token)).error is None
+    plan_id, plan_token = await step(service, workflow_id, "plan")
+    sent = len(service.adapters["flash"].prompts)
+
+    response = await service.run_step(workflow_id, plan_id, plan_token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert "1 of the 1 daily turn ceiling" in response.error.message
+    assert len(service.adapters["flash"].prompts) == sent
+    # And the token still opens the step it approved, once the day allows it.
+    service.config.spend.max_turns_per_day = 10
+    assert (await service.run_step(workflow_id, plan_id, plan_token)).error is None
+
+
+async def test_a_step_the_day_refuses_on_its_way_in_sends_nothing(build, repo):
+    """The race the up-front check cannot close: no lease covers the whole ledger, so
+    another consultation can spend the last of the day between the step being admitted
+    and its turn starting. The turn asks again, and the CLI is never reached."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(RESEARCH),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(PLAN),
+        },
+        bindings={"research": {"agent": "codex-sol"}},
+        spend={"max_turns_per_day": 5},
+    )
+    workflow_id = await started(service, repo)
+    research_id, research_token = await step(service, workflow_id, "research")
+    real = service.consult.within_day
+    asked = 0
+
+    async def spent_in_between():
+        nonlocal asked
+        asked += 1
+        if asked > 1:  # the workflow's own check passes; the turn's finds the day gone
+            raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, "the day ran out")
+        return await real()
+
+    service.consult.within_day = spent_in_between  # type: ignore[method-assign]
+
+    response = await service.run_step(workflow_id, research_id, research_token)
+
+    assert response.error is not None
+    assert response.error.code is ConsultErrorCode.SPEND_LIMIT_REACHED
+    assert service.adapters["codex-sol"].prompts == []
+
+
+async def test_a_step_preview_warns_when_its_estimate_would_reach_the_day(build, repo):
+    """Three $0.50 turns already spent against $2.00, and a step estimated at $0.50
+    from those same turns: the preview says so before anyone approves it."""
+    service = await build(
+        adapters={
+            "codex-sol": StubAdapter(RESEARCH, cost_usd=0.5),
+            "opus-agent": StubAdapter(),
+            "flash": StubAdapter(PLAN),
+        },
+        bindings={"research": {"agent": "codex-sol"}},
+        spend={"max_cost_usd_per_day": 2.0},
+    )
+    for _ in range(3):
+        asked = await service.consult.consult(
+            capability="research", prompt="q", target_agent="codex-sol"
+        )
+        assert asked.ok
+    workflow_id = await started(service, repo)
+
+    preview = (await service.plan_step(workflow_id, "research")).preview
+
+    assert preview.estimated_cost_usd == 0.5
+    assert preview.ceiling_warning == (
+        "the last 24 hours have spent $1.50 and this is estimated at $0.50, which would "
+        "reach the $2.00 daily ceiling"
+    )
+
+
 async def test_a_free_reviewer_does_not_hide_what_the_paid_one_cost(build, repo):
     """One unpriced turn must not erase the money that *was* counted.
 

@@ -8,6 +8,13 @@ One line per change a user would notice. The full notes for each version are on 
 - The scorecard counts an open finding as kept once a fix round recorded after finalize
   names it as `applied` or `partial`. A later `reverted` round undoes that. Until now a fix
   recorded after finalize never left the `open` column.
+- `consult.spend` takes `max_cost_usd_per_day` and `max_turns_per_day`, which count every
+  turn recorded in the last 24 hours, whichever tool asked for it. The other six ceilings
+  each bound one consultation, review or workflow and never refuse its first turn, so a
+  host that opened a fresh consultation for every question spent past all of them. The
+  refusal says when the next turn can run, and a plan whose estimate would reach the day's
+  dollar ceiling says so in `ceiling_warning`. Turns are now indexed by when they were
+  recorded, so the check reads only the last day's.
 
 ## 0.12.0 — 2026-10-08
 

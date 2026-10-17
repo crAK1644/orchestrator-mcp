@@ -230,7 +230,8 @@ class HostConfig(BaseModel):
 
 
 class SpendPolicy(BaseModel):
-    """Ceilings on what one consultation, one review, or one workflow may cost.
+    """Ceilings on what one consultation, one review, or one workflow may cost, and on
+    what everything together may cost in any 24 hours.
 
     All absent by default, which is no ceiling and no behavior change.
 
@@ -249,6 +250,10 @@ class SpendPolicy(BaseModel):
     Set a turn ceiling as well as a dollar one if the routing includes an agent on a
     flat-rate plan. Those report no per-turn price, and a dollar ceiling can only
     count what was priced -- over agents that price nothing it never leaves $0.00.
+
+    The day pair sits over all three rather than inside them. Each scope above is one
+    record, and a record that has spent nothing is never refused, so none of them sees
+    a host that keeps opening new ones.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -267,6 +272,14 @@ class SpendPolicy(BaseModel):
     max_turns_per_consultation: int | None = Field(default=None, gt=0)
     max_turns_per_review: int | None = Field(default=None, gt=0)
     max_turns_per_workflow: int | None = Field(default=None, gt=0)
+    # Every turn the ledger recorded in the last 24 hours, whichever tool asked for it.
+    # The six above each bound one record and never refuse its first turn, so a host
+    # that starts a fresh consultation for every question -- the default, since
+    # `consultation_id` is optional -- spends past all of them without reaching any.
+    # Rolling rather than a calendar day: a day that resets at midnight lets a loop
+    # running across it spend two days' worth in an hour.
+    max_cost_usd_per_day: float | None = Field(default=None, gt=0)
+    max_turns_per_day: int | None = Field(default=None, gt=0)
 
 
 class ReviewPolicy(BaseModel):

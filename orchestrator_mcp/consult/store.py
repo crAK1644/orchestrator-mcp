@@ -438,6 +438,16 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE reviews ADD COLUMN recheck_refs_json TEXT;
     """,
+    # When each turn was recorded, indexed, because `consult.spend`'s daily ceilings
+    # read the last 24 hours of the ledger before every turn. `created_at` sits after
+    # the prompt and answer columns, so a scan reads every stored body on the way to
+    # it: 106 ms a check over 10,000 turns of ordinary size (411 MB), with the pages
+    # already cached, and 2.5 ms through this. The reports' `--days` windows filter on
+    # the same column.
+    """
+    CREATE INDEX IF NOT EXISTS consultation_turns_created_at_idx
+        ON consultation_turns(created_at);
+    """,
 ]
 
 DEFAULT_PROFILE = "default"
@@ -1083,6 +1093,30 @@ class ConsultStore:
                 (str(consultation_id),),
             ).fetchone()
             return _spend(row) if row["turns"] else None
+
+        return await self._run(work)
+
+    async def turns_since(self, since: str) -> list[tuple[str, float | None, str]]:
+        """`(created_at, cost_usd, agent id)` of every turn recorded at or after `since`,
+        oldest first. What `consult.spend`'s daily ceilings count.
+
+        Every turn, whichever tool asked for it and whichever record owns it: a
+        reviewer's and a workflow step's spend is spend, the same rule `usage` reports
+        by. Rows rather than a rollup, because a refusal has to say when the window
+        lifts, and that depends on which turns are oldest, not on what they add up to.
+        `consultation_turns_created_at_idx` keeps this to the turns in the window.
+        """
+
+        def work() -> list[tuple[str, float | None, str]]:
+            return [
+                (row[0], row[1], row[2])
+                for row in self._db.execute(
+                    "SELECT t.created_at, t.cost_usd, c.target_agent_id "
+                    "FROM consultation_turns t JOIN consultations c ON c.id = t.consultation_id "
+                    "WHERE t.created_at >= ? ORDER BY t.created_at, t.id",
+                    (since,),
+                )
+            ]
 
         return await self._run(work)
 

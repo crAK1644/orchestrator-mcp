@@ -51,7 +51,7 @@ from ..consult.errors import ConsultErrorCode
 from ..consult.prompts import compile_execution_prompt
 from ..consult.store import _UNATTRIBUTED, ConsultStore, StoreError
 from ..contract import MAX_ERROR_CHARS, Usage, scrub_json
-from ..estimate import ceiling_warning, for_agents
+from ..estimate import ceiling_warning, day_warning, for_agents, warnings
 from ..log import get_logger
 from ..review.contract import SERIOUS, ReviewSummary, open_serious
 from ..review.service import ReviewService
@@ -391,6 +391,9 @@ class WorkflowService:
         else:
             estimates, estimated = [], None
         known, _ = counted(await self.consult.store.workflow_usage(workflow.id))
+        day = await day_warning(
+            self.consult.store, self.config.spend.max_cost_usd_per_day, estimated
+        )
         return WorkflowResponse(
             workflow_id=workflow.id,
             status=workflow.status,  # type: ignore[arg-type]
@@ -409,9 +412,12 @@ class WorkflowService:
                 review_id=review_id,
                 estimates=estimates,
                 estimated_cost_usd=estimated,
-                ceiling_warning=ceiling_warning(
-                    known, estimated, self.config.spend.max_cost_usd_per_workflow,
-                    f"workflow `{workflow.id}`",
+                ceiling_warning=warnings(
+                    ceiling_warning(
+                        known, estimated, self.config.spend.max_cost_usd_per_workflow,
+                        f"workflow `{workflow.id}`",
+                    ),
+                    day,
                 ),
                 confirm_token=token,
             ),
@@ -547,6 +553,10 @@ class WorkflowService:
         not be decided on a total another step is still adding to. Reviewers count
         towards the workflow's ceiling as well as their review's own, because the
         workflow is what paid for them.
+
+        The day's ceiling is asked here too, for every step a delegated agent runs. A
+        contained `isolated_write` run records no turn of its own, so this is the only
+        check it meets, and what it spends never counts toward the day.
         """
         message = spend_refusal(
             await self.consult.store.workflow_usage(workflow_id),
@@ -557,6 +567,7 @@ class WorkflowService:
         if message is not None:
             log.warning("workflow %s refused: %s", workflow_id, message)
             raise WorkflowError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
+        await self.consult.within_day()
 
     async def _run_step(
         self, started: float, workflow: WorkflowRun, row: StepRow, token: str

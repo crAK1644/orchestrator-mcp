@@ -15,10 +15,17 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from itertools import accumulate
 
 from .contract import Usage
+
+# What the daily ceilings count over: the last 24 hours, rolling, never a calendar
+# day. A day that resets at midnight lets a loop running across it spend two days'
+# worth in an hour.
+DAY = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,19 +124,9 @@ def refusal(
     """
     total, unpriced = counted(spend)
     if ceiling is not None and total >= ceiling:
-        # The unpriced part is named rather than dropped: a caller who reads "$5.10
-        # of $5.00" without it will read the total as complete, and it is a floor.
-        # Those keys may also have contributed to the total already -- a group is
-        # listed here when *any* of its turns went unpriced, not when all of them did.
-        unknown = (
-            f", and {len(unpriced)} more spent an unpriced amount beyond that "
-            f"({', '.join(unpriced)})"
-            if unpriced
-            else ""
-        )
         return (
-            f"{subject} has spent ${total:.2f} of its ${ceiling:.2f} ceiling{unknown}; "
-            "raise `consult.spend` or stop here"
+            f"{subject} has spent ${total:.2f} of its ${ceiling:.2f} ceiling"
+            f"{_unpriced(unpriced)}; raise `consult.spend` or stop here"
         )
     if max_turns is not None:
         turns = sum(s.turns for s in spend.values())
@@ -139,3 +136,84 @@ def refusal(
                 "raise `consult.spend` or stop here"
             )
     return None
+
+
+def _unpriced(keys: Sequence[str]) -> str:
+    """The unpriced part of a money refusal, named rather than dropped.
+
+    A caller who reads "$5.10 of $5.00" without it will read the total as complete,
+    and it is a floor. Those keys may also have contributed to the total already -- a
+    key is listed when *any* of its turns went unpriced, not when all of them did.
+    """
+    if not keys:
+        return ""
+    return f", and {len(keys)} more spent an unpriced amount beyond that ({', '.join(keys)})"
+
+
+def day_cutoff(now: datetime | None = None) -> str:
+    """The oldest `created_at` still inside the window, in the shape the ledger writes,
+    so SQLite comparing the two as text puts them in time order."""
+    return ((now or datetime.now(UTC)) - DAY).isoformat(timespec="seconds")
+
+
+def day_refusal(
+    turns: Sequence[tuple[str, float | None, str]],
+    max_cost: float | None,
+    max_turns: int | None,
+) -> str | None:
+    """Why nothing more may run until some of the last day's turns age out, or `None`.
+
+    `turns` is `(created_at, cost_usd, agent id)` for every turn in the window, oldest
+    first. The rule is `refusal`'s -- reached, not exceeded, and an agent that spent
+    unpriced is named rather than counted as free -- with one thing added that a
+    record's ceiling has no use for. That one stays reached until someone raises it.
+    This one comes undone by itself as turns age out, and when is the half of the
+    answer a host can act on, because a rolling window gives no other way to know
+    whether that is a minute away or most of a day.
+    """
+    count = len(turns)
+    # Known spend once the oldest `i` turns have aged out, for every `i`: index 0 is
+    # the window as it stands and the last index is the empty one. Suffix sums rather
+    # than a running subtraction, so the total that decides the refusal and the
+    # totals that decide when it lifts are added up the same way.
+    remaining = list(accumulate(reversed([cost or 0.0 for _, cost, _ in turns]), initial=0.0))
+    remaining.reverse()
+
+    def reached(i: int) -> bool:
+        return (max_cost is not None and remaining[i] >= max_cost) or (
+            max_turns is not None and count - i >= max_turns
+        )
+
+    if not reached(0):
+        return None
+    # The first turn whose ageing out leaves *both* ceilings unreached, or the time
+    # given is one at which the other ceiling refuses instead. There always is one:
+    # the empty window has spent nothing, and both ceilings are above zero.
+    lifts = next(i for i in range(1, count + 1) if not reached(i))
+    then = _try_again(turns[lifts - 1][0])
+    if max_cost is not None and remaining[0] >= max_cost:
+        unpriced = sorted({agent for _, cost, agent in turns if cost is None})
+        return (
+            f"the last 24 hours have spent ${remaining[0]:.2f} of the ${max_cost:.2f} daily "
+            f"ceiling{_unpriced(unpriced)}; raise `consult.spend` or try again {then}"
+        )
+    return (
+        f"the last 24 hours have used {count} of the {max_turns} daily turn ceiling; "
+        f"raise `consult.spend` or try again {then}"
+    )
+
+
+def _try_again(created_at: str) -> str:
+    """When the turn recorded at `created_at` stops counting.
+
+    It counts while it is no older than a day, so the moment is one past that. Read
+    the way the dashboard reads the same column: a row this server did not write
+    keeps counting, and only the time it lifts goes unsaid.
+    """
+    try:
+        moment = datetime.fromisoformat(created_at)
+    except ValueError:
+        return "later"
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return f"after {(moment + DAY).astimezone(UTC):%Y-%m-%d %H:%M:%S} UTC"

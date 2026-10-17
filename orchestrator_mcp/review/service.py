@@ -52,7 +52,7 @@ from ..contract import (
     secret_lines,
     suspect_lines,
 )
-from ..estimate import ceiling_warning, for_agents
+from ..estimate import ceiling_warning, day_warning, for_agents, warnings
 from ..files import read_files
 from ..json_objects import fenced_json_objects, json_object_candidates
 from ..log import get_logger
@@ -309,6 +309,9 @@ class ReviewService:
             [(s.agent_id, s.model) for s in snapshots],
             len(goal) + len(context or ""),
         )
+        day = await day_warning(
+            self.consult.store, self.config.spend.max_cost_usd_per_day, estimated
+        )
         seen: dict[str, int] = {}
         for snapshot in snapshots:
             seen[snapshot.model] = seen.get(snapshot.model, 0) + 1
@@ -336,8 +339,11 @@ class ReviewService:
             reviewers_skipped=skipped,
             estimates=estimates,
             estimated_cost_usd=estimated,
-            ceiling_warning=ceiling_warning(
-                0.0, estimated, self.config.spend.max_cost_usd_per_review, "this review"
+            ceiling_warning=warnings(
+                ceiling_warning(
+                    0.0, estimated, self.config.spend.max_cost_usd_per_review, "this review"
+                ),
+                day,
             ),
             escalate=escalate,
         )
@@ -849,8 +855,11 @@ class ReviewService:
 
         Checked before the token is spent and before any subprocess starts, so a
         refusal costs nothing and leaves the plan runnable once the ceiling is
-        raised. A first run has spent nothing and is never refused here -- what this
-        stops is the *next* round, which is retries and the rounds a workflow drives.
+        raised. A first run has spent nothing and is never refused by the review's
+        own ceiling -- what that stops is the *next* round, which is retries and the
+        rounds a workflow drives. The day's can refuse a first run: a host planning a
+        fresh review for every change is the stream that ceiling is there to bound,
+        and here is where refusing one still keeps its token for when the day lifts.
 
         Public because a workflow has to ask it *before* spending the step token that
         a review step shares with its review. Asked afterwards -- which is where
@@ -865,6 +874,7 @@ class ReviewService:
         if message is not None:
             log.warning("review %s refused: %s", review_id, message)
             raise StoreError(ConsultErrorCode.SPEND_LIMIT_REACHED, message)
+        await self.consult.within_day()
 
     async def _within_workflow_ceiling(self, review: Review) -> None:
         """The ceiling of the workflow that owns this review, if one does.
