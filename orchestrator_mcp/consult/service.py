@@ -872,8 +872,23 @@ class ConsultService:
     # --- read-only surfaces -------------------------------------------------
 
     async def list_agents(
-        self, check: bool = True, agent_ids: list[str] | None = None
+        self,
+        check: bool = True,
+        agent_ids: list[str] | None = None,
+        *,
+        by_identity: bool = False,
     ) -> ConsultAgentsResponse:
+        """The configured agents, or the ones named, probed when `check` is set.
+
+        Who counts as the host depends on the path the listing answers for. By default
+        that is `orchestrator_consult`, which excludes the host's whole runtime because
+        nothing on it knows which model the host is. `by_identity` is the rule a review
+        or a workflow step is bound under: only what `host_identity_conflict` refuses
+        is the host, so a provably different model on this runtime is probed and listed
+        like any other agent. No tool argument picks the rule;
+        `orchestrator_list_consult_agents` takes none, and `test_reviewers` and `doctor`
+        ask for the review's rule in code.
+        """
         # Filtered here rather than by the caller afterwards: with `check=True` every
         # row costs a subprocess, so narrowing after the fact would preflight agents
         # nobody asked about. None means all of them, as it always did.
@@ -885,11 +900,23 @@ class ConsultService:
         for agent_id, agent in sorted(self.config.agents.items()):
             if wanted is not None and agent_id not in wanted:
                 continue
-            host = agent.runtime == self.host_runtime
-            # The host's own runtime is never consulted, so probing it would be a
-            # subprocess launched to answer a question already settled.
+            if by_identity:
+                excluded = host_identity_conflict(
+                    agent.runtime, agent.model, self.host_runtime, self.config.host.model
+                )
+            elif agent.runtime == self.host_runtime:
+                excluded = (
+                    f"`{agent.runtime}` is this host's own runtime, which "
+                    "`orchestrator_consult` never routes to"
+                )
+            else:
+                excluded = None
+            # The host is never sent work, so probing it would be a subprocess
+            # launched to answer a question already settled.
             status = (
-                await self._status(self.adapter(agent), agent) if check and not host else None
+                await self._status(self.adapter(agent), agent)
+                if check and excluded is None
+                else None
             )
             agents.append(
                 ConsultAgentInfo(
@@ -900,7 +927,8 @@ class ConsultService:
                     enabled=agent.enabled,
                     scores=dict(agent.scores),
                     web_search=agent.web_search,
-                    excluded_as_host=host,
+                    excluded_as_host=excluded is not None,
+                    exclusion_reason=excluded,
                     installed=status.installed if status else None,
                     authenticated=status.authenticated if status else None,
                     detail=status.detail if status else None,

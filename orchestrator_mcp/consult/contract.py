@@ -237,7 +237,7 @@ class ConsultManyResponse(BaseModel):
 
 
 class ConsultAgentInfo(BaseModel):
-    """One row of `list_consult_agents`."""
+    """One row of `list_consult_agents`, and of `test_reviewers`."""
 
     agent_id: str
     runtime: Runtime
@@ -246,7 +246,18 @@ class ConsultAgentInfo(BaseModel):
     enabled: bool
     scores: dict[str, int]
     web_search: bool
-    excluded_as_host: bool
+    excluded_as_host: bool = Field(
+        description=(
+            "True when the path this listing answers for never sends this agent work, "
+            "because it is this host; such an agent is not probed. "
+            "`orchestrator_list_consult_agents` answers for `orchestrator_consult`, which "
+            "excludes the host's whole runtime. `orchestrator_test_reviewers` answers for "
+            "a review, which excludes only the host's own execution identity."
+        )
+    )
+    exclusion_reason: str | None = Field(
+        default=None, description="Why `excluded_as_host` is true, or null when it is false."
+    )
     installed: bool | None = None
     authenticated: bool | None = None
     detail: str | None = None

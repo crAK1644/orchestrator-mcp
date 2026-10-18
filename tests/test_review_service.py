@@ -41,6 +41,7 @@ from orchestrator_mcp.review.service import (
     _parse_findings,
     _total,
 )
+from orchestrator_mcp.workflow.identity import host_identity_conflict
 
 from .conftest import agent
 
@@ -96,11 +97,13 @@ class StubAdapter:
         self._follow_up_questions = follow_up_questions or []
         self.prompts: list[str] = []
         self.modes: list[SourceMode] = []
+        self.preflights = 0
 
     def connect_command(self, agent):
         return f"{agent.command} login"
 
     async def preflight(self, agent):
+        self.preflights += 1
         return self._status or AgentStatus(agent.agent_id, installed=True, authenticated=True)
 
     async def start(self, agent, prompt, source_mode, session_id=None):
@@ -1236,6 +1239,62 @@ async def test_testing_the_reviewers_preflights_only_them(build):
     )
     response = await service.test_reviewers(mode="standard")
     assert [a.agent_id for a in response.agents] == ["codex-sol"]
+
+
+HOST_MODEL = {"runtime": "claude", "model": "claude-opus-5"}
+
+
+async def test_testing_the_reviewers_checks_a_different_model_on_the_hosts_runtime(build):
+    """The review is sent to it, so the check has to ask its CLI.
+
+    A review excludes the host by execution identity, and the host model proves this
+    one different. The consult tool's rule, the host's whole runtime, reported it as
+    the host and checked nothing about the one reviewer the review then used."""
+    adapters = {"other": StubAdapter()}
+    service = await build(
+        adapters,
+        agents={"other": agent("claude", "claude-opus-4.9")},
+        host=HOST_MODEL,
+        review={"reviewers": ["other"], "deep_reviewers": ["other"]},
+    )
+
+    [row] = (await service.test_reviewers(mode="standard")).agents
+
+    assert row.excluded_as_host is False and row.exclusion_reason is None
+    assert (row.installed, row.authenticated) == (True, True)
+    assert adapters["other"].preflights == 1
+
+
+@pytest.mark.parametrize(
+    "host,model",
+    [
+        (HOST_MODEL, "claude-opus-5"),  # the host itself
+        (HOST_MODEL, "opus"),  # a spelling of it
+        (HOST_MODEL, "sonnet"),  # no version, so it cannot be shown to differ
+        ({"runtime": "claude"}, "claude-opus-4.9"),  # no host model: the whole runtime
+    ],
+)
+async def test_testing_the_reviewers_lists_the_hosts_own_identity_and_never_probes_it(
+    build, host, model
+):
+    """Listed with the reason a review would refuse it. Failing the whole check over
+    it said nothing about the reviewers beside it that do work."""
+    adapters = {"self": StubAdapter(), "codex-sol": StubAdapter()}
+    service = await build(
+        adapters,
+        agents={"self": agent("claude", model), "codex-sol": REVIEWERS["codex-sol"]},
+        host=host,
+        review={"reviewers": ["codex-sol"], "deep_reviewers": ["codex-sol", "self"]},
+    )
+
+    rows = {a.agent_id: a for a in (await service.test_reviewers()).agents}
+
+    assert rows["self"].excluded_as_host is True
+    assert rows["self"].exclusion_reason == host_identity_conflict(
+        "claude", model, "claude", host.get("model")
+    )
+    assert rows["self"].installed is None and adapters["self"].preflights == 0
+    assert rows["codex-sol"].installed is True and adapters["codex-sol"].preflights == 1
 
 
 # --- deletion through the service ------------------------------------------

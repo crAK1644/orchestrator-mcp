@@ -416,6 +416,32 @@ class ReviewService:
         configured host model, a provably different model on the same runtime is a
         different reviewer; without one, exclusion conservatively covers the runtime.
         """
+        snapshots = []
+        for agent_id in self._reviewer_ids(mode, reviewers):
+            agent = self.config.agents[agent_id]
+            if conflict := host_identity_conflict(
+                agent.runtime, agent.model, self.host_runtime, self.config.host.model
+            ):
+                raise ValueError(
+                    f"`{agent_id}` cannot review this host's own work: {conflict}; "
+                    "name a different agent"
+                )
+            snapshots.append(
+                ReviewerSnapshot(
+                    agent_id=agent_id,
+                    runtime=agent.runtime,
+                    model=agent.model,
+                    web_search=agent.web_search,
+                )
+            )
+        return snapshots
+
+    def _reviewer_ids(self, mode: ReviewMode, reviewers: list[str] | None) -> list[str]:
+        """The reviewers this review would name, before the host is excluded.
+
+        Kept out of `_reviewer_snapshots` for `test_reviewers`, which lists a reviewer
+        the host-identity rule refuses rather than stopping at it.
+        """
         if self.config.review is None and reviewers is None:
             raise ValueError(
                 "no `review:` block is configured; add `reviewers:` and `deep_reviewers:` "
@@ -439,29 +465,11 @@ class ReviewService:
         repeated = sorted({a for a in chosen if chosen.count(a) > 1})
         if repeated:
             raise ValueError(f"named more than once: {', '.join(repeated)}")
-
-        snapshots = []
         for agent_id in chosen:
             # Same three checks as boot, so a reviewer refused there cannot arrive
             # later through an explicit list.
             self.config.check_reviewer(agent_id, "reviewers")
-            agent = self.config.agents[agent_id]
-            if conflict := host_identity_conflict(
-                agent.runtime, agent.model, self.host_runtime, self.config.host.model
-            ):
-                raise ValueError(
-                    f"`{agent_id}` cannot review this host's own work: {conflict}; "
-                    "name a different agent"
-                )
-            snapshots.append(
-                ReviewerSnapshot(
-                    agent_id=agent_id,
-                    runtime=agent.runtime,
-                    model=agent.model,
-                    web_search=agent.web_search,
-                )
-            )
-        return snapshots
+        return list(chosen)
 
     def _verify_snapshot(self, review) -> list[ReviewerSnapshot]:
         """Refuse if a reviewer moved since the plan was approved.
@@ -1406,6 +1414,12 @@ class ReviewService:
     async def test_reviewers(self, mode: ReviewMode | None = None) -> ConsultAgentsResponse:
         """Preflight the configured reviewers. No project material leaves the machine.
 
+        The host is excluded the way a review excludes it, by execution identity. A
+        provably different model on this runtime is a reviewer a review is sent to, so
+        it is probed like any other; one `host_identity_conflict` refuses is listed as
+        the host, with that reason, and never probed. Failing the whole check over it
+        would say nothing about the reviewers beside it.
+
         The agent ids are pushed into `list_agents` rather than filtered afterwards,
         because with `check=True` every row costs a subprocess and narrowing after the
         fact would preflight agents nobody asked about.
@@ -1413,8 +1427,10 @@ class ReviewService:
         await self.open()
         wanted: list[str] = []
         for which in ("standard", "deep") if mode is None else [mode]:
-            wanted += [s.agent_id for s in self._reviewer_snapshots(which, None)]  # type: ignore[arg-type]
-        return await self.consult.list_agents(check=True, agent_ids=sorted(set(wanted)))
+            wanted += self._reviewer_ids(which, None)  # type: ignore[arg-type]
+        return await self.consult.list_agents(
+            check=True, agent_ids=sorted(set(wanted)), by_identity=True
+        )
 
     # --- deletion -----------------------------------------------------------
 

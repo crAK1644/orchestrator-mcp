@@ -341,7 +341,10 @@ ORCHESTRATOR_CONFIG=~/.orchestrator-mcp/config.yaml ORCHESTRATOR_HOST_RUNTIME=cl
 ```
 
 One `ok` or `FAIL` line per check: the config loads, the database opens, and each
-agent's CLI is installed and logged in. It exits 1 if anything failed. The only
+agent's CLI is installed and logged in. An agent that is the host is not checked, and
+its `--` line says why; with `consult.host.model` set, a different model on the host's
+own runtime is checked when a review or workflow could use it (see
+[Host identity](#host-identity)). It exits 1 if anything failed. The only
 things it runs are the CLIs' own login checks, so no project material leaves the
 machine.
 
@@ -731,7 +734,7 @@ Finalization must preserve every machine-readable Critical and Important finding
 | `orchestrator_cancel_review` | Cancel a review while retaining answers already received. |
 | `orchestrator_apply_fixes` | Return selected findings and fix steps, and list the Critical and Important findings the selection leaves out. Changes no files. |
 | `orchestrator_record_fix_round` | Record the host's claim about a fix round. |
-| `orchestrator_test_reviewers` | Check installation and login readiness without sending project material. |
+| `orchestrator_test_reviewers` | Check installation and login readiness without sending project material. The host is excluded as a review excludes it, by execution identity. |
 | `orchestrator_get_review` / `orchestrator_list_reviews` | Read one review or recent review metadata. |
 | `orchestrator_delete_review` | Delete a review, its rechecks, and linked consultations. |
 | `orchestrator_request_delete_all` / `orchestrator_delete_all_reviews` | Preview and confirm deletion of an exact history snapshot. |
@@ -935,6 +938,12 @@ host's own runtime becomes routable. Without it, every agent on that runtime is 
 different**, so `opus` and `claude-opus` are treated as `claude-opus-5` and refused, and
 a name with no version at all is refused for being unprovable rather than assumed
 distinct.
+
+The readiness checks follow the same rule. `orchestrator_test_reviewers` and `doctor`
+check such a model's login like any other agent's, and list one that is the host
+unchecked, with an `exclusion_reason`. `orchestrator_list_consult_agents` answers for
+`orchestrator_consult`, so it still marks every agent on the host's runtime
+`excluded_as_host`.
 
 `review_policy` is checked against this resolved identity too, so two agent ids pointing
 at one model are one reviewer however they are spelled.

@@ -360,6 +360,36 @@ async def test_listing_marks_the_host_runtime_and_does_not_probe_it(service_fact
     assert by_id["codex-sol"].scores["coding"] == 90
 
 
+async def test_listing_excludes_the_whole_host_runtime_even_with_a_host_model(
+    tmp_path, host_claude
+):
+    """The listing answers for `orchestrator_consult`, which never routes to this
+    runtime. A host model that lets a review use a sibling model does not make that
+    model consultable, so it stays excluded here and is not probed."""
+    adapter = StubAdapter()
+    config = ConsultConfig(
+        database_path=str(tmp_path / "consultations.sqlite3"),
+        agents={
+            "codex-sol": agent("codex", "gpt-5.6-sol", 10),
+            "claude-sibling": agent("claude", "claude-opus-4.9", 20),
+        },
+        host={"runtime": "claude", "model": "claude-opus-5"},
+    )
+    service = await StubService(config, host_claude, adapter=adapter).open()
+
+    by_id = {a.agent_id: a for a in (await service.list_agents()).agents}
+    assert by_id["claude-sibling"].excluded_as_host is True
+    assert "`orchestrator_consult` never routes to" in by_id["claude-sibling"].exclusion_reason
+    assert by_id["claude-sibling"].installed is None
+    assert by_id["codex-sol"].exclusion_reason is None
+    assert adapter.preflights == 1
+
+    # The review's rule, asked for by name, is the one that probes it.
+    by_identity = {a.agent_id: a for a in (await service.list_agents(by_identity=True)).agents}
+    assert by_identity["claude-sibling"].excluded_as_host is False
+    assert by_identity["claude-sibling"].installed is True
+
+
 async def test_listing_can_skip_the_status_checks(service_factory):
     service = await service_factory()
     listing = await service.list_agents(check=False)

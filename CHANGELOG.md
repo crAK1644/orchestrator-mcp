@@ -8,6 +8,14 @@ One line per change a user would notice. The full notes for each version are on 
 - The scorecard counts an open finding as kept once a fix round recorded after finalize
   names it as `applied` or `partial`. A later `reverted` round undoes that. Until now a fix
   recorded after finalize never left the `open` column.
+- `orchestrator_test_reviewers` excludes the host the way a review does, by execution
+  identity. With `consult.host.model` set, a reviewer on another model of the host's own
+  runtime is checked, since a review is sent to it; until now it was reported as the host and
+  its login never checked. A reviewer that is the host is listed unchecked with a new
+  `exclusion_reason`, where the whole check used to fail. `doctor` checks the same agents
+  when `review:` or `workflow:` is configured, and says why it leaves one unchecked.
+  `orchestrator_list_consult_agents` still excludes the host's whole runtime, as
+  `orchestrator_consult` does, and says so in `exclusion_reason`.
 
 ## 0.12.0 — 2026-10-08
 

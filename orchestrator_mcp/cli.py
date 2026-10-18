@@ -247,8 +247,14 @@ def doctor(load_config) -> int:
         except Exception as exc:  # noqa: BLE001 -- any reason is a FAIL line
             line(False, "database", f"{consult.database_path}: {exc}")
             return None
+        # A review or a workflow step excludes the host by execution identity, so with
+        # either configured, an agent on the host's runtime that `consult.host.model:`
+        # proves different can be sent work, and its login is worth checking. Without
+        # them `orchestrator_consult` is the only path, and it never routes to that
+        # runtime at all.
+        by_identity = consult.review is not None or consult.workflow is not None
         try:
-            return (await service.list_agents(check=True)).agents
+            return (await service.list_agents(check=True, by_identity=by_identity)).agents
         finally:
             await service.close()
 
@@ -257,12 +263,17 @@ def doctor(load_config) -> int:
         line(True, "database", str(consult.database_path))
     for agent in listed or []:
         if agent.excluded_as_host:
-            print(f"--   agent {agent.agent_id}: the host's own runtime, not checked")
+            print(f"--   agent {agent.agent_id}: not checked: {agent.exclusion_reason}")
         elif not agent.enabled:
             print(f"--   agent {agent.agent_id}: disabled")
         else:
             ready = bool(agent.installed and agent.authenticated)
             line(ready, f"agent {agent.agent_id}", "" if ready else agent.detail or "not ready")
+            if agent.runtime == runtime:
+                print(
+                    f"--   agent {agent.agent_id}: the host's own runtime, so only a review or "
+                    "a workflow step can use it, never `orchestrator_consult`"
+                )
             # Informational, and not fixable here: `agy` reads no stdin, so the prompt is
             # an argument. Said once per agent so it is seen before the first turn.
             if consult.agents[agent.agent_id].runtime == "antigravity":

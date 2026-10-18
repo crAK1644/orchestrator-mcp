@@ -941,6 +941,12 @@ def _add_review_tools(server: MCPServer, service: ReviewService) -> None:
 
         A preflight and nothing more: **no project material leaves this machine.**
         Omit `mode` to check the reviewers for both standard and deep.
+
+        The host is excluded as a review excludes it, by execution identity: with
+        `consult.host.model` set, a different model on the host's own runtime is
+        checked like any other reviewer. A reviewer that is the host comes back
+        unchecked, with `excluded_as_host` and the `exclusion_reason` a review would
+        refuse it for.
         """
         return await service.test_reviewers(mode)
 

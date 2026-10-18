@@ -152,7 +152,49 @@ def test_doctor_passes_a_working_setup(host_claude, monkeypatch, tmp_path, capsy
     out = capsys.readouterr().out
     assert "FAIL" not in out
     assert "ok   agent codex-sol" in out
-    assert "agent claude-opus: the host's own runtime" in out
+    assert "agent claude-opus: not checked: `claude` is this host's own runtime" in out
+
+
+def test_doctor_checks_an_agent_on_the_hosts_runtime_the_host_model_tells_apart(
+    host_claude, monkeypatch, tmp_path, capsys
+):
+    """A review can be sent to it, so whether it is logged in has an answer worth
+    asking for. Only the host's own identity is left unchecked."""
+    block = consult_block(
+        database_path=str(tmp_path / "db.sqlite3"),
+        host={"runtime": "claude", "model": "claude-opus-5"},
+        review={"reviewers": ["claude-sibling"], "deep_reviewers": ["claude-sibling"]},
+    )
+    block["agents"]["claude-sibling"] = agent("claude", "claude-opus-4.9", 30)
+
+    assert _doctor(monkeypatch, tmp_path, {"consult": block}) == 0
+
+    out = capsys.readouterr().out
+    assert "ok   agent claude-sibling" in out
+    assert "agent claude-sibling: the host's own runtime, so only a review or a workflow" in out
+    # `opus` is a spelling of the host's own model.
+    assert (
+        "agent claude-opus: not checked: `claude/opus` is this host's own execution identity"
+        in out
+    )
+
+
+def test_doctor_leaves_the_hosts_runtime_unchecked_when_only_consult_could_use_it(
+    host_claude, monkeypatch, tmp_path, capsys
+):
+    """No `review:` and no `workflow:` leaves `orchestrator_consult` as the only path,
+    and it never routes to the host's runtime, whatever the host model says."""
+    block = consult_block(
+        database_path=str(tmp_path / "db.sqlite3"),
+        host={"runtime": "claude", "model": "claude-opus-5"},
+    )
+    block["agents"]["claude-sibling"] = agent("claude", "claude-opus-4.9", 30)
+
+    assert _doctor(monkeypatch, tmp_path, {"consult": block}) == 0
+
+    assert "agent claude-sibling: not checked: `claude` is this host's own runtime" in (
+        capsys.readouterr().out
+    )
 
 
 def test_doctor_fails_an_agent_that_is_not_logged_in(host_claude, monkeypatch, tmp_path, capsys):

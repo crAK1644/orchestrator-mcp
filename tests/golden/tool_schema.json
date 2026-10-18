@@ -987,7 +987,7 @@
     "output_schema": {
       "$defs": {
         "ConsultAgentInfo": {
-          "description": "One row of `list_consult_agents`.",
+          "description": "One row of `list_consult_agents`, and of `test_reviewers`.",
           "properties": {
             "agent_id": {
               "title": "Agent Id",
@@ -1028,8 +1028,22 @@
               "type": "boolean"
             },
             "excluded_as_host": {
+              "description": "True when the path this listing answers for never sends this agent work, because it is this host; such an agent is not probed. `orchestrator_list_consult_agents` answers for `orchestrator_consult`, which excludes the host's whole runtime. `orchestrator_test_reviewers` answers for a review, which excludes only the host's own execution identity.",
               "title": "Excluded As Host",
               "type": "boolean"
+            },
+            "exclusion_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Why `excluded_as_host` is true, or null when it is false.",
+              "title": "Exclusion Reason"
             },
             "installed": {
               "anyOf": [
@@ -10166,7 +10180,7 @@
     "output_schema": {
       "$defs": {
         "ConsultAgentInfo": {
-          "description": "One row of `list_consult_agents`.",
+          "description": "One row of `list_consult_agents`, and of `test_reviewers`.",
           "properties": {
             "agent_id": {
               "title": "Agent Id",
@@ -10207,8 +10221,22 @@
               "type": "boolean"
             },
             "excluded_as_host": {
+              "description": "True when the path this listing answers for never sends this agent work, because it is this host; such an agent is not probed. `orchestrator_list_consult_agents` answers for `orchestrator_consult`, which excludes the host's whole runtime. `orchestrator_test_reviewers` answers for a review, which excludes only the host's own execution identity.",
               "title": "Excluded As Host",
               "type": "boolean"
+            },
+            "exclusion_reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Why `excluded_as_host` is true, or null when it is false.",
+              "title": "Exclusion Reason"
             },
             "installed": {
               "anyOf": [
